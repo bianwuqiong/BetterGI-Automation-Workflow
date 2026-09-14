@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -14,6 +15,15 @@ TEXT_LIMIT = 5 * 1024 * 1024
 BLOCKED_SUFFIXES = {
     '.7z', '.bmp', '.dll', '.exe', '.gif', '.jpeg', '.jpg', '.pdb', '.pem',
     '.pfx', '.png', '.sqlite', '.webp', '.zip',
+}
+ALLOWED_MEDIA = {
+    'docs/assets/support/alipay.jpg':
+        '50589afbf22cbee6e7d124e0d6e40b8b162f7a53a77c50c71561869bfafeba44',
+    'docs/assets/support/wechat-pay.png':
+        'cedd7f4846be2fc5402419d27eaeb90caf5d2e1e120d1dabe900e7a43322513a',
+}
+ALLOWED_SPONSOR_TEXT = {
+    '.gitignore', '.github/FUNDING.yml', 'CHANGELOG.md', 'README.md', 'SUPPORT.md'
 }
 PATTERNS = {
     'Windows user-profile path': re.compile(r'(?i)[A-Z]:\\Users\\[^\\\s"\']+'),
@@ -46,7 +56,10 @@ def main() -> int:
                 or relative.startswith(('tests/.artifacts/', 'logs/', 'state/'))):
             continue
         if path.suffix.lower() in BLOCKED_SUFFIXES:
-            findings.append(f'{relative}: blocked binary/media type')
+            expected = ALLOWED_MEDIA.get(relative)
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if expected != actual:
+                findings.append(f'{relative}: blocked or unreviewed binary/media type')
             continue
         if path.stat().st_size > TEXT_LIMIT:
             findings.append(f'{relative}: unexpectedly large file')
@@ -54,6 +67,8 @@ def main() -> int:
         text = path.read_text(encoding='utf-8-sig', errors='replace')
         for label, pattern in PATTERNS.items():
             if pattern.search(text):
+                if label == 'payment material' and relative in ALLOWED_SPONSOR_TEXT:
+                    continue
                 findings.append(f'{relative}: {label}')
     if findings:
         print('\n'.join(findings), file=sys.stderr)

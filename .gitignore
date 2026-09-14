@@ -35,3 +35,7 @@ tests/.artifacts/
 *.bmp
 *.webp
 .codex-remote-attachments/
+
+# Explicitly reviewed public sponsorship assets (hash-checked by the audit script)
+!docs/assets/support/alipay.jpg
+!docs/assets/support/wechat-pay.png

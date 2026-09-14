@@ -125,6 +125,10 @@ AI 不是正常流程依赖。失败、部分完成或证据不足时，优先�
 
 本项目不读写游戏内存，也不修改游戏文件，但使用第三方自动化和模拟输入仍可能违反游戏服务条款或带来账号风险。开源许可证不代表游戏运营方授权。请阅读 BetterGI 上游 FAQ，并自行决定是否使用。
 
+## 支持项目
+
+本项目始终免费、开源。如果它帮助到了你，可以通过[支付宝、微信支付或 PayPal 自愿赞助后续维护](./SUPPORT.md)。赞助不影响软件功能、授权或问题处理。
+
 ## 许可证
 
 本项目按 [GNU GPL v3](./LICENSE) 发布。BetterGI 的原始版权和许可证声明保持不变。
@@ -155,3 +159,7 @@ BetterGI is licensed under GNU GPL v3. Modified source may be redistributed when
 Normal execution has no AI or API dependency. AI is an optional post-failure diagnostic layer that reads the minimized `agent-context.json`; it never performs automatic replay or upgrades an unknown outcome to success.
 
 Third-party automation and simulated input may violate game terms or create account risk even when no game files or process memory are modified. Users are responsible for deciding whether and how to use the software.
+
+### Support the project
+
+This project will remain free and open source. If it helped you, you may [voluntarily support continued maintenance through Alipay, WeChat Pay, or PayPal](./SUPPORT.md). Sponsorship does not affect software functionality, licensing, or issue handling.

@@ -4,6 +4,8 @@ Do not attach unredacted BetterGI logs, `GENERAL_DATA` registry exports, screens
 
 The tracked repository contains examples only. Local files such as `config/settings.json`, goals, inventory, run records, screenshots, and BetterGI installations are ignored by Git.
 
+The two images under `docs/assets/support/` and the payment links in `SUPPORT.md`/`.github/FUNDING.yml` are intentional public sponsorship material. Their paths and hashes are explicitly checked by the audit script; no other media or payment material is allowed by default.
+
 Before reporting a problem:
 
 1. Reproduce with the smallest possible task.
