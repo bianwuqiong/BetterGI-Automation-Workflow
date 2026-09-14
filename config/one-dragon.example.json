@@ -1,0 +1,41 @@
+{
+  "TaskEnabledList": {
+    "f1ad19af-4e55-4380-8e1e-33d518eb2435": true,
+    "f861d583-b1bb-4c71-91ed-925297fe9980": true,
+    "c339b8f9-3c28-4ed8-a614-9eeefca5d4ce": true,
+    "fb736ea2-7783-4816-af24-99a27d4cea70": true,
+    "6952a479-35f0-4ae7-ac4f-6bd4d1890011": true,
+    "7814e2c2-bbfe-4af9-b873-c46668acd5f4": true
+  },
+  "TaskOrder": [
+    "f1ad19af-4e55-4380-8e1e-33d518eb2435",
+    "f861d583-b1bb-4c71-91ed-925297fe9980",
+    "c339b8f9-3c28-4ed8-a614-9eeefca5d4ce",
+    "fb736ea2-7783-4816-af24-99a27d4cea70",
+    "6952a479-35f0-4ae7-ac4f-6bd4d1890011",
+    "7814e2c2-bbfe-4af9-b873-c46668acd5f4"
+  ],
+  "TaskDefinitions": {
+    "f1ad19af-4e55-4380-8e1e-33d518eb2435": "领取邮件",
+    "f861d583-b1bb-4c71-91ed-925297fe9980": "合成树脂",
+    "c339b8f9-3c28-4ed8-a614-9eeefca5d4ce": "自动秘境",
+    "fb736ea2-7783-4816-af24-99a27d4cea70": "自动地脉花",
+    "6952a479-35f0-4ae7-ac4f-6bd4d1890011": "领取每日奖励",
+    "7814e2c2-bbfe-4af9-b873-c46668acd5f4": "领取尘歌壶奖励"
+  },
+  "Name": "DailyOneDragon",
+  "NextTaskId": "",
+  "CraftingBenchCountry": "蒙德",
+  "AdventurersGuildCountry": "蒙德",
+  "PartyName": "",
+  "DomainName": "",
+  "WeeklyDomainEnabled": false,
+  "MinResinToKeep": 0,
+  "AutoCraftAllCondensedResin": true,
+  "SundayEverySelectedValue": "0",
+  "SundayWeeklySelectedValue": "0",
+  "LeyLineRunCount": 6,
+  "LeyLineResinExhaustionMode": true,
+  "LeyLineOpenModeCountMin": true,
+  "CompletionAction": "关闭游戏和软件"
+}

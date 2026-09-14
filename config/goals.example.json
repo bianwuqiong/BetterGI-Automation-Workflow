@@ -1,0 +1,6 @@
+{
+  "_description": "Add only goals you have verified in game. An empty list intentionally blocks automatic domain selection.",
+  "allowBookCrafting": false,
+  "avgGoldBooksPerRun": 1.5,
+  "characters": []
+}

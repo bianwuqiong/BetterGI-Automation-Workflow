@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "description": "原神 7.0 游戏内兼容模式生成的最低图像配置；只包含非账号字段。",
+  "graphicsData": {
+    "currentVolatielGrade": -1,
+    "customVolatileGrades": [
+      { "key": 1, "value": 1 },
+      { "key": 2, "value": 1 },
+      { "key": 3, "value": 1 },
+      { "key": 4, "value": 1 },
+      { "key": 5, "value": 1 },
+      { "key": 6, "value": 1 },
+      { "key": 7, "value": 1 },
+      { "key": 8, "value": 1 },
+      { "key": 9, "value": 1 },
+      { "key": 10, "value": 1 },
+      { "key": 11, "value": 1 },
+      { "key": 12, "value": 1 },
+      { "key": 13, "value": 1 },
+      { "key": 16, "value": 1 },
+      { "key": 15, "value": 1 },
+      { "key": 17, "value": 1 },
+      { "key": 19, "value": 1 },
+      { "key": 21, "value": 1 }
+    ],
+    "volatileVersion": "OSRELWin7.0.0"
+  },
+  "globalPerfData": {
+    "saveItems": [
+      { "entryType": 18, "index": 4, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 1, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 7, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 2, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 3, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 19, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 4, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 5, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 6, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 8, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 9, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 10, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 11, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 12, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 13, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 16, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 15, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 17, "index": 0, "itemVersion": "OSRELWin7.0.0" },
+      { "entryType": 21, "index": 0, "itemVersion": "OSRELWin7.0.0" }
+    ],
+    "truePortedFromGraphicData": true,
+    "portedVersion": "OSRELWin4.7.0",
+    "volatileUpgradeVersion": 0,
+    "portedFromGraphicData": false
+  }
+}

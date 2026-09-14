@@ -1,0 +1,9 @@
+{
+  "autoDomainConfig": {
+    "specifyResinUse": false,
+    "fragileResinUseCount": 0
+  },
+  "autoLeyLineOutcropConfig": {
+    "useFragileResin": false
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "_description": "Add verified domain schedules. Sunday selection requires sundaySelectionVerified=true and a 1..3 selector.",
+  "domains": []
+}

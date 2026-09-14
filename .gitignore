@@ -1,0 +1,37 @@
+# Local configuration and generated state
+config/settings.json
+config/goals.json
+config/domain-calendar.json
+config/book-progress.json
+config/last-plan.json
+config/next-task.txt
+logs/
+state/
+
+# BetterGI installations and source checkouts
+BetterGI/
+BetterGI_custom/
+better-genshin-impact/
+
+# Build and tool output
+**/bin/
+**/obj/
+**/__pycache__/
+**/*.pyc
+tests/.artifacts/
+.pytest_cache/
+
+# Credentials, local environments, and captures
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.log
+*.jsonl
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+.codex-remote-attachments/
