@@ -156,9 +156,6 @@ class WorkflowTests(unittest.TestCase):
         (self.root / 'config').mkdir(parents=True)
         (self.root / 'BetterGI/User/OneDragon').mkdir(parents=True)
         (self.root / 'BetterGI/log').mkdir()
-        for name in ('goals.json', 'domain-calendar.json', 'book-progress.json'):
-            example = name.replace('.json', '.example.json')
-            (self.root / 'config' / name).write_bytes((ROOT / 'config' / example).read_bytes())
         wf.atomic_json(self.root / 'config/goals.json', {
             'allowBookCrafting': False,
             'avgGoldBooksPerRun': 1.5,

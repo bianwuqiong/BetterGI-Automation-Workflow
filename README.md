@@ -7,7 +7,7 @@
 
 一个面向 Windows 的原神日常自动化编排与核验项目。BetterGI 继续负责画面识别、路径、战斗和模拟输入；本项目负责一次运行的任务选择、互斥、时间预算、资源/VPN 保护、画质切换、日志隔离以及完成证据。
 
-当前是 **0.1.0 源码预览版**。合成浓缩树脂、自动秘境和领取每日奖励已分别在前台模式完成实机验证；完整连续 `core` 和桌面子会话仍在验证中。仓库不提供 BetterGI 或原神二进制文件。
+当前是 **0.1.x 源码预览版**。合成浓缩树脂、自动秘境和领取每日奖励已分别在前台模式完成实机验证；完整连续 `core` 和桌面子会话仍在验证中。仓库不提供 BetterGI 或原神二进制文件。
 
 ## 与 BetterGI 的关系
 
@@ -79,7 +79,7 @@ python scripts/audit_public_tree.py --tracked
 
 5. 首次打开 BetterGI，让它生成 `User/config.json`。确认自动秘境与地脉配置不允许使用脆弱树脂，再把 `config/one-dragon.example.json` 复制为 BetterGI 的 `User/OneDragon/DailyOneDragon.json`，或在界面中建立同名配置。
 
-6. 填写并核实 `goals.json`、`domain-calendar.json` 和 `book-progress.json`。空示例会故意阻止自动秘境计划，防止使用未经核实的目标。
+6. 至少填写并核实 `goals.json`。纯圣遗物目标只需要 `artifactDomain`，不需要天赋日历或书本库存；如果配置天赋升级目标，再运行 `scripts/initialize_config.ps1 -IncludeTalentPlanning` 并核实 `domain-calendar.json` 与 `book-progress.json`。缺少必要数据会阻止自动秘境计划。
 
 ## 验证与运行
 
@@ -139,7 +139,7 @@ AI 不是正常流程依赖。失败、部分完成或证据不足时，优先�
 
 BetterGI Automation Workflow is a Windows orchestration and evidence layer for Genshin Impact daily tasks. BetterGI remains responsible for computer vision, navigation, combat, and simulated input; this repository adds per-run configuration, locking, budgets, resource guards, graphics-profile leasing, log isolation, and completion verification.
 
-This is a **0.1.0 source preview**. Crafting, automatic-domain, and daily-reward checkpoints have been validated individually in foreground mode. A continuous full `core` run and child-session mode are still under validation. No BetterGI or game binaries are distributed here.
+This is a **0.1.x source preview**. Crafting, automatic-domain, and daily-reward checkpoints have been validated individually in foreground mode. A continuous full `core` run and child-session mode are still under validation. No BetterGI or game binaries are distributed here.
 
 ### Relationship to BetterGI
 
@@ -151,7 +151,7 @@ BetterGI is licensed under GNU GPL v3. Modified source may be redistributed when
 
 1. Clone this repository and the pinned `automation-workflow` branch of the modified BetterGI fork.
 2. Build BetterGI with the .NET 8 SDK.
-3. Run `scripts/initialize_config.ps1` and fill the local configuration.
+3. Run `scripts/initialize_config.ps1` and fill the local configuration. Artifact-only goals do not require the talent calendar or book inventory; add `-IncludeTalentPlanning` when configuring talent upgrades.
 4. Keep `checkpointOnly=true` while validating each live task.
 5. Run the unit tests and a dry preview before any live task.
 6. Enable the full `core` only after every checkpoint succeeds on the target machine.

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 - 2026-09-14
+
+- Allow artifact-only and already-completed talent goals to run without talent calendar or book-inventory files.
+- Keep missing talent data fail-closed whenever an unfinished talent target is configured.
+
 ## 0.1.1 - 2026-09-14
 
 - Add the maintainer's previously published optional Alipay, WeChat Pay, and PayPal sponsorship channels with hash-pinned QR assets.

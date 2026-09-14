@@ -163,7 +163,8 @@ def _estimated_runs(shortage: Dict[str, int], average_gold: Any) -> int:
     return int(math.ceil(shortage["blue"] / 3.0)) if shortage["blue"] else 0
 
 
-def build_plan(goals: Dict[str, Any], calendar: Dict[str, Any], progress: Dict[str, Any], now: datetime,
+def build_plan(goals: Dict[str, Any], calendar: Dict[str, Any] | None,
+               progress: Dict[str, Any] | None, now: datetime,
                *, reset_hour: int = 4, utc_offset_hours: int = 8) -> Dict[str, Any]:
     """Build a side-effect-free daily plan.
 
@@ -173,17 +174,6 @@ def build_plan(goals: Dict[str, Any], calendar: Dict[str, Any], progress: Dict[s
     """
     if not isinstance(goals, dict):
         raise PlanError("goals must be an object")
-    if not isinstance(calendar, dict) or not isinstance(calendar.get("domains", []), list):
-        raise PlanError("calendar.domains must be a list")
-    for domain in calendar["domains"]:
-        if not isinstance(domain, dict) or domain.get("_verified") is not True:
-            continue
-        if not _series(domain.get("series")) or not isinstance(domain.get("name"), str) or not domain["name"].strip():
-            raise PlanError("verified calendar domains require nonempty name and series")
-        days = domain.get("days")
-        if not isinstance(days, list) or any(not isinstance(day, int) or isinstance(day, bool) or day < 0 or day > 6 for day in days):
-            raise PlanError("verified calendar domain days must contain integers in 0..6")
-    inventory = _read_inventory(progress)
     weekday, effective = game_weekday(now, reset_hour=reset_hour, utc_offset_hours=utc_offset_hours)
     warnings, blockers, suggestions = [], [], []
     plan = {"gameDate": effective.date().isoformat(), "gameWeekday": WEEKDAY_NAMES[weekday],
@@ -201,17 +191,45 @@ def build_plan(goals: Dict[str, Any], calendar: Dict[str, Any], progress: Dict[s
         series, talents = _series(character.get("talentSeries")), character.get("talents") or []
         if not series or not talents:
             continue
-        group = grouped.setdefault(series, {"need": {tier: 0 for tier in TIERS}, "characters": [], "party": ""})
         needed = talent_needs(talents)
+        if not any(needed.values()):
+            continue
+        group = grouped.setdefault(series, {"need": {tier: 0 for tier in TIERS}, "characters": [], "party": ""})
         for tier in TIERS:
             group["need"][tier] += needed[tier]
         group["characters"].append(character.get("name") or series)
         if not group["party"] and isinstance(character.get("talentParty"), str):
             group["party"] = character["talentParty"]
 
+    # Talent calendars and inventory are irrelevant for an artifact-only plan.
+    # Ignore stale/missing files in that mode, but fail closed as soon as a
+    # talent target is configured again.
+    if grouped:
+        if not isinstance(calendar, dict) or not isinstance(calendar.get("domains", []), list):
+            raise PlanError("天赋目标存在时，calendar.domains 必须是列表")
+        for domain in calendar["domains"]:
+            if not isinstance(domain, dict) or domain.get("_verified") is not True:
+                continue
+            if (not _series(domain.get("series")) or
+                    not isinstance(domain.get("name"), str) or
+                    not domain["name"].strip()):
+                raise PlanError("verified calendar domains require nonempty name and series")
+            days = domain.get("days")
+            if (not isinstance(days, list) or
+                    any(not isinstance(day, int) or isinstance(day, bool) or day < 0 or day > 6
+                        for day in days)):
+                raise PlanError("verified calendar domain days must contain integers in 0..6")
+        if not isinstance(progress, dict):
+            raise PlanError("天赋目标存在时，book progress 必须是 JSON object")
+        inventory = _read_inventory(progress)
+    else:
+        calendar = {"domains": []}
+        progress = {"books": {}}
+        inventory = {}
+
     allow_craft = goals.get("allowBookCrafting") is True
     verified_inventory = progress.get("inventoryVerified") is True
-    if not verified_inventory:
+    if grouped and not verified_inventory:
         warnings.append("库存未经 inventoryVerified=true 核验；直接库存仅作保守计划依据，合成建议不会影响本次选本。")
 
     eligible, sunday_problem, unknown_schedule, craft_satisfied = None, None, [], []
@@ -271,7 +289,8 @@ def build_plan(goals: Dict[str, Any], calendar: Dict[str, Any], progress: Dict[s
         if isinstance(character, dict) and isinstance(character.get("artifactDomain"), str) and character["artifactDomain"].strip():
             domain = character["artifactDomain"].strip()
             party = character.get("artifactParty") if isinstance(character.get("artifactParty"), str) else ""
-            reason = "天赋需求已满足或今日不掉落，使用推荐圣遗物本"
+            reason = ("当前仅配置圣遗物目标，直接使用推荐圣遗物本" if not grouped else
+                      "天赋需求已满足或今日不掉落，使用推荐圣遗物本")
             if craft_satisfied:
                 reason = "{}材料可通过建议合成满足，尚未执行；{}".format("、".join("「{}」".format(s) for s in craft_satisfied), reason)
             plan["decision"] = {"type": "artifact-domain", "domain": domain, "party": party,
@@ -319,9 +338,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         root = args.root.resolve()
+        calendar_path = root / "config" / "domain-calendar.json"
+        progress_path = root / "config" / "book-progress.json"
         plan = build_plan(load_json(root / "config" / "goals.json"),
-                          load_json(root / "config" / "domain-calendar.json"),
-                          load_json(root / "config" / "book-progress.json"), _parse_now(args.now),
+                          load_json(calendar_path) if calendar_path.is_file() else None,
+                          load_json(progress_path) if progress_path.is_file() else None,
+                          _parse_now(args.now),
                           reset_hour=args.reset_hour, utc_offset_hours=args.utc_offset_hours)
         rendered = json.dumps(plan, ensure_ascii=False, indent=2) + "\n"
         if args.output:

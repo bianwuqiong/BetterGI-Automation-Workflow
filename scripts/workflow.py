@@ -1523,9 +1523,11 @@ def execute(args, host=None):
 
                 patch = {}
                 if '自动秘境' in names:
+                    calendar_path = root / 'config/domain-calendar.json'
+                    progress_path = root / 'config/book-progress.json'
                     plan = build_plan(read_json(root / 'config/goals.json'),
-                                      read_json(root / 'config/domain-calendar.json'),
-                                      read_json(root / 'config/book-progress.json'), now,
+                                      read_json(calendar_path) if calendar_path.is_file() else None,
+                                      read_json(progress_path) if progress_path.is_file() else None, now,
                                       reset_hour=reset_hour, utc_offset_hours=offset_hours)
                     atomic_json(directory / 'plan.json', plan)
                     result['plan'] = plan

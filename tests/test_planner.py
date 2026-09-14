@@ -46,6 +46,35 @@ class PlannerTests(unittest.TestCase):
         with self.assertRaises(PlanError):
             load_json(ARTIFACTS / "broken.json")
 
+    def test_artifact_only_plan_does_not_need_talent_files(self):
+        artifact_goals = {
+            "characters": [{"name": "圣遗物目标", "artifactDomain": "冰河",
+                            "artifactParty": ""}]
+        }
+
+        plan = build_plan(artifact_goals, None, None, datetime(2026, 9, 14, 12))
+
+        self.assertEqual(plan["decision"]["type"], "artifact-domain")
+        self.assertEqual(plan["configPatch"]["DomainName"], "冰河")
+        self.assertEqual(plan["warnings"], [])
+        self.assertEqual(plan["blockers"], [])
+
+    def test_completed_talent_goal_does_not_need_talent_files(self):
+        completed = goals(character(current=9, target=9, artifact="冰河"))
+
+        plan = build_plan(completed, None, None, datetime(2026, 9, 14, 12))
+
+        self.assertEqual(plan["decision"]["type"], "artifact-domain")
+        self.assertEqual(plan["configPatch"]["DomainName"], "冰河")
+        self.assertEqual(plan["warnings"], [])
+        self.assertEqual(plan["blockers"], [])
+
+    def test_talent_goal_still_requires_calendar_and_progress(self):
+        with self.assertRaises(PlanError):
+            build_plan(goals(character()), None, progress(), datetime(2026, 9, 14, 12))
+        with self.assertRaises(PlanError):
+            build_plan(goals(character()), calendar(), None, datetime(2026, 9, 14, 12))
+
     def test_sunday_reset_boundary_and_verified_selector(self):
         # Naive input is server time: 03:59 belongs to Saturday, 04:00 to Sunday.
         before = build_plan(goals(character()), calendar(), progress(), datetime(2026, 9, 13, 3, 59))
