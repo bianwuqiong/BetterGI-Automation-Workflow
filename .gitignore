@@ -5,8 +5,12 @@ config/domain-calendar.json
 config/book-progress.json
 config/last-plan.json
 config/next-task.txt
+config/hoyolab.json
 logs/
 state/
+manual-graphics.json
+recording.json
+results.json
 
 # BetterGI installations and source checkouts
 BetterGI/
@@ -34,6 +38,8 @@ tests/.artifacts/
 *.jpeg
 *.bmp
 *.webp
+*.mkv
+*.mp4
 .codex-remote-attachments/
 
 # Explicitly reviewed public sponsorship assets (hash-checked by the audit script)

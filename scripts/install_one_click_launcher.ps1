@@ -13,6 +13,7 @@ if (-not $principalContext.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $dailyScript = Join-Path $PSScriptRoot 'run_daily_scheduled.ps1'
 $startScript = Join-Path $PSScriptRoot 'start_daily_one_click.ps1'
+$stopScript = Join-Path $PSScriptRoot 'stop_daily_one_click.ps1'
 $actionArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $dailyScript
 $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $actionArguments -WorkingDirectory $Root
 $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Highest
@@ -37,9 +38,21 @@ if ($gameExe -and (Test-Path -LiteralPath $gameExe)) {
 $shortcut.Description = '启动无需 AI 的 BetterGI 原神 core 日常'
 $shortcut.Save()
 
+$stopShortcutPath = Join-Path $desktop '停止原神日常自动化.lnk'
+$stopShortcut = $shell.CreateShortcut($stopShortcutPath)
+$stopShortcut.TargetPath = $powerShellExe
+$stopShortcut.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}"' -f $stopScript
+$stopShortcut.WorkingDirectory = $Root
+$stopShortcut.IconLocation = "$env:SystemRoot\System32\shell32.dll,131"
+$stopShortcut.Description = '请求当前 BetterGI 原神日常安全停止'
+$stopShortcut.Hotkey = 'CTRL+ALT+SHIFT+F12'
+$stopShortcut.Save()
+
 [pscustomobject]@{
     Installed = $true
     TaskName = $TaskName
     Shortcut = $shortcutPath
+    StopShortcut = $stopShortcutPath
+    StopHotkey = 'Ctrl+Alt+Shift+F12'
     Action = "$powerShellExe $actionArguments"
 } | ConvertTo-Json

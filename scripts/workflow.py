@@ -37,6 +37,12 @@ GENSHIN_GRAPHICS_REGISTRY_VALUES = (
     'UnitySelectMonitor_h17969598',
     'ShaderQualityStr_h1037587092',
 )
+GENSHIN_DISPLAY_REGISTRY_NAMES = {
+    'width': 'Screenmanager Resolution Width_h182942802',
+    'height': 'Screenmanager Resolution Height_h2627697771',
+    'windowed': 'Screenmanager Is Fullscreen mode_h3981298716',
+    'monitor': 'UnitySelectMonitor_h17969598',
+}
 GRAPHICS_LEASE_SCHEMA_VERSION = 1
 
 
@@ -193,7 +199,37 @@ def restore_genshin_graphics_settings(snapshot):
         'restoredAt': utc_now(),
         'changedGeneralFields': changed_general,
         'changedRegistryValues': changed_registry,
+        'verified': verify_genshin_graphics_snapshot(snapshot),
     }
+
+
+def verify_genshin_graphics_snapshot(snapshot):
+    """Verify only the allowlisted fields contained in a manual graphics snapshot."""
+    if os.name != 'nt':
+        raise WorkflowError('原神画质隔离校验仅支持 Windows。')
+    # Reuse the strict allowlist and schema checks without mutating the live value.
+    restore_genshin_general_data(b'{"graphicsData":"{}","globalPerfData":"{}"}\0', snapshot)
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, GENSHIN_REGISTRY_PATH, 0,
+                            winreg.KEY_QUERY_VALUE) as key:
+            raw, raw_type = winreg.QueryValueEx(key, GENSHIN_GENERAL_DATA_VALUE)
+            if raw_type != winreg.REG_BINARY:
+                return False
+            root = _decode_genshin_general_data(raw)
+            if any(root.get(name) != value
+                   for name, value in snapshot['generalDataFields'].items()):
+                return False
+            for name, item in snapshot['registryValues'].items():
+                try:
+                    value, value_type = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    return False
+                if value != item['value'] or value_type != item['type']:
+                    return False
+    except OSError as exc:
+        raise WorkflowError('无法复核已恢复的手动画质配置。') from exc
+    return True
 
 
 def _graphics_lease_path(root):
@@ -362,6 +398,174 @@ def ensure_genshin_graphics_profile(profile_path):
         'previous': previous,
         'changed': changed,
     }
+
+
+def normalize_genshin_display_settings(settings):
+    """Validate the automation-only 16:9 game window settings."""
+    if not isinstance(settings, dict):
+        raise WorkflowError('gameDisplaySettings 必须是对象。')
+    allowed = {'width', 'height', 'windowed', 'monitor'}
+    if set(settings) - allowed:
+        raise WorkflowError('gameDisplaySettings 包含不支持的字段。')
+    width = settings.get('width')
+    height = settings.get('height')
+    windowed = settings.get('windowed')
+    monitor = settings.get('monitor', 0)
+    if (not isinstance(width, int) or isinstance(width, bool)
+            or not 1280 <= width <= 7680):
+        raise WorkflowError('gameDisplaySettings.width 必须是 1280..7680 的整数。')
+    if (not isinstance(height, int) or isinstance(height, bool)
+            or not 720 <= height <= 4320):
+        raise WorkflowError('gameDisplaySettings.height 必须是 720..4320 的整数。')
+    if width * 9 != height * 16:
+        raise WorkflowError('自动化窗口必须使用 16:9 分辨率。')
+    if not isinstance(windowed, bool):
+        raise WorkflowError('gameDisplaySettings.windowed 必须是布尔值。')
+    if (not isinstance(monitor, int) or isinstance(monitor, bool)
+            or not 0 <= monitor <= 15):
+        raise WorkflowError('gameDisplaySettings.monitor 必须是 0..15 的整数。')
+    return {'width': width, 'height': height, 'windowed': windowed, 'monitor': monitor}
+
+
+def _genshin_display_registry_values(settings):
+    value = normalize_genshin_display_settings(settings)
+    return {
+        GENSHIN_DISPLAY_REGISTRY_NAMES['width']: value['width'],
+        GENSHIN_DISPLAY_REGISTRY_NAMES['height']: value['height'],
+        # Genshin's stored value is a fullscreen boolean: 0=windowed, 1=fullscreen.
+        GENSHIN_DISPLAY_REGISTRY_NAMES['windowed']: 0 if value['windowed'] else 1,
+        GENSHIN_DISPLAY_REGISTRY_NAMES['monitor']: value['monitor'],
+    }
+
+
+def ensure_genshin_display_settings(settings):
+    """Apply automation window size before a cold game start."""
+    if os.name != 'nt':
+        raise WorkflowError('自动设置原神窗口仅支持 Windows。')
+    desired = _genshin_display_registry_values(settings)
+    normalized = normalize_genshin_display_settings(settings)
+    import winreg
+    previous = {}
+    changed = []
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, GENSHIN_REGISTRY_PATH, 0,
+                            winreg.KEY_QUERY_VALUE | winreg.KEY_SET_VALUE) as key:
+            for name, wanted in desired.items():
+                try:
+                    current, value_type = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    current, value_type = None, None
+                previous[name] = current
+                if current != wanted or value_type != winreg.REG_DWORD:
+                    winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, wanted)
+                    changed.append(name)
+    except OSError as exc:
+        raise WorkflowError('无法写入原神自动化窗口配置；未启动游戏。') from exc
+    return {
+        'width': normalized['width'],
+        'height': normalized['height'],
+        'windowed': normalized['windowed'],
+        'monitor': normalized['monitor'],
+        'changed': bool(changed),
+        'changedFields': changed,
+        'previous': previous,
+    }
+
+
+def assess_genshin_automation_graphics(raw, *, profile=None, quality_level=None,
+                                       registry_values=None, display_settings=None):
+    """Compare current graphics values with the requested profile without exposing identity data."""
+    root = _decode_genshin_general_data(raw)
+    try:
+        stored_graphics = root['graphicsData']
+        stored_perf = root['globalPerfData']
+        graphics = (json.loads(stored_graphics)
+                    if isinstance(stored_graphics, str) else stored_graphics)
+        perf = json.loads(stored_perf) if isinstance(stored_perf, str) else stored_perf
+        if not isinstance(graphics, dict) or not isinstance(perf, dict):
+            raise TypeError('graphics sections are not objects')
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise WorkflowError('无法安全校验原神兼容模式图形配置。') from exc
+
+    profile_matched = None
+    if profile is not None:
+        profile_matched = (graphics == profile.get('graphicsData')
+                           and perf == profile.get('globalPerfData'))
+    quality_matched = None
+    if quality_level is not None:
+        quality_matched = graphics.get('currentVolatielGrade') == quality_level
+
+    display = None
+    display_matched = None
+    if display_settings is not None:
+        desired = _genshin_display_registry_values(display_settings)
+        current_values = registry_values or {}
+        display_matched = all(current_values.get(name) == value
+                              for name, value in desired.items())
+        normalized = normalize_genshin_display_settings(display_settings)
+        fullscreen_value = current_values.get(
+            GENSHIN_DISPLAY_REGISTRY_NAMES['windowed'])
+        display = {
+            'width': current_values.get(GENSHIN_DISPLAY_REGISTRY_NAMES['width']),
+            'height': current_values.get(GENSHIN_DISPLAY_REGISTRY_NAMES['height']),
+            'windowed': None if fullscreen_value is None else fullscreen_value == 0,
+            'monitor': current_values.get(GENSHIN_DISPLAY_REGISTRY_NAMES['monitor']),
+            'expectedWidth': normalized['width'],
+            'expectedHeight': normalized['height'],
+            'expectedWindowed': normalized['windowed'],
+        }
+
+    checks = [value for value in (profile_matched, quality_matched, display_matched)
+              if value is not None]
+    return {
+        'compatibleProfileMatched': profile_matched,
+        'qualityMatched': quality_matched,
+        'displayRegistryMatched': display_matched,
+        'displayRegistry': display,
+        'allMatched': bool(checks) and all(checks),
+    }
+
+
+def verify_genshin_automation_graphics(*, profile_path=None, quality_level=None,
+                                       display_settings=None):
+    """Read back the running user's graphics-only registry fields."""
+    if os.name != 'nt':
+        raise WorkflowError('原神启动画质校验仅支持 Windows。')
+    profile = read_json(profile_path) if profile_path else None
+    desired_display = (_genshin_display_registry_values(display_settings)
+                       if display_settings is not None else {})
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, GENSHIN_REGISTRY_PATH, 0,
+                            winreg.KEY_QUERY_VALUE) as key:
+            raw, raw_type = winreg.QueryValueEx(key, GENSHIN_GENERAL_DATA_VALUE)
+            if raw_type != winreg.REG_BINARY:
+                raise WorkflowError('原神 GENERAL_DATA 注册表类型不是 REG_BINARY。')
+            values = {}
+            for name in desired_display:
+                try:
+                    value, value_type = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    value, value_type = None, None
+                values[name] = value if value_type == winreg.REG_DWORD else None
+    except WorkflowError:
+        raise
+    except OSError as exc:
+        raise WorkflowError('无法读取原神启动后的图形配置。') from exc
+    result = assess_genshin_automation_graphics(
+        raw, profile=profile, quality_level=quality_level,
+        registry_values=values, display_settings=display_settings)
+    result['checkedAt'] = utc_now()
+    return result
+
+
+def observed_bgi_game_size(text):
+    """Return the last client size reported by BetterGI's capture initialization."""
+    matches = re.findall(r'游戏大小\s*"?(\d+)x(\d+)', text or '')
+    if not matches:
+        return None
+    width, height = matches[-1]
+    return {'width': int(width), 'height': int(height)}
 
 
 def ensure_genshin_graphics_quality(quality_level):
@@ -925,16 +1129,20 @@ class WindowsHost:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
+        # With an existing root, this main-session process only forwards the command and exits.
+        # Exclude it from the root count while it remains visible in the process snapshot.
+        transient_trigger_pid = trigger.pid if root_before else None
         deadline = time.monotonic() + max(1, float(timeout_sec))
         while time.monotonic() < deadline:
             child_session_id = self.child_session_id()
             all_bgi = self.processes(bettergi_names)
-            root_pids = [pid for pid in all_bgi
-                         if self.process_session(pid) == main_session_id]
-            child_pids = [] if child_session_id is None else [
-                pid for pid in all_bgi if self.process_session(pid) == child_session_id]
-            other_pids = [pid for pid in all_bgi
-                          if pid not in root_pids and pid not in child_pids]
+            pid_sessions = {pid: self.process_session(pid) for pid in all_bgi}
+            if (transient_trigger_pid in pid_sessions
+                    and pid_sessions[transient_trigger_pid] != main_session_id):
+                raise WorkflowError('桌面分身命令转发进程出现在错误的 Windows 会话。', 6)
+            root_pids, child_pids, other_pids = classify_bettergi_session_processes(
+                pid_sessions, main_session_id, child_session_id,
+                ignored_pids=([transient_trigger_pid] if transient_trigger_pid is not None else []))
             if len(root_pids) > 1 or len(child_pids) > 1 or other_pids:
                 raise WorkflowError('桌面分身 BetterGI 实例数量或会话归属异常，已停止启动。', 6)
             if root_pids and not self.process_elevated(root_pids[0]):
@@ -1005,7 +1213,7 @@ def task_selection(template, task=None, profile='configured'):
         selected = [i for i in order if enabled[i] is True]
         profiles = {
             'configured': None,
-            'core': {'合成树脂', '自动秘境', '领取每日奖励'},
+            'core': {'领取邮件', '合成树脂', '自动秘境', '领取每日奖励'},
             'extras': {'领取邮件', '自动地脉花', '领取尘歌壶奖励'},
         }
         if profile not in profiles:
@@ -1085,6 +1293,7 @@ def packet_for(result):
         'warnings': [str(e)[:450] for e in result.get('warnings', [])[-10:]],
         'rewards': result.get('rewards', {}),
         'resinEvents': result.get('resinEvents', [])[-12:],
+        'hoyolabCheckin': result.get('hoyolabCheckin'),
         'performance': {'currentStage': result.get('performance', {}).get('currentStage'),
                         'bottlenecks': result.get('performance', {}).get('bottlenecks', [])[:4]},
         'allowedRecommendations': ['report', 'inspect_evidence', 'recommend_single_task_retry', 'stop'],
@@ -1153,6 +1362,52 @@ def prior_success(root, game_date, names):
     return None
 
 
+def prior_verified_tasks(root, game_date, names):
+    """Return same-day task successes used only to resume a user-authorized full workflow."""
+    wanted = set(names)
+    verified = {}
+    for path in sorted((root / 'logs/runs').glob('*/result.json')):
+        try:
+            value = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if value.get('gameDate') != game_date or value.get('mode') in {'dry-run', 'graphics-check'}:
+            continue
+        run_id = value.get('runId')
+        if not isinstance(run_id, str):
+            continue
+        for task in value.get('tasks', []):
+            name = task.get('name')
+            if name in wanted and task.get('status') in {'success', 'skipped'}:
+                verified[name] = run_id
+    return verified
+
+
+def build_profile_completion(requested_names, current_tasks, resumed_tasks, current_run_id):
+    """Describe composite same-day completion without copying rewards or inventory across runs."""
+    statuses = {}
+    for item in resumed_tasks or []:
+        if item.get('name') in requested_names and isinstance(item.get('runId'), str):
+            statuses[item['name']] = {
+                'name': item['name'], 'status': 'success',
+                'source': 'prior_verified_run', 'runId': item['runId']}
+    for task in current_tasks or []:
+        name = task.get('name')
+        if name in requested_names:
+            statuses[name] = {
+                'name': name, 'status': task.get('status', 'unknown'),
+                'source': 'current_run', 'runId': current_run_id}
+    rows = [statuses.get(name, {
+        'name': name, 'status': 'unknown', 'source': 'missing', 'runId': None})
+        for name in requested_names]
+    complete = bool(rows) and all(row['status'] in {'success', 'skipped'} for row in rows)
+    return {
+        'status': 'completed' if complete else 'incomplete',
+        'requestedTasks': list(requested_names),
+        'tasks': rows,
+    }
+
+
 def check_resource_policy(global_config, names):
     if '自动秘境' in names:
         domain = global_config.get('autoDomainConfig', {})
@@ -1176,6 +1431,20 @@ def same_executable_path(actual, expected):
     def identity(value):
         return os.path.normcase(os.path.abspath(os.fspath(value))).replace('/', '\\').casefold()
     return identity(actual) == identity(expected)
+
+
+def classify_bettergi_session_processes(pid_sessions, main_session_id, child_session_id,
+                                         ignored_pids=()):
+    """Split BetterGI PIDs by Windows session while excluding a known command forwarder."""
+    ignored = {pid for pid in ignored_pids if pid is not None}
+    active = {int(pid): int(session) for pid, session in pid_sessions.items()
+              if int(pid) not in ignored}
+    roots = sorted(pid for pid, session in active.items() if session == main_session_id)
+    children = ([] if child_session_id is None else
+                sorted(pid for pid, session in active.items() if session == child_session_id))
+    known = set(roots) | set(children)
+    others = sorted(pid for pid in active if pid not in known)
+    return roots, children, others
 
 
 def inspect_child_session_environment(host, cfg, exe):
@@ -1239,6 +1508,10 @@ def execute(args, host=None):
     from plan_resin import build_plan
     from analyze_run import analyze_log
     from performance import analyze_performance
+    try:
+        from checkin_hoyolab import execute_hoyolab_checkin
+    except ImportError:
+        from scripts.checkin_hoyolab import execute_hoyolab_checkin
     root = Path(args.root).resolve()
     if not (root / 'config').is_dir():
         raise WorkflowError('工作区缺少 config 目录。')
@@ -1246,8 +1519,11 @@ def execute(args, host=None):
     run_id = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid4().hex[:8]
     directory = root / 'logs/runs' / run_id
     directory.mkdir(parents=True)
+    graphics_check_only = bool(getattr(args, 'graphics_check', False))
     result = {'schemaVersion': 2, 'runId': run_id, 'runnerPid': os.getpid(),
-              'mode': 'dry-run' if args.dry_run else ('checkpoint' if args.task else 'daily'),
+              'mode': ('dry-run' if args.dry_run else
+                       'graphics-check' if graphics_check_only else
+                       'checkpoint' if args.task else 'daily'),
               'triggeredAt': utc_now(), 'finishedAt': None, 'outcome': 'running',
               'executionOutcome': 'preflight', 'expectedTasks': [], 'tasks': [],
               'errors': [], 'warnings': [], 'notes': [], 'logArchive': str(directory)}
@@ -1269,6 +1545,9 @@ def execute(args, host=None):
     cfg = None
     graphics_profile = None
     graphics_quality = None
+    display_settings = None
+    graphics_verification_required = False
+    graphics_verification_timeout = 0.0
     graphics_lease = None
     graphics_isolation_enabled = False
     persistent_warnings = []
@@ -1279,23 +1558,45 @@ def execute(args, host=None):
             publish(root, directory, result, current=not args.dry_run)
             try:
                 cfg = read_json(root / 'config/settings.json')
-                execution_mode = cfg.get('executionMode', 'foreground')
+                if graphics_check_only and args.task:
+                    raise WorkflowError('启动画质验收不能与单节点任务同时运行。')
+                execution_mode = getattr(args, 'execution_mode', None) or cfg.get('executionMode', 'foreground')
                 if execution_mode not in {'foreground', 'childSession'}:
                     raise WorkflowError('executionMode 只能是 foreground 或 childSession。')
                 result['executionMode'] = execution_mode
                 graphics_profile = cfg.get('gameGraphicsProfile')
                 graphics_quality = cfg.get('gameGraphicsQualityLevel')
+                display_settings = cfg.get('gameDisplaySettings')
+                if display_settings is not None:
+                    display_settings = normalize_genshin_display_settings(display_settings)
                 if graphics_profile and graphics_quality is not None:
                     raise WorkflowError(
                         'gameGraphicsProfile 与 gameGraphicsQualityLevel 不能同时启用。')
                 graphics_isolation_enabled = bool(
                     cfg.get('restoreManualGraphicsAfterRun', True)
-                    and (graphics_profile or graphics_quality is not None))
+                    and (graphics_profile or graphics_quality is not None
+                         or display_settings is not None))
+                graphics_verification_required = bool(
+                    cfg.get('verifyAutomationGraphicsAfterStart', True)
+                    and (graphics_profile or graphics_quality is not None
+                         or display_settings is not None))
+                graphics_verification_timeout = max(
+                    10.0, min(180.0, float(cfg.get('graphicsVerificationTimeoutSec', 90))))
+                if graphics_check_only and not graphics_verification_required:
+                    raise WorkflowError(
+                        '启动画质验收要求启用 verifyAutomationGraphicsAfterStart，并配置画质或窗口。')
                 result['graphicsIsolation'] = {
                     'enabled': graphics_isolation_enabled,
                     'automationProfile': (str(resolved(root, graphics_profile))
                                           if graphics_profile else None),
                     'restoreAfterRun': graphics_isolation_enabled,
+                }
+                result['graphicsVerification'] = {
+                    'required': graphics_verification_required,
+                    'state': 'not_started' if graphics_verification_required else 'disabled',
+                    'timeoutSec': graphics_verification_timeout,
+                    'expectedWindow': (dict(display_settings)
+                                       if display_settings is not None else None),
                 }
 
                 def observed_game_pids():
@@ -1419,6 +1720,22 @@ def execute(args, host=None):
                 template = read_json(base_path)
                 profile = getattr(args, 'profile', None) or cfg.get('defaultProfile', 'configured')
                 selected, names = task_selection(template, args.task, profile)
+                requested_profile_tasks = list(names)
+                result['requestedProfileTasks'] = requested_profile_tasks
+                if (not args.task and not graphics_check_only and not args.allow_repeat
+                        and cfg.get('resumeVerifiedTasks', True)):
+                    verified = prior_verified_tasks(root, result['gameDate'], names)
+                    if verified:
+                        definitions = template['TaskDefinitions']
+                        selected = [task_id for task_id in selected
+                                    if definitions[task_id] not in verified]
+                        names = [definitions[task_id] for task_id in selected]
+                        result['resumedVerifiedTasks'] = [
+                            {'name': name, 'runId': verified[name]}
+                            for name in template['TaskDefinitions'].values() if name in verified]
+                        if not selected:
+                            raise WorkflowError(
+                                '同一游戏日的所选节点均已有成功或合法跳过证据，本次未重复运行。', 6)
                 result['expectedTasks'] = names
                 result['profile'] = 'checkpoint' if args.task else profile
                 result['timeBudget'] = time_budget(cfg, args.task, profile, args.timeout_minutes)
@@ -1550,12 +1867,19 @@ def execute(args, host=None):
                 persistent_warnings = list(result['warnings'])
 
                 if args.dry_run:
+                    if not graphics_check_only:
+                        hoyolab_summary = execute_hoyolab_checkin(root, dry_run=True)
+                        result['hoyolabCheckin'] = hoyolab_summary
+                        if hoyolab_summary.get('warning'):
+                            result['warnings'].append(hoyolab_summary['warning'])
                     result.update(outcome='planned', executionOutcome='not_started')
                     code = 0
                 else:
-                    if not args.task and cfg.get('checkpointOnly', True):
+                    if (not args.task and not graphics_check_only
+                            and cfg.get('checkpointOnly', True)):
                         raise WorkflowError('当前处于检查点阶段：请指定单项任务，完成实机验收后再启用整条龙。')
-                    previous = prior_success(root, result['gameDate'], names)
+                    previous = (None if graphics_check_only
+                                else prior_success(root, result['gameDate'], names))
                     if previous and not args.allow_repeat:
                         raise WorkflowError('同一游戏日已有成功记录 ' + previous + '，本次未重复运行。', 6)
                     # Recheck after delay/planning. Never adopt an unrelated or replaced instance.
@@ -1576,7 +1900,9 @@ def execute(args, host=None):
                         next_reset += timedelta(days=1)
                     if timeout_minutes * 60 + 120 >= (next_reset - now).total_seconds():
                         raise WorkflowError('运行预算可能跨越服务器每日刷新；请缩短本次超时或刷新后再运行。')
-                    if adopted_game_pid is None and (graphics_profile or graphics_quality is not None):
+                    if adopted_game_pid is None and (
+                            graphics_profile or graphics_quality is not None
+                            or display_settings is not None):
                         unexpected_game_pids = host.processes(cfg['gameProcessNames'])
                         if unexpected_game_pids:
                             raise WorkflowError(
@@ -1589,8 +1915,26 @@ def execute(args, host=None):
                         if graphics_profile:
                             result['graphicsProfile'] = ensure_genshin_graphics_profile(
                                 resolved(root, graphics_profile))
-                        else:
+                        elif graphics_quality is not None:
                             result['graphicsPreset'] = ensure_genshin_graphics_quality(graphics_quality)
+                        if display_settings is not None:
+                            result['displayProfile'] = ensure_genshin_display_settings(display_settings)
+                        prelaunch_graphics = verify_genshin_automation_graphics(
+                            profile_path=(resolved(root, graphics_profile)
+                                          if graphics_profile else None),
+                            quality_level=graphics_quality,
+                            display_settings=display_settings)
+                        result['graphicsVerification'].update(
+                            state='prelaunch_verified', prelaunch=prelaunch_graphics)
+                        if not prelaunch_graphics.get('allMatched'):
+                            raise WorkflowError(
+                                '自动化画质或窗口配置写入后校验失败；未启动游戏。')
+                    if not graphics_check_only:
+                        hoyolab_summary = execute_hoyolab_checkin(root, dry_run=False)
+                        result['hoyolabCheckin'] = hoyolab_summary
+                        if hoyolab_summary.get('warning'):
+                            result['warnings'].append(hoyolab_summary['warning'])
+                            persistent_warnings.append(hoyolab_summary['warning'])
                     atomic_json(runtime_path, generated)
                     result['runtimeConfig'] = str(runtime_path)
                     logs = resolved(root, cfg['bettergiLogDir'])
@@ -1623,6 +1967,7 @@ def execute(args, host=None):
                     game_seen = bool(observed_game_pids())
                     owned_game_pids.update(observed_game_pids())
                     game_first_seen_elapsed = 0.0 if game_seen else None
+                    graphics_last_check_elapsed = None
                     termination = 'exited'
                     termination_error = None
                     while True:
@@ -1758,6 +2103,75 @@ def execute(args, host=None):
                         result['warnings'] = list(dict.fromkeys(
                             persistent_warnings + log_warnings + analysis.get('warnings', [])))
 
+                        if (graphics_check_only
+                                and any(task.get('elapsedSec') is not None
+                                        for task in performance.get('tasks', []))):
+                            termination = 'graphics_check_guard_failed'
+                            termination_error = (
+                                '启动画质验收期间检测到日常节点已经开始；'
+                                '已立即停止且不把本次验收记为成功。')
+                            break
+
+                        if (graphics_verification_required and adopted_game_pid is None
+                                and game_first_seen_elapsed is not None):
+                            should_check_registry = (
+                                graphics_last_check_elapsed is None
+                                or elapsed - graphics_last_check_elapsed >= 5)
+                            if should_check_registry:
+                                runtime_graphics = verify_genshin_automation_graphics(
+                                    profile_path=(resolved(root, graphics_profile)
+                                                  if graphics_profile else None),
+                                    quality_level=graphics_quality,
+                                    display_settings=display_settings)
+                                result['graphicsVerification']['runtimeRegistry'] = runtime_graphics
+                                graphics_last_check_elapsed = elapsed
+                            else:
+                                runtime_graphics = result['graphicsVerification'].get(
+                                    'runtimeRegistry', {})
+
+                            observed_size = observed_bgi_game_size(text)
+                            if observed_size is not None:
+                                result['graphicsVerification']['observedWindow'] = observed_size
+                            expected_size_matched = True
+                            if display_settings is not None:
+                                expected_size_matched = (
+                                    observed_size is not None
+                                    and observed_size['width'] == display_settings['width']
+                                    and observed_size['height'] == display_settings['height'])
+                            result['graphicsVerification']['windowSizeMatched'] = (
+                                expected_size_matched if observed_size is not None
+                                or display_settings is None else None)
+
+                            if observed_size is not None and (
+                                    not runtime_graphics.get('allMatched')
+                                    or not expected_size_matched):
+                                result['graphicsVerification']['state'] = 'failed'
+                                termination = 'graphics_verification_failed'
+                                if not expected_size_matched:
+                                    termination_error = (
+                                        f'原神实际窗口为 {observed_size["width"]}x'
+                                        f'{observed_size["height"]}，预期为 '
+                                        f'{display_settings["width"]}x{display_settings["height"]}；'
+                                        '已在执行日常任务前停止。')
+                                else:
+                                    termination_error = (
+                                        '原神启动后的兼容模式或窗口注册表值与自动化配置不一致；'
+                                        '已在执行日常任务前停止。')
+                                break
+                            if runtime_graphics.get('allMatched') and expected_size_matched:
+                                result['graphicsVerification'].update(
+                                    state='passed', passedAt=utc_now())
+                                if graphics_check_only:
+                                    termination = 'graphics_check_passed'
+                                    break
+                            elif elapsed - game_first_seen_elapsed >= graphics_verification_timeout:
+                                result['graphicsVerification']['state'] = 'failed'
+                                termination = 'graphics_verification_failed'
+                                termination_error = (
+                                    f'原神启动后 {graphics_verification_timeout:.0f} 秒内未完成'
+                                    '兼容模式与窗口尺寸校验；已在继续执行前停止。')
+                                break
+
                         if (not launcher_cleanup_done
                                 and cfg.get('closeGameLauncherAfterTaskStarts')
                                 and launcher_names
@@ -1806,10 +2220,21 @@ def execute(args, host=None):
                     result['errors'] = list(dict.fromkeys(saved_errors + result.get('errors', [])))
                     result['warnings'] = list(dict.fromkeys(
                         persistent_warnings + result.get('warnings', []) + log_warnings))
+                    result['profileCompletion'] = build_profile_completion(
+                        result.get('requestedProfileTasks', result.get('expectedTasks', [])),
+                        result.get('tasks', []), result.get('resumedVerifiedTasks', []), run_id)
+                    if termination == 'graphics_check_passed':
+                        result.update(
+                            outcome='completed', expectedTasks=[], tasks=[], rewards={}, resinEvents=[])
+                        result['notes'].append(
+                            '仅完成原神兼容模式与 1920x1080 窗口启动验收，未执行日常节点。')
                     if hashlib.sha256(base_path.read_bytes()).hexdigest() != result['baseConfigSha256']:
                         result['warnings'].append('生产一条龙配置在运行期间被其他进程修改。')
                     code = (3 if termination in {
                                 'timeout', 'stage_timeout', 'network_guard_failed', 'resource_pressure'} else
+                            4 if termination == 'graphics_verification_failed' else
+                            4 if termination == 'graphics_check_guard_failed' else
+                            0 if termination == 'graphics_check_passed' else
                             9 if termination == 'cancelled' else
                             6 if termination == 'adopted_game_changed' else
                             EXIT_CODES.get(result['outcome'], 1))
@@ -1918,7 +2343,11 @@ def main(argv=None):
     run.add_argument('--allow-repeat', action='store_true')
     run.add_argument('--keep-game', action='store_true')
     run.add_argument('--allow-existing-game', action='store_true')
+    run.add_argument('--graphics-check', action='store_true',
+                     help='只验证冷启动画质与窗口，不执行日常节点')
     run.add_argument('--timeout-minutes', type=float, default=0)
+    run.add_argument('--execution-mode', choices=['foreground', 'childSession'],
+                     help='覆盖配置中的执行模式')
     for name in ('status', 'stop', 'review'):
         sub = commands.add_parser(name)
         sub.add_argument('--run-id')

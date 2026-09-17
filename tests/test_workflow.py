@@ -160,8 +160,18 @@ class WorkflowTests(unittest.TestCase):
             'allowBookCrafting': False,
             'avgGoldBooksPerRun': 1.5,
             'characters': [{
-                'name': '示例角色', 'talentSeries': None, 'talents': [],
-                'talentParty': '', 'artifactDomain': '示例秘境', 'artifactParty': ''
+                'name': '钟离',
+                'characterId': 10000030,
+                'priority': 1,
+                'domains': [{
+                    'domain': '太山府',
+                    'dayOfWeek': [3, 6, 7],
+                    'rewardIndex': 1,
+                    'bookSeries': '黄金'
+                }],
+                'talentParty': '',
+                'artifactDomain': '逆悬的冰河',
+                'artifactParty': ''
             }],
         })
         self.base_path = self.root / 'BetterGI/User/OneDragon/DailyOneDragon.json'
@@ -179,10 +189,11 @@ class WorkflowTests(unittest.TestCase):
         (self.root / 'game.exe').write_bytes(b'')
 
     def run_flow(self, *, dry=False, task='合成树脂', host=None,
-                 keep_game=False, allow_existing_game=False):
+                 keep_game=False, allow_existing_game=False, graphics_check=False):
         args = argparse.Namespace(root=str(self.root), dry_run=dry, task=task,
                                   timeout_minutes=1, no_delay=True, allow_repeat=False,
-                                  keep_game=keep_game, allow_existing_game=allow_existing_game)
+                                  keep_game=keep_game, allow_existing_game=allow_existing_game,
+                                  graphics_check=graphics_check)
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch.object(wf, 'datetime', FixedClock):
             code = wf.execute(args, host or FakeHost(self.root))
@@ -244,6 +255,53 @@ class WorkflowTests(unittest.TestCase):
 
         with self.assertRaises(wf.WorkflowError):
             wf.update_genshin_general_data_profile(raw, profile)
+
+    def test_automation_display_requires_windowed_16_by_9_values(self):
+        expected = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.assertEqual(wf.normalize_genshin_display_settings(expected), expected)
+        values = wf._genshin_display_registry_values(expected)
+        self.assertEqual(values[wf.GENSHIN_DISPLAY_REGISTRY_NAMES['width']], 1920)
+        self.assertEqual(values[wf.GENSHIN_DISPLAY_REGISTRY_NAMES['height']], 1080)
+        self.assertEqual(values[wf.GENSHIN_DISPLAY_REGISTRY_NAMES['windowed']], 0)
+        for bad in (
+                {'width': 1920, 'height': 1200, 'windowed': True},
+                {'width': 1920, 'height': 1080, 'windowed': 'yes'},
+                {'width': 640, 'height': 360, 'windowed': True},
+                {'width': 1920, 'height': 1080, 'windowed': True, 'unknown': 1}):
+            with self.assertRaises(wf.WorkflowError):
+                wf.normalize_genshin_display_settings(bad)
+
+    def test_graphics_verification_compares_profile_and_display_without_identity(self):
+        profile = wf.read_json(ROOT / 'config/genshin-compat-profile.json')
+        raw = json.dumps({
+            'graphicsData': json.dumps(profile['graphicsData'], separators=(',', ':')),
+            'globalPerfData': json.dumps(profile['globalPerfData'], separators=(',', ':')),
+            'curAccountName': 'private-account',
+            'targetUID': 'private-uid',
+        }, separators=(',', ':')).encode() + b'\0'
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        values = wf._genshin_display_registry_values(display)
+
+        result = wf.assess_genshin_automation_graphics(
+            raw, profile=profile, registry_values=values, display_settings=display)
+
+        self.assertTrue(result['allMatched'])
+        self.assertTrue(result['compatibleProfileMatched'])
+        self.assertTrue(result['displayRegistryMatched'])
+        serialized = json.dumps(result)
+        self.assertNotIn('private-account', serialized)
+        self.assertNotIn('private-uid', serialized)
+        values[wf.GENSHIN_DISPLAY_REGISTRY_NAMES['width']] = 2560
+        mismatch = wf.assess_genshin_automation_graphics(
+            raw, profile=profile, registry_values=values, display_settings=display)
+        self.assertFalse(mismatch['allMatched'])
+        self.assertFalse(mismatch['displayRegistryMatched'])
+
+    def test_bettergi_reported_game_size_uses_last_capture_window(self):
+        text = ('遮罩窗口已启动，游戏大小2560x1440，素材缩放1.00\n'
+                '遮罩窗口已启动，游戏大小1920x1080，素材缩放1.00\n')
+        self.assertEqual(wf.observed_bgi_game_size(text), {'width': 1920, 'height': 1080})
+        self.assertIsNone(wf.observed_bgi_game_size('尚未初始化截图器'))
 
     def test_graphics_snapshot_excludes_identity_and_restores_only_graphics(self):
         manual = {
@@ -341,6 +399,77 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(wf.read_json(
             self.root / 'state/graphics-profile-lease.json')['state'], 'restored')
 
+    def test_wrong_runtime_window_size_stops_before_daily_tasks(self):
+        outer = self
+
+        class WrongSizeHost(FakeHost):
+            def launch(self, exe, name):
+                self.launched = True
+                self.process = FakeProcess(stuck=True)
+                (exe.parent / 'log/new.log').write_text(
+                    f'参数指定的一条龙配置：{name}\n'
+                    '遮罩窗口已启动，游戏大小2560x1440，素材缩放1.00\n',
+                    encoding='utf-8')
+                return self.process
+
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.cfg.update(gameDisplaySettings=display,
+                        verifyAutomationGraphicsAfterStart=True,
+                        restoreManualGraphicsAfterRun=False)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        verified = {
+            'compatibleProfileMatched': None, 'qualityMatched': None,
+            'displayRegistryMatched': True, 'displayRegistry': display,
+            'allMatched': True, 'checkedAt': '2026-09-12T12:00:00+00:00'}
+        with (patch.object(wf, 'ensure_genshin_display_settings',
+                           return_value={'changed': True}),
+              patch.object(wf, 'verify_genshin_automation_graphics',
+                           return_value=verified)):
+            code, result = self.run_flow(host=WrongSizeHost(outer.root))
+
+        self.assertEqual(code, 4)
+        self.assertEqual(result['executionOutcome'], 'graphics_verification_failed')
+        self.assertEqual(result['graphicsVerification']['state'], 'failed')
+        self.assertEqual(result['graphicsVerification']['observedWindow'],
+                         {'width': 2560, 'height': 1440})
+        self.assertIn('执行日常任务前停止', ' '.join(result['errors']))
+
+    def test_graphics_check_exits_successfully_without_running_daily_tasks(self):
+        outer = self
+
+        class CorrectSizeHost(FakeHost):
+            def launch(self, exe, name):
+                self.launched = True
+                self.process = FakeProcess(stuck=True)
+                (exe.parent / 'log/new.log').write_text(
+                    f'参数指定的一条龙配置：{name}\n'
+                    '遮罩窗口已启动，游戏大小1920x1080，素材缩放1.00\n',
+                    encoding='utf-8')
+                return self.process
+
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.cfg.update(gameDisplaySettings=display,
+                        verifyAutomationGraphicsAfterStart=True,
+                        restoreManualGraphicsAfterRun=False)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        verified = {
+            'compatibleProfileMatched': None, 'qualityMatched': None,
+            'displayRegistryMatched': True, 'displayRegistry': display,
+            'allMatched': True, 'checkedAt': '2026-09-12T12:00:00+00:00'}
+        with (patch.object(wf, 'ensure_genshin_display_settings',
+                           return_value={'changed': True}),
+              patch.object(wf, 'verify_genshin_automation_graphics',
+                           return_value=verified)):
+            code, result = self.run_flow(
+                host=CorrectSizeHost(outer.root), task=None, graphics_check=True)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(result['mode'], 'graphics-check')
+        self.assertEqual(result['executionOutcome'], 'graphics_check_passed')
+        self.assertEqual(result['outcome'], 'completed')
+        self.assertEqual(result['expectedTasks'], [])
+        self.assertEqual(result['tasks'], [])
+
     def test_dry_run_preserves_base_and_previous_result(self):
         wf.atomic_json(self.root / 'results.json', {'sentinel': 42})
         host = FakeHost(self.root, admin=False)
@@ -410,6 +539,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['childSessionId'], host.CHILD_SESSION)
         self.assertNotIn(host.ROOT_PID, host.stopped)
 
+    def test_child_session_classification_ignores_existing_root_command_forwarder(self):
+        roots, children, others = wf.classify_bettergi_session_processes(
+            {700001: 5, 700003: 5, 700002: 9}, 5, 9, ignored_pids=[700003])
+        self.assertEqual(roots, [700001])
+        self.assertEqual(children, [700002])
+        self.assertEqual(others, [])
+
+        roots, children, others = wf.classify_bettergi_session_processes(
+            {700003: 5, 700002: 9}, 5, 9)
+        self.assertEqual(roots, [700003])
+        self.assertEqual(children, [700002])
+        self.assertEqual(others, [])
+
     def test_child_session_timeout_stops_only_child(self):
         self.cfg['executionMode'] = 'childSession'
         wf.atomic_json(self.root / 'config/settings.json', self.cfg)
@@ -470,6 +612,50 @@ class WorkflowTests(unittest.TestCase):
                        {'runId': 'previous', 'gameDate': '2026-09-12', 'outcome': 'partial',
                         'mode': 'daily', 'tasks': [{'name': '合成树脂', 'status': 'success'}]})
         self.assertEqual(wf.prior_success(self.root, '2026-09-12', ['合成树脂']), 'previous')
+
+    def test_full_workflow_resume_skips_same_day_verified_task(self):
+        wf.atomic_json(self.root / 'logs/runs/previous/result.json', {
+            'runId': 'previous', 'gameDate': '2026-09-12', 'outcome': 'partial',
+            'mode': 'daily', 'tasks': [
+                {'name': '领取邮件', 'status': 'success'},
+                {'name': '合成树脂', 'status': 'success'},
+                {'name': '自动秘境', 'status': 'unknown'},
+            ]})
+        self.cfg.update(defaultProfile='core', resumeVerifiedTasks=True)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        args = argparse.Namespace(
+            root=str(self.root), dry_run=True, task=None, profile='core',
+            timeout_minutes=1, no_delay=True, allow_repeat=False,
+            keep_game=False, allow_existing_game=False, graphics_check=False)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), patch.object(wf, 'datetime', FixedClock):
+            code = wf.execute(args, FakeHost(self.root, admin=False))
+        result = wf.read_json(json.loads(output.getvalue())['resultPath'])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(result['expectedTasks'], ['自动秘境', '领取每日奖励'])
+        self.assertEqual(result['resumedVerifiedTasks'], [
+            {'name': '领取邮件', 'runId': 'previous'},
+            {'name': '合成树脂', 'runId': 'previous'}])
+        generated = wf.read_json(result['plannedConfig'])
+        enabled_names = {
+            generated['TaskDefinitions'][task_id]
+            for task_id, enabled in generated['TaskEnabledList'].items() if enabled}
+        self.assertEqual(enabled_names, {'自动秘境', '领取每日奖励'})
+
+    def test_profile_completion_combines_only_task_status_and_run_provenance(self):
+        result = wf.build_profile_completion(
+            ['合成树脂', '自动秘境', '领取每日奖励'],
+            [{'name': '领取每日奖励', 'status': 'success',
+              'evidence': [{'text': 'private reward details'}]}],
+            [{'name': '合成树脂', 'runId': 'craft-run'},
+             {'name': '自动秘境', 'runId': 'domain-run'}],
+            'daily-run')
+
+        self.assertEqual(result['status'], 'completed')
+        self.assertEqual([row['runId'] for row in result['tasks']],
+                         ['craft-run', 'domain-run', 'daily-run'])
+        self.assertNotIn('private reward details', json.dumps(result))
 
     def test_only_fresh_owned_log_records_are_read(self):
         directory = self.root / 'BetterGI/log'
@@ -615,12 +801,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn(__import__('os').getpid(), found)
         self.assertTrue(wf.same_executable_path(host.process_path(__import__('os').getpid()), sys.executable))
 
-    def test_core_profile_omits_extras_without_modifying_base(self):
+    def test_core_profile_includes_mail_and_omits_other_extras_without_modifying_base(self):
         template = wf.read_json(self.base_path)
         selected, names = wf.task_selection(template, profile='core')
-        self.assertEqual(names, ['合成树脂', '自动秘境', '领取每日奖励'])
+        self.assertEqual(names, ['领取邮件', '合成树脂', '自动秘境', '领取每日奖励'])
         self.assertEqual(self.base_path.read_bytes(), self.before)
-        self.assertEqual(len(selected), 3)
+        self.assertEqual(len(selected), 4)
         self.assertEqual(wf.task_selection(template, profile='extras')[1], ['领取邮件', '自动地脉花', '领取尘歌壶奖励'])
 
     def test_time_budget_separates_target_and_stop_limit(self):
@@ -653,6 +839,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(host.stopped, [987654])
         self.assertEqual(host.stopped_game_pids, [888])
         self.assertNotEqual(result['outcome'], 'completed')
+
+    def test_hoyolab_checkin_integration_dry_run_and_warning(self):
+        wf.atomic_json(self.root / 'config/hoyolab.json', {
+            'enabled': True, 'cookie': 'ltuid_v2=888888; ltoken_v2=secret',
+        })
+        info_resp = {
+            'retcode': 0, 'message': 'OK',
+            'data': {'is_sign': True, 'total_sign_day': 10, 'today': '2026-09-16'}
+        }
+        with patch('checkin_hoyolab.fetch_checkin_info', return_value=(info_resp, None)):
+            code, result = self.run_flow(dry=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(result['hoyolabCheckin']['status'], 'planned')
+        self.assertEqual(result['hoyolabCheckin']['account'], '88***88')
+        self.assertTrue(result['hoyolabCheckin']['signedToday'])
+        self.assertEqual(result['hoyolabCheckin']['totalSignDays'], 10)
 
 
 if __name__ == '__main__':

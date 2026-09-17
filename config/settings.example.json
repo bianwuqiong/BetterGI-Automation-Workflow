@@ -13,10 +13,25 @@
   "launcherCloseDelayAfterGameSec": 20,
   "launcherMemoryPriority": 3,
   "launcherWorkingSetMaxMB": null,
-  "gameGraphicsProfile": null,
+  "gameGraphicsProfile": "config/genshin-compat-profile.json",
   "gameGraphicsQualityLevel": null,
+  "gameDisplaySettings": {
+    "width": 1920,
+    "height": 1080,
+    "windowed": true,
+    "monitor": 0
+  },
+  "verifyAutomationGraphicsAfterStart": true,
+  "graphicsVerificationTimeoutSec": 90,
   "restoreManualGraphicsAfterRun": true,
   "graphicsRestoreWaitSec": 15,
+  "recordingFfmpegExe": "ffmpeg.exe",
+  "recordingFfprobeExe": "ffprobe.exe",
+  "recordingFrameRate": 15,
+  "recordingWidth": 1280,
+  "recordingQuality": 30,
+  "recordingMinimumFrameCoverage": 0.7,
+  "recordingWindowTimeoutSec": 120,
   "gameMemoryPriority": 3,
   "gameWorkingSetMaxMB": null,
   "bettergiMemoryPriority": 4,
@@ -58,5 +73,6 @@
   "serverUtcOffsetHours": 8,
   "dailyResetHour": 4,
   "pollIntervalSec": 5,
-  "checkpointOnly": true
+  "checkpointOnly": false,
+  "resumeVerifiedTasks": true
 }

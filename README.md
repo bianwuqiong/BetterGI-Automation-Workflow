@@ -7,11 +7,11 @@
 
 一个面向 Windows 的原神日常自动化编排与核验项目。BetterGI 继续负责画面识别、路径、战斗和模拟输入；本项目负责一次运行的任务选择、互斥、时间预算、资源/VPN 保护、画质切换、日志隔离以及完成证据。
 
-当前是 **0.1.x 源码预览版**。合成浓缩树脂、自动秘境和领取每日奖励已分别在前台模式完成实机验证；完整连续 `core` 和桌面子会话仍在验证中。仓库不提供 BetterGI 或原神二进制文件。
+当前是 **0.2.0** 版本。核心日常已完成实机全流程闭环验证（支持 Windows RDP 桌面分身后台免打扰与前台录屏双入口）；启动前支持联动 HoYoLAB 官方网页签到；仓库不提供 BetterGI 或原神二进制文件。
 
 ## 与 BetterGI 的关系
 
-本项目建立在 [BetterGI](https://github.com/babalae/better-genshin-impact) 之上，并维护一个用于工作流的[非官方 BetterGI 修改分支](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-workflow)。修改分支改善了启动焦点、合成证据、秘境阶段边界、古树/领奖识别、运行标识和实验性子会话支持。
+本项目建立在 [BetterGI](https://github.com/babalae/better-genshin-impact) 之上，并维护一个用于工作流的[非官方 BetterGI 修改分支](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-workflow)。修改分支改善了启动焦点、合成证据、秘境阶段边界、古树/领奖识别、邮件防吞重试、运行标识和桌面子会话（Child Session）凭据安全管理。
 
 本项目不是 BetterGI 官方版本，也未获得 BetterGI、米哈游或 HoYoverse 的隶属、赞助或认可。上游代码和版权归 BetterGI 原作者及贡献者；修改版问题请先在本仓库反馈。完整声明见 [NOTICE.md](./NOTICE.md) 和 [许可证说明](./docs/UPSTREAM_AND_LICENSE.md)。
 
@@ -19,8 +19,9 @@ BetterGI 使用 GNU GPL v3，允许修改和再发布，但需要保留声明、
 
 ## 主要能力
 
-- `core`：合成浓缩树脂、自动秘境清理可用树脂、领取每日奖励。
-- `extras`：邮件、地脉花和尘歌壶等奖励节点，与核心耗时分开衡量。
+- `core` 核心日常：HoYoLAB 网页签到（启动前）➜ 领取邮件（收取签到等奖励）➜ 合成浓缩树脂 ➜ 自动秘境清理可用树脂 ➜ 领取每日委托奖励及重新派遣。
+- `extras` 扩展日常：地脉花和尘歌壶等额外奖励节点，与核心耗时分开衡量。
+- 双启动模式：Windows 本地桌面分身（Child Session，后台免打扰静默执行）与前台可见模式（支持 FFmpeg HWND 窗口级高清录屏与覆盖率校验）。
 - 每次生成唯一 OneDragon 配置与 `runId`，避免跨次日志和奖励混算。
 - 依据库存差、树脂使用、奖励识别和明确结束事件核验结果，不把“点击过”视为成功。
 - VPN 进程、可用内存、任务阶段和总时长保护；保护触发时停止本次拥有的进程。

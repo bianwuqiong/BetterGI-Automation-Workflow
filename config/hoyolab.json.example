@@ -1,0 +1,8 @@
+{
+  "_说明": "HoYoLAB 每日签到配置。使用前请复制本文件为 config/hoyolab.json 并填入真实 Cookie。",
+  "enabled": true,
+  "cookie": "ltoken_v2=...; ltuid_v2=...; account_id_v2=...;",
+  "actId": "e202102251931481",
+  "timeoutSec": 15,
+  "retryCount": 2
+}
