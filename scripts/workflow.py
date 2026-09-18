@@ -2298,6 +2298,20 @@ def execute(args, host=None):
                             result['outcome'] = 'partial'
                         if code == 0:
                             code = 4
+                if cfg is not None and cfg.get('killBettergiAfterDone'):
+                    try:
+                        bgi_targets = []
+                        for key in ('rootBettergiPid', 'childBettergiPid', 'bettergiPid', 'triggerBettergiPid'):
+                            pid = result.get(key)
+                            if pid and pid not in bgi_targets:
+                                bgi_targets.append(pid)
+                        if bgi_targets:
+                            closed = host.stop_pids(bgi_targets)
+                            if closed:
+                                result['bettergiPidsClosed'] = list(dict.fromkeys(
+                                    result.get('bettergiPidsClosed', []) + closed))
+                    except Exception as bgi_error:
+                        result['warnings'].append('按配置关闭 BetterGI 失败：' + str(bgi_error))
                 result.update(finishedAt=utc_now(), exitCode=code)
                 publish(root, directory, result, current=not args.dry_run)
     except WorkflowError as exc:

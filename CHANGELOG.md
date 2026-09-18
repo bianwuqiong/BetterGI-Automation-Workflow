@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 - 2026-09-18
+
+- Honor `killBettergiAfterDone` setting during workflow cleanup: ensure root BetterGI processes and associated foreground/child session processes are cleanly terminated when the daily run completes, preventing lingering background memory consumption.
+- Add unit tests verifying `killBettergiAfterDone` behavior across both `childSession` and `foreground` execution modes.
+
 ## 0.2.1 - 2026-09-18
 
 - Fix mail claim interaction: automatically press ESC after "Collect All" to dismiss the reward popup modal, remove spurious claim button disappearance exceptions, and standardize machine event property casing.

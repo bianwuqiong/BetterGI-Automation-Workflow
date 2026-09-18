@@ -538,6 +538,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['rootBettergiPid'], host.ROOT_PID)
         self.assertEqual(result['childSessionId'], host.CHILD_SESSION)
         self.assertNotIn(host.ROOT_PID, host.stopped)
+        self.assertNotIn(host.ROOT_PID, host.stopped_game_pids)
+        self.assertNotIn('bettergiPidsClosed', result)
+
+    def test_child_session_mode_kills_root_when_configured(self):
+        self.cfg['executionMode'] = 'childSession'
+        self.cfg['killBettergiAfterDone'] = True
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        host = ChildSessionFakeHost(self.root)
+
+        code, result = self.run_flow(host=host)
+
+        self.assertNotEqual(code, 0)
+        self.assertTrue(host.launched)
+        self.assertEqual(result['executionMode'], 'childSession')
+        self.assertEqual(result['bettergiPid'], host.CHILD_PID)
+        self.assertEqual(result['rootBettergiPid'], host.ROOT_PID)
+        self.assertIn(host.ROOT_PID, host.stopped_game_pids)
+        self.assertIn(host.ROOT_PID, result.get('bettergiPidsClosed', []))
+
+    def test_foreground_mode_kills_bettergi_when_configured(self):
+        self.cfg['executionMode'] = 'foreground'
+        self.cfg['killBettergiAfterDone'] = True
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        host = FakeHost(self.root)
+
+        code, result = self.run_flow(host=host)
+
+        self.assertTrue(host.launched)
+        self.assertIn(host.process.pid, result.get('bettergiPidsClosed', []))
 
     def test_child_session_classification_ignores_existing_root_command_forwarder(self):
         roots, children, others = wf.classify_bettergi_session_processes(
