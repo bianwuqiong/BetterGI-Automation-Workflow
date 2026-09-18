@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 2026-09-18
+
+- Fix mail claim interaction: automatically press ESC after "Collect All" to dismiss the reward popup modal, remove spurious claim button disappearance exceptions, and standardize machine event property casing.
+- Fix headless child session activation: directly invoke `HomePageViewModel.HandleActivation` in `ApplicationHostService` during `StartChildSessionOneDragon` to eliminate dependency on WPF visual tree `Loaded` events under `CREATE_NO_WINDOW` Task Scheduler launches.
+- Update agent authorization policy: user execution authorization remains valid throughout the same Genshin game day (UTC+8 04:00 to next day 04:00) across transient/environmental aborts without repeated confirmation requests.
+- Live milestone validation: verified 100% end-to-end success for 4+1 core workflow (HoYoLAB check-in + Mail claiming + Resin crafting + 4-round Artifact domain + Daily commissions & dispatch) in 13m 45s under Windows RDP Child Session with zero fragile resin consumption.
+
 ## 0.2.0 - 2026-09-17
 
 - Support Windows RDP Child Session execution mode for non-intrusive background daily automation.

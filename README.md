@@ -7,11 +7,11 @@
 
 一个面向 Windows 的原神日常自动化编排与核验项目。BetterGI 继续负责画面识别、路径、战斗和模拟输入；本项目负责一次运行的任务选择、互斥、时间预算、资源/VPN 保护、画质切换、日志隔离以及完成证据。
 
-当前是 **0.2.0** 版本。核心日常已完成实机全流程闭环验证（支持 Windows RDP 桌面分身后台免打扰与前台录屏双入口）；启动前支持联动 HoYoLAB 官方网页签到；仓库不提供 BetterGI 或原神二进制文件。
+当前是 **0.2.1** 版本。核心日常已完成实机全流程闭环验证（支持 Windows RDP 桌面分身后台免打扰与前台录屏双入口）；启动前支持联动 HoYoLAB 官方网页签到；邮件领取、浓缩合成、秘境结算与委托派遣均已支持精准机器事件核验；仓库不提供 BetterGI 或原神二进制文件。
 
 ## 与 BetterGI 的关系
 
-本项目建立在 [BetterGI](https://github.com/babalae/better-genshin-impact) 之上，并维护一个用于工作流的[非官方 BetterGI 修改分支](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-workflow)。修改分支改善了启动焦点、合成证据、秘境阶段边界、古树/领奖识别、邮件防吞重试、运行标识和桌面子会话（Child Session）凭据安全管理。
+本项目建立在 [BetterGI](https://github.com/babalae/better-genshin-impact) 之上，并维护一个用于工作流的[非官方 BetterGI 修改分支](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-workflow)。修改分支改善了启动焦点、合成证据、秘境阶段边界、古树/领奖识别、邮件防吞与弹窗安全关闭、后台无窗口根实例直接激活以及桌面子会话（Child Session）凭据安全管理。
 
 本项目不是 BetterGI 官方版本，也未获得 BetterGI、米哈游或 HoYoverse 的隶属、赞助或认可。上游代码和版权归 BetterGI 原作者及贡献者；修改版问题请先在本仓库反馈。完整声明见 [NOTICE.md](./NOTICE.md) 和 [许可证说明](./docs/UPSTREAM_AND_LICENSE.md)。
 
@@ -140,7 +140,7 @@ AI 不是正常流程依赖。失败、部分完成或证据不足时，优先�
 
 BetterGI Automation Workflow is a Windows orchestration and evidence layer for Genshin Impact daily tasks. BetterGI remains responsible for computer vision, navigation, combat, and simulated input; this repository adds per-run configuration, locking, budgets, resource guards, graphics-profile leasing, log isolation, and completion verification.
 
-This is a **0.1.x source preview**. Crafting, automatic-domain, and daily-reward checkpoints have been validated individually in foreground mode. A continuous full `core` run and child-session mode are still under validation. No BetterGI or game binaries are distributed here.
+This is the **0.2.1** release. Continuous full `core` execution has been validated end-to-end under Windows RDP Child Session (non-intrusive background mode) and foreground recording mode, with preflight HoYoLAB web check-in integration and structured machine event verification. No BetterGI or game binaries are distributed here.
 
 ### Relationship to BetterGI
 
