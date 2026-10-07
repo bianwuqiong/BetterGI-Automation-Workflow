@@ -63,12 +63,12 @@ python scripts/audit_public_tree.py --tracked
 2. 获取带完整 GPL 源码的 BetterGI 修改分支：
 
    ```powershell
-   git clone --recurse-submodules --branch automation-workflow --single-branch `
+   git clone --recurse-submodules --branch automation-baseline-2026-10-08 --single-branch `
      https://github.com/bianwuqiong/better-genshin-impact.git better-genshin-impact
    dotnet build better-genshin-impact\BetterGenshinImpact.sln -c Release
    ```
 
-   本地固定基线的源码标签为 `automation-baseline-2026-10-08`，提交 `d8c0aa238a949d7d74bfe5087f3a48e39771575a`；本次未推送 GitHub。使用发布版本前应核对对应提交并阅读 `MODIFICATIONS.md`。
+   固定基线的源码标签为 [`automation-baseline-2026-10-08`](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-baseline-2026-10-08)，提交 `d8c0aa238a949d7d74bfe5087f3a48e39771575a`。使用前应核对对应提交并阅读 `MODIFICATIONS.md`。
 
 3. 初始化不会进入 Git 的本地配置：
 

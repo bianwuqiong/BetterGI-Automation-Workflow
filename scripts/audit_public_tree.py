@@ -34,7 +34,9 @@ PATTERNS = {
         r'(?i)(api[_-]?key|access[_-]?token|password|passwd|secret)\s*[:=]\s*["\'][^"\']{4,}'),
     'payment material': re.compile(r'(?i)(paypal\.me|alipay|wechat.?pay|收款码|付款码)'),
     'HoYoLAB live token': re.compile(r'(?i)(cookie_token_v2|ltoken_v2|account_id_v2|ltuid_v2)[=:][\s"\'v2_]*[A-Za-z0-9_-]{25,}'),
-    'private user or local project path': re.compile(r'(?i)(?:\bASUS\b|[A-Z]:\\(?:aiproject|HoYoPlay)\b|156367373)'),
+    'local project path': re.compile(r'(?i)[A-Z]:[\\/](?:aiproject|HoYoPlay)(?:[\\/]|\b)'),
+    'game UID assignment': re.compile(
+        r'(?i)(?:\bUID\b|game[_-]?uid)\s*[:=：]\s*["\']?[1-9]\d{8,9}\b'),
 }
 
 
