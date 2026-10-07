@@ -9,10 +9,10 @@ This repository is an independent community workflow that depends on and modifie
 - BetterGI upstream: <https://github.com/babalae/better-genshin-impact>
 - BetterGI license: GNU General Public License version 3
 - Unofficial modified source branch: <https://github.com/bianwuqiong/better-genshin-impact/tree/automation-workflow>
-- Reviewed source tag: `automation-workflow-v0.1.0`
-- Modified source commit: `67884d7af80223405543f2882259d28ea8e4d227`
+- Reviewed source tag: `automation-baseline-2026-10-08` (saved locally; not pushed by this operation)
+- Modified source commit: `d8c0aa238a949d7d74bfe5087f3a48e39771575a`
 - Upstream base commit: `9424d1f3c344f8ba99363e0b0d3756f76bce836d`
-- Modification dates: 2026-09-12 through 2026-09-14
+- Modification dates: 2026-09-12 through 2026-10-08
 
 This repository does not contain BetterGI binaries, Genshin Impact files, game assets, account data, or login credentials. BetterGI and Genshin Impact names are used only to identify compatibility and upstream origin. All related trademarks belong to their respective owners.
 

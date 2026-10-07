@@ -83,6 +83,9 @@ class FakeHost:
     def get_memory_priority(self, pid):
         return self.memory_priorities[int(pid)]
 
+    def hot_switch_game_input(self, game_pids):
+        return False
+
 
 class ChildSessionFakeHost(FakeHost):
     ROOT_PID = 700001
@@ -884,6 +887,36 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['hoyolabCheckin']['account'], '88***88')
         self.assertTrue(result['hoyolabCheckin']['signedToday'])
         self.assertEqual(result['hoyolabCheckin']['totalSignDays'], 10)
+
+
+    def test_controller_hot_switch_trigger_on_main_ui_wait(self):
+        outer = self
+
+        class HotSwitchHost(FakeHost):
+            def __init__(self, root):
+                super().__init__(root, stuck=True)
+                self.hot_switch_calls = []
+
+            def launch(self, exe, name):
+                process = super().launch(exe, name)
+                (exe.parent / 'log/new.log').write_text(
+                    '[12:00:01.000] [INF]\n当前不在游戏主界面，等待进入主界面后执行任务...\n',
+                    encoding='utf-8')
+                return process
+
+            def hot_switch_game_input(self, game_pids):
+                self.hot_switch_calls.append(list(game_pids))
+                current = wf.read_json(outer.root / 'state/current-run.json')
+                wf.atomic_json(outer.root / 'logs/runs' / current['runId'] / 'stop-request.json', {'stop': True})
+                return True
+
+        host = HotSwitchHost(self.root)
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(wf, 'datetime', FixedClock), patch.object(wf.time, 'monotonic', side_effect=[0, 0, 50, 51, 52, 53]):
+            code, result = self.run_flow(host=host)
+
+        self.assertEqual(len(host.hot_switch_calls), 1)
+        self.assertEqual(host.hot_switch_calls[0], [888])
+        self.assertTrue(any('手柄热切换回键鼠模式' in note for note in result.get('notes', [])))
 
 
 if __name__ == '__main__':

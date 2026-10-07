@@ -197,9 +197,22 @@ def _domain_rounds(
             elif task_end is not None:
                 ended, complete, ended_by = task_end, True, task_ended_by or "task_end"
             else:
-                ended = _fallback_end(task_end, last_second, run_start, now_elapsed_sec)
-                complete = False
-                ended_by = "last_log"
+                retry_record = next(
+                    (record for record in records[group[phase_index][0] : next_round_record]
+                     if ("寻找石化古树超时" in record.text or "重试秘境" in record.text
+                         or "未识别秘境领奖界面" in record.text or "未识别树脂选择页" in record.text
+                         or "传送到秘境" in record.text or "传送秘境" in record.text
+                         or "开始传送" in record.text)),
+                    None,
+                )
+                if retry_record is not None and retry_record.second is not None:
+                    ended, complete, ended_by = retry_record.second, True, "retry"
+                elif next_round_record < stop:
+                    ended, complete, ended_by = records[next_round_record].second, True, "retry"
+                else:
+                    ended = _fallback_end(task_end, last_second, run_start, now_elapsed_sec)
+                    complete = False
+                    ended_by = "last_log"
             phases[name] = {"elapsedSec": _elapsed(began, ended), "complete": complete, "endedBy": ended_by}
             if not complete and task_end is None:
                 current_stage = {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-08 baseline
+
+- 固定本机后续迭代的工作流与 BetterGI 源码版本，保持现有日常行为；保留独立的私人运行文件备份和哈希清单。
+- 增加不启动游戏的备份核验与可恢复回滚工具，并补充对应离线测试。
+- Freeze the deployed workflow and source revisions without changing daily behavior; keep the private runtime snapshot separate from the public repository.
+- Add offline snapshot verification and recoverable restore tools with focused tests.
+
 ## 0.2.2 - 2026-09-18
 
 - Honor `killBettergiAfterDone` setting during workflow cleanup: ensure root BetterGI processes and associated foreground/child session processes are cleanly terminated when the daily run completes, preventing lingering background memory consumption.

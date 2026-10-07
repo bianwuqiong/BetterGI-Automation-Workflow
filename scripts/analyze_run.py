@@ -248,6 +248,28 @@ def _legacy_task_status(name: str, segment: list[str], offset: int) -> tuple[str
         for index, line in enumerate(segment)
         if _FAILURE_RE.search(line)
     ]
+
+    if "每日奖励" in name:
+        claimed = [
+            (offset + index, line)
+            for index, line in enumerate(segment)
+            if "检查每日奖励结果" in line and "今日奖励已领取" in line
+        ]
+        last_failure = failures[-1] if failures else None
+        if claimed and (last_failure is None or claimed[-1][0] > last_failure[0]):
+            return "success", "verified daily reward claimed state", [_evidence(claimed[-1][0] + 1, claimed[-1][1])]
+        if failures:
+            line, text = failures[-1]
+            return "failed", "explicit terminal failure in this task section", [_evidence(line + 1, text)]
+        uncertain = [
+            _evidence(offset + index + 1, line)
+            for index, line in enumerate(segment)
+            if "未完成或者已领取" in line or "未领取" in line
+        ]
+        if uncertain:
+            return "unknown", "daily reward log is ambiguous", uncertain
+        return "unknown", "no verified daily reward state", []
+
     if failures:
         line, text = failures[-1]
         return "failed", "explicit terminal failure in this task section", [_evidence(line + 1, text)]
@@ -273,23 +295,6 @@ def _legacy_task_status(name: str, segment: list[str], offset: int) -> tuple[str
         if reward_lines:
             return "unknown", "reward observed without verified normal completion", reward_lines
         return "unknown", "no verified domain reward and completion evidence", []
-
-    if "每日奖励" in name:
-        claimed = [
-            _evidence(offset + index + 1, line)
-            for index, line in enumerate(segment)
-            if "检查每日奖励结果" in line and "今日奖励已领取" in line
-        ]
-        if claimed:
-            return "success", "verified daily reward claimed state", claimed[-1:]
-        uncertain = [
-            _evidence(offset + index + 1, line)
-            for index, line in enumerate(segment)
-            if "未完成或者已领取" in line or "未领取" in line
-        ]
-        if uncertain:
-            return "unknown", "daily reward log is ambiguous", uncertain
-        return "unknown", "no verified daily reward state", []
 
     # Mail, teapot and other old text lack a durable receipt/inventory proof.
     return "unknown", "no verified completion evidence", []

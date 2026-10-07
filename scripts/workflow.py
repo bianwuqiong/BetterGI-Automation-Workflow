@@ -792,8 +792,11 @@ class WindowsHost:
         kernel.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
         kernel.ProcessIdToSessionId.restype = wintypes.BOOL
         if not kernel.ProcessIdToSessionId(int(pid), ctypes.byref(session_id)):
+            error = ctypes.get_last_error()
+            if error in (87, 1168):
+                return None
             raise WorkflowError(
-                f'无法取得进程 {pid} 的 Windows 会话，错误 {ctypes.get_last_error()}。')
+                f'无法取得进程 {pid} 的 Windows 会话，错误 {error}。')
         return int(session_id.value)
 
     def current_session_id(self):
@@ -1193,6 +1196,68 @@ class WindowsHost:
                         time.sleep(0.1)
                     if process_alive(process.pid):
                         raise WorkflowError(f'本次 BetterGI 进程 {process.pid} 未能在停止请求后退出。')
+
+    def hot_switch_game_input(self, game_pids):
+        if os.name != 'nt' or not game_pids:
+            return False
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        try:
+            hwinsta = user32.OpenWindowStationW('WinSta0', False, 0x10000000)
+            if hwinsta:
+                user32.SetProcessWindowStation(hwinsta)
+                hdesk = user32.OpenDesktopW('Default', 0, False, 0x10000000)
+                if hdesk:
+                    user32.SetThreadDesktop(hdesk)
+
+            target_pids = {int(p) for p in game_pids}
+            hwnds = []
+
+            def enum_cb(h, _):
+                if user32.IsWindowVisible(h):
+                    pid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
+                    if pid.value in target_pids:
+                        hwnds.append(h)
+                return True
+
+            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+            if not hwnds:
+                return False
+
+            h = hwnds[0]
+            class RECT(ctypes.Structure):
+                _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
+                            ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
+            rect = RECT()
+            user32.GetWindowRect(h, ctypes.byref(rect))
+            w = rect.right - rect.left
+            h_height = rect.bottom - rect.top
+            if w <= 0 or h_height <= 0:
+                return False
+
+            user32.ShowWindow(h, 9)
+            user32.SetForegroundWindow(h)
+            time.sleep(0.2)
+            cx = rect.left + w // 2
+            cy = rect.top + h_height // 2
+
+            class POINT(ctypes.Structure):
+                _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
+            orig = POINT()
+            user32.GetCursorPos(ctypes.byref(orig))
+
+            user32.SetCursorPos(cx, cy)
+            time.sleep(0.05)
+            user32.mouse_event(0x0002, 0, 0, 0, 0)
+            time.sleep(0.05)
+            user32.mouse_event(0x0004, 0, 0, 0, 0)
+            time.sleep(0.1)
+            user32.SetCursorPos(orig.x, orig.y)
+            return True
+        except Exception:
+            return False
 
 
 def task_selection(template, task=None, profile='configured'):
@@ -1949,6 +2014,29 @@ def execute(args, host=None):
                             cfg['bettergiProcessNames'],
                             cfg.get('childSessionStartTimeoutSec', 180))
                         result.update(launch_metadata)
+                        if network_guard_pids:
+                            settle_deadline = time.monotonic() + 10.0
+                            while time.monotonic() < settle_deadline:
+                                if all(len(host.processes([n])) == 1 for n in guard_names):
+                                    break
+                                time.sleep(0.5)
+                            applied_working_sets = {}
+                            for guard_name in guard_names:
+                                guard_processes = host.processes([guard_name])
+                                if len(guard_processes) != 1:
+                                    raise WorkflowError(
+                                        f'网络保护要求 {guard_name} 恰好运行一个实例；当前 {len(guard_processes)} 个。')
+                                guard_pid = guard_processes[0]
+                                host.set_high_priority(guard_pid)
+                                host.set_memory_priority(guard_pid, 5)
+                                floor_mb = int(working_set_floors.get(guard_name, 0) or 0)
+                                if floor_mb:
+                                    host.set_working_set_floor(guard_pid, floor_mb)
+                                    applied_working_sets[guard_name] = host.get_working_set_limits(guard_pid)
+                                network_guard_pids[guard_name] = guard_pid
+                            result['networkGuard']['processes'] = dict(network_guard_pids)
+                            result['networkGuard']['workingSet'] = applied_working_sets
+                            result['networkGuard']['healthy'] = True
                     else:
                         owned_process = host.launch(exe, generated_name)
                     bettergi_memory_priority = int(cfg.get('bettergiMemoryPriority', 4))
@@ -1968,6 +2056,8 @@ def execute(args, host=None):
                     owned_game_pids.update(observed_game_pids())
                     game_first_seen_elapsed = 0.0 if game_seen else None
                     graphics_last_check_elapsed = None
+                    hot_switch_attempt_count = 0
+                    hot_switch_last_elapsed = None
                     termination = 'exited'
                     termination_error = None
                     while True:
@@ -2013,7 +2103,7 @@ def execute(args, host=None):
                             if game_first_seen_elapsed is None:
                                 game_first_seen_elapsed = time.monotonic() - start
 
-                            if execution_mode == 'foreground' and unrelated_names:
+                            if execution_mode in ('foreground', 'childSession') and unrelated_names:
                                 cleanup_elapsed = time.monotonic() - start
                                 cleanup_interval = float(
                                     cfg.get('unrelatedCleanupIntervalSec', 60))
@@ -2080,7 +2170,12 @@ def execute(args, host=None):
                                   and host.processes(cfg['bettergiProcessNames'])):
                                 termination = 'untracked_handoff'
                             elif observed_game_pids():
-                                termination = 'game_still_running'
+                                grace_sec = min(float(cfg.get('graceAfterGameClosedSec', 15)), 15)
+                                deadline = time.monotonic() + grace_sec
+                                while time.monotonic() < deadline and observed_game_pids():
+                                    time.sleep(0.5)
+                                if observed_game_pids():
+                                    termination = 'game_still_running'
                             break
                         elapsed = time.monotonic() - start
                         update_process_metrics('BetterGI', [owned_process.pid], elapsed)
@@ -2102,6 +2197,21 @@ def execute(args, host=None):
                                       resinEvents=analysis.get('resinEvents', []), gameProcessSeen=game_seen)
                         result['warnings'] = list(dict.fromkeys(
                             persistent_warnings + log_warnings + analysis.get('warnings', [])))
+
+                        if (game_seen and current_game_pids
+                                and game_first_seen_elapsed is not None
+                                and elapsed - game_first_seen_elapsed >= 45
+                                and '当前不在游戏主界面' in text
+                                and not any(task.get('elapsedSec') is not None
+                                            for task in performance.get('tasks', []))
+                                and hot_switch_attempt_count < 2
+                                and (hot_switch_last_elapsed is None
+                                     or elapsed - hot_switch_last_elapsed >= 30)):
+                            hot_switch_attempt_count += 1
+                            hot_switch_last_elapsed = elapsed
+                            if hasattr(host, 'hot_switch_game_input') and host.hot_switch_game_input(current_game_pids):
+                                result['notes'].append(
+                                    f'已在前台执行一次性鼠标点击，触发游戏从手柄热切换回键鼠模式（第 {hot_switch_attempt_count} 次）。')
 
                         if (graphics_check_only
                                 and any(task.get('elapsedSec') is not None

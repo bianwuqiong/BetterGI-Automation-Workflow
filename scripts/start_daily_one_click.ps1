@@ -1,10 +1,14 @@
-﻿[CmdletBinding()]
-param([switch]$CheckOnly)
+[CmdletBinding()]
+param([switch]$CheckOnly, [switch]$AllowRepeat)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $TaskName = 'GenshinDailyCore'
 $LauncherLogDir = Join-Path $Root 'logs\launcher'
+
+if ($AllowRepeat) {
+    Set-Content -LiteralPath (Join-Path $Root 'state\allow-repeat.flag') -Value '1' -Encoding UTF8
+}
 
 function Read-CurrentRun {
     $path = Join-Path $Root 'state\current-run.json'

@@ -190,6 +190,28 @@ class PerformanceTests(unittest.TestCase):
         self.assertAlmostEqual(later["rounds"][0]["phases"]["domain_fight"]["elapsedSec"], 41.821, places=3)
         self.assertAlmostEqual(later["rounds"][0]["phases"]["tree_search"]["elapsedSec"], 36.147, places=3)
 
+    def test_domain_reward_retry_closes_phase_and_does_not_stall(self) -> None:
+        text = "\n".join(
+            [
+                _record("10:00:00.000", "一条龙任务执行: 1/1"),
+                _record("10:00:01.000", '自动秘境："1. 走到钥匙处启动"'),
+                _record("10:00:03.000", '自动秘境："2. 执行战斗策略"'),
+                _record("10:00:40.000", '自动秘境："3. 寻找石化古树"'),
+                _record("10:01:00.000", '自动秘境："4. 走到石化古树处"'),
+                _record("10:01:10.000", '自动秘境："5. 领取奖励"'),
+                _record("10:01:22.000", '自动秘境："未识别秘境领奖界面，已停止以避免误点或误记奖励"'),
+                _record("10:01:25.000", '开始传送："秘境"'),
+                _record("10:02:00.000", "传送完成"),
+                _record("10:02:01.000", '自动秘境："1. 走到钥匙处启动"'),
+                _record("10:02:03.000", '自动秘境："2. 执行战斗策略"'),
+            ]
+        )
+        result = analyze_performance(text, ["自动秘境"])
+        round1_reward = result["rounds"][0]["phases"]["domain_reward"]
+        self.assertEqual(round1_reward, {"elapsedSec": 12.0, "complete": True, "endedBy": "retry"})
+        self.assertFalse(result["rounds"][0]["rewardObserved"])
+        self.assertEqual(result["currentStage"]["name"], "domain_fight")
+
 
 if __name__ == "__main__":
     unittest.main()

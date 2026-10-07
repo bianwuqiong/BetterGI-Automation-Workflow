@@ -1,9 +1,15 @@
-﻿[CmdletBinding()]
-param()
+[CmdletBinding()]
+param([switch]$AllowRepeat)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $startedAt = Get-Date
+
+$flagFile = Join-Path $Root 'state\allow-repeat.flag'
+$shouldRepeat = [bool]$AllowRepeat -or (Test-Path -LiteralPath $flagFile)
+if (Test-Path -LiteralPath $flagFile) {
+    Remove-Item -LiteralPath $flagFile -Force -ErrorAction SilentlyContinue
+}
 
 function Show-RunNotification([string]$Message, [bool]$IsError = $false) {
     try {
@@ -38,7 +44,12 @@ function Find-LatestRunResult {
 }
 
 try {
-    & (Join-Path $PSScriptRoot 'run_daily.ps1') -NoDelay -Profile core
+    $dailyArgs = @{
+        NoDelay = $true
+        Profile = 'core'
+    }
+    if ($shouldRepeat) { $dailyArgs['AllowRepeat'] = $true }
+    & (Join-Path $PSScriptRoot 'run_daily.ps1') @dailyArgs
     $workflowExit = $LASTEXITCODE
     $result = Find-LatestRunResult
     if ($result) {
