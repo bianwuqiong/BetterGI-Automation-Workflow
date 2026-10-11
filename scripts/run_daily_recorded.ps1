@@ -1,6 +1,12 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('core', 'extras', 'configured')][string]$Profile = 'core',
+    [ValidateSet('core', 'extras', 'configured', 'cultivation', 'combat-rehearsal','material-route','material-route-session','material-recovery','party-preparation')][string]$Profile = 'core',
+    [ValidateSet('scan', 'execute')][string]$CultivationMode = 'scan',
+    [ValidateSet('培养材料')][string]$Task,
+    [string]$RouteSessionConfig,
+    [string]$RecoveryConfig,
+    [string]$PreparationConfig,
+    [string]$RouteConfig,
     [int]$TimeoutMinutes = 0,
     [switch]$DryRun,
     [switch]$CheckOnly
@@ -126,11 +132,54 @@ $recorderPriorityApplied = $false
 $stopRequested = $false
 
 $workflowInfo = New-Object System.Diagnostics.ProcessStartInfo
-$workflowInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$workflowArguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -NoDelay -Profile {1} -ExecutionMode foreground' -f `
-    (Join-Path $PSScriptRoot 'run_daily.ps1'), $Profile
-if ($TimeoutMinutes -gt 0) { $workflowArguments += ' -TimeoutMinutes ' + $TimeoutMinutes }
-if ($DryRun) { $workflowArguments += ' -DryRun' }
+$workflowInfo.FileName = if ($config.pythonExe) { [string]$config.pythonExe } else { (Get-Command python -ErrorAction Stop).Source }
+$workflowArguments = '-B "{0}" --root "{1}" run --no-delay --profile {2} --execution-mode foreground' -f `
+    (Join-Path $PSScriptRoot 'workflow.py'), $Root, $Profile
+if ($Profile -eq 'cultivation') { $workflowArguments += ' --cultivation-mode ' + $CultivationMode }
+if ($Task) {
+    if ($Profile -ne 'cultivation') { throw '录屏单节点只允许 cultivation 档的培养材料。' }
+    $workflowArguments += ' --task "培养材料"'
+}
+if ($RouteConfig) {
+    if ($RouteConfig.IndexOf('"') -ge 0 -or $RouteConfig.Contains("`r") -or $RouteConfig.Contains("`n")) {
+        throw '单段路线配置路径包含无效字符。'
+    }
+    $routeConfigPath = if ([IO.Path]::IsPathRooted($RouteConfig)) { $RouteConfig } else { Join-Path $Root $RouteConfig }
+    if (-not (Test-Path -LiteralPath $routeConfigPath -PathType Leaf)) { throw '单段路线配置文件不存在。' }
+    $routeConfigPath = (Resolve-Path -LiteralPath $routeConfigPath).Path
+    $workflowArguments += ' --route-config "' + $routeConfigPath + '"'
+}
+if ($RouteSessionConfig) {
+    if ($RouteSessionConfig.IndexOf('"') -ge 0 -or $RouteSessionConfig.Contains("`r") -or $RouteSessionConfig.Contains("`n")) {
+        throw '路线会话配置路径包含无效字符。'
+    }
+    $sessionConfigPath = if ([IO.Path]::IsPathRooted($RouteSessionConfig)) { $RouteSessionConfig } else { Join-Path $Root $RouteSessionConfig }
+    if (-not (Test-Path -LiteralPath $sessionConfigPath -PathType Leaf)) { throw '路线会话配置文件不存在。' }
+    $sessionConfigPath = (Resolve-Path -LiteralPath $sessionConfigPath).Path
+    $workflowArguments += ' --route-session-config "' + $sessionConfigPath + '"'
+}
+if ($RecoveryConfig) {
+    if ($RecoveryConfig.IndexOf('"') -ge 0 -or $RecoveryConfig.Contains("`r") -or $RecoveryConfig.Contains("`n")) {
+        throw '安全恢复配置路径包含无效字符。'
+    }
+    $recoveryConfigPath = if ([IO.Path]::IsPathRooted($RecoveryConfig)) { $RecoveryConfig } else { Join-Path $Root $RecoveryConfig }
+    if (-not (Test-Path -LiteralPath $recoveryConfigPath -PathType Leaf)) { throw '安全恢复配置文件不存在。' }
+    $recoveryConfigPath = (Resolve-Path -LiteralPath $recoveryConfigPath).Path
+    $workflowArguments += ' --recovery-config "' + $recoveryConfigPath + '"'
+}
+if ($PreparationConfig) {
+    if ($PreparationConfig.IndexOf('"') -ge 0 -or $PreparationConfig.Contains("`r") -or $PreparationConfig.Contains("`n")) {
+        throw '队伍恢复配置路径包含无效字符。'
+    }
+    $preparationConfigPath = if ([IO.Path]::IsPathRooted($PreparationConfig)) { $PreparationConfig } else { Join-Path $Root $PreparationConfig }
+    if (-not (Test-Path -LiteralPath $preparationConfigPath -PathType Leaf)) { throw '队伍恢复配置文件不存在。' }
+    $preparationConfigPath = (Resolve-Path -LiteralPath $preparationConfigPath).Path
+    $workflowArguments += ' --preparation-config "' + $preparationConfigPath + '"'
+}
+if ($Profile -eq 'party-preparation' -and $TimeoutMinutes -le 0) { $TimeoutMinutes = 5 }
+if ($Profile -eq 'party-preparation' -and $TimeoutMinutes -gt 5) { throw '队伍恢复整轮预算不能超过5分钟。' }
+if ($TimeoutMinutes -gt 0) { $workflowArguments += ' --timeout-minutes ' + $TimeoutMinutes }
+if ($DryRun) { $workflowArguments += ' --dry-run' }
 $workflowInfo.Arguments = $workflowArguments
 $workflowInfo.WorkingDirectory = $Root
 $workflowInfo.UseShellExecute = $false

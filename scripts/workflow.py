@@ -64,7 +64,17 @@ def atomic_json(path, value):
         stream.write('\n')
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    # Windows readers (including the recorder/status supervisor) can briefly
+    # hold a handle without delete sharing. Retry only that bounded condition;
+    # keep the durable temporary on permanent failure for recovery.
+    for attempt in range(8):
+        try:
+            os.replace(temporary, path)
+            break
+        except OSError as exc:
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == 7:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.25))
 
 
 def _decode_genshin_general_data(raw):
@@ -329,17 +339,17 @@ def update_genshin_general_data(raw, quality_level):
 def update_genshin_general_data_profile(raw, profile):
     """Return GENERAL_DATA bytes with only graphicsData/globalPerfData replaced."""
     try:
-        if not isinstance(profile, dict) or profile.get('schemaVersion') != 1:
+        if not isinstance(profile, dict) or type(profile.get('schemaVersion')) is not int or profile['schemaVersion'] != 1:
             raise TypeError('unsupported profile schema')
         profile_graphics = profile['graphicsData']
         profile_perf = profile['globalPerfData']
         if not isinstance(profile_graphics, dict) or not isinstance(profile_perf, dict):
             raise TypeError('profile sections are not objects')
-        if profile_graphics.get('currentVolatielGrade') != -1:
+        if type(profile_graphics.get('currentVolatielGrade')) is not int or profile_graphics['currentVolatielGrade'] != -1:
             raise ValueError('compatibility profile must be custom')
         grades = profile_graphics.get('customVolatileGrades')
         if (not isinstance(grades, list) or not grades
-                or any(not isinstance(item, dict) or item.get('value') != 1
+                or any(not isinstance(item, dict) or type(item.get('value')) is not int or item['value'] != 1
                        for item in grades)):
             raise ValueError('compatibility profile is not minimum quality')
 
@@ -472,6 +482,61 @@ def ensure_genshin_display_settings(settings):
     }
 
 
+def genshin_graphics_diagnostic(graphics, perf, profile=None):
+    """Retain known graphics fields from this read, never arbitrary registry data."""
+    def number(value):
+        return value if type(value) is int and -1 <= value <= 999 else None
+
+    def version(value):
+        return value if isinstance(value, str) and re.fullmatch(r'[A-Z]+Win\d+(?:\.\d+){1,3}', value) else None
+
+    def cleaned(graphics_value, perf_value):
+        graphics_value = graphics_value if isinstance(graphics_value, dict) else {}
+        perf_value = perf_value if isinstance(perf_value, dict) else {}
+        result = {'graphicsData': {}, 'globalPerfData': {}}
+        for field in ('currentVolatielGrade', 'volatileVersion'):
+            if field in graphics_value:
+                result['graphicsData'][field] = (version if field == 'volatileVersion' else number)(graphics_value[field])
+        grades = graphics_value.get('customVolatileGrades')
+        if isinstance(grades, list):
+            result['graphicsData']['customVolatileGrades'] = [
+                {'key': number(item.get('key')), 'value': number(item.get('value'))}
+                for item in grades[:100] if isinstance(item, dict)]
+        items = perf_value.get('saveItems')
+        if isinstance(items, list):
+            result['globalPerfData']['saveItems'] = [
+                {'entryType': number(item.get('entryType')), 'index': number(item.get('index')),
+                 'itemVersion': version(item.get('itemVersion'))}
+                for item in items[:100] if isinstance(item, dict)]
+        for field in ('truePortedFromGraphicData', 'portedFromGraphicData'):
+            if field in perf_value:
+                result['globalPerfData'][field] = perf_value[field] if type(perf_value[field]) is bool else None
+        if 'portedVersion' in perf_value:
+            result['globalPerfData']['portedVersion'] = version(perf_value['portedVersion'])
+        if 'volatileUpgradeVersion' in perf_value:
+            result['globalPerfData']['volatileUpgradeVersion'] = number(perf_value['volatileUpgradeVersion'])
+        return result
+
+    actual = cleaned(graphics, perf)
+    expected = cleaned(profile.get('graphicsData'), profile.get('globalPerfData')) if profile is not None else {}
+    differences = []
+
+    def compare(path, wanted, observed):
+        if isinstance(wanted, dict) and isinstance(observed, dict):
+            for field in sorted(set(wanted) | set(observed)):
+                compare(path + ('.' if path else '') + field, wanted.get(field), observed.get(field))
+        elif isinstance(wanted, list) and isinstance(observed, list):
+            for index in range(max(len(wanted), len(observed))):
+                compare(f'{path}[{index}]', wanted[index] if index < len(wanted) else None,
+                        observed[index] if index < len(observed) else None)
+        elif type(wanted) is not type(observed) or wanted != observed:
+            differences.append({'field': path, 'expected': wanted, 'actual': observed})
+
+    if profile is not None:
+        compare('', expected, actual)
+    return {'schemaVersion': 1, 'actual': actual, 'expected': expected, 'differences': differences}
+
+
 def assess_genshin_automation_graphics(raw, *, profile=None, quality_level=None,
                                        registry_values=None, display_settings=None):
     """Compare current graphics values with the requested profile without exposing identity data."""
@@ -523,7 +588,67 @@ def assess_genshin_automation_graphics(raw, *, profile=None, quality_level=None,
         'displayRegistryMatched': display_matched,
         'displayRegistry': display,
         'allMatched': bool(checks) and all(checks),
+        'graphicsDiagnostic': genshin_graphics_diagnostic(graphics, perf, profile),
     }
+
+
+def diagnose_saved_genshin_graphics(snapshot, profile):
+    """Offline comparison of the saved graphics whitelist, with no registry access."""
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get('generalDataFields'), dict):
+        raise WorkflowError('图形诊断需要已有的白名单快照。')
+    fields = snapshot['generalDataFields']
+    sections = {}
+    for name in ('graphicsData', 'globalPerfData'):
+        value = fields.get(name)
+        sections[name] = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(sections[name], dict):
+            raise WorkflowError('图形白名单快照缺少有效图形节。')
+    return genshin_graphics_diagnostic(sections['graphicsData'], sections['globalPerfData'], profile)
+
+
+def update_genshin_graphics_version_metadata(raw, old_profile, evidence_snapshot):
+    """Pure, evidence-bound version migration preserving current manual settings.
+
+    Caller backs up the original REG_BINARY value and handles its write/readback.
+    No registry access, logging, profile write, or version-guard relaxation occurs.
+    """
+    diagnostic = diagnose_saved_genshin_graphics(evidence_snapshot, old_profile)
+    previous_version = old_profile.get('graphicsData', {}).get('volatileVersion')
+    observed_fields = evidence_snapshot['generalDataFields']
+    observed_graphics = observed_fields['graphicsData']
+    observed_perf = observed_fields['globalPerfData']
+    observed_graphics = json.loads(observed_graphics) if isinstance(observed_graphics, str) else observed_graphics
+    observed_perf = json.loads(observed_perf) if isinstance(observed_perf, str) else observed_perf
+    next_version = observed_graphics.get('volatileVersion')
+    expected_graphics = dict(old_profile.get('graphicsData', {}), volatileVersion=next_version)
+    if (diagnostic['differences'] != [{'field': 'graphicsData.volatileVersion',
+            'expected': previous_version, 'actual': next_version}]
+            or not isinstance(next_version, str) or not re.fullmatch(r'OSRELWin\d+(?:\.\d+){1,3}', next_version)
+            or observed_graphics != expected_graphics or observed_perf != old_profile.get('globalPerfData')):
+        raise WorkflowError('版本迁移证据必须与旧兼容配置仅有 volatileVersion 差异。')
+    current = _decode_genshin_general_data(raw)
+    stored_graphics = current.get('graphicsData')
+    graphics = json.loads(stored_graphics) if isinstance(stored_graphics, str) else stored_graphics
+    if not isinstance(graphics, dict) or set(graphics) != set(observed_graphics):
+        raise WorkflowError('当前图形结构与已核实版本不同，未迁移。')
+    current_version = graphics.get('volatileVersion')
+    if current_version not in (previous_version, next_version):
+        raise WorkflowError('当前图形版本不属于本次已核实迁移，未修改。')
+    # Validate the old minimum profile using a synthetic version-matched input;
+    # validation has no side effects and its resulting configured grades are unused.
+    validation_input = dict(current)
+    validation_input['graphicsData'] = json.dumps(dict(graphics, volatileVersion=previous_version))
+    update_genshin_general_data_profile(_encode_genshin_general_data(validation_input), old_profile)
+    summary = {'changed': current_version != next_version, 'field': 'graphicsData.volatileVersion',
+               'previousVersion': current_version, 'observedVersion': next_version,
+               'manualGradesPreserved': True, 'globalPerfDataPreserved': True}
+    if current_version == next_version:
+        return raw, summary
+    updated_graphics = dict(graphics, volatileVersion=next_version)
+    updated = dict(current)
+    updated['graphicsData'] = (json.dumps(updated_graphics, ensure_ascii=False, separators=(',', ':'))
+                               if isinstance(stored_graphics, str) else updated_graphics)
+    return _encode_genshin_general_data(updated), summary
 
 
 def verify_genshin_automation_graphics(*, profile_path=None, quality_level=None,
@@ -1280,6 +1405,12 @@ def task_selection(template, task=None, profile='configured'):
             'configured': None,
             'core': {'领取邮件', '合成树脂', '自动秘境', '领取每日奖励'},
             'extras': {'领取邮件', '自动地脉花', '领取尘歌壶奖励'},
+            'cultivation': {'领取邮件', '培养材料', '领取每日奖励'},
+            'combat-rehearsal': {'战斗演练'},
+            'material-route': {'刀镡路线'},
+            'material-route-session': {'刀镡路线'},
+            'material-recovery': {'材料安全恢复'},
+            'party-preparation': {'队伍免费恢复'},
         }
         if profile not in profiles:
             raise WorkflowError('未知流程档位：' + str(profile))
@@ -1292,7 +1423,8 @@ def task_selection(template, task=None, profile='configured'):
     return selected, [definitions[i] for i in selected]
 
 
-def make_config(template, selected_ids, name, patch, completion_action='关闭游戏和软件'):
+def make_config(template, selected_ids, name, patch, completion_action='关闭游戏和软件',
+                *, skip_final_reward_check=False):
     allowed = {'DomainName', 'PartyName', 'WeeklyDomainEnabled', 'SundayEverySelectedValue'}
     if not isinstance(patch, dict) or set(patch) - allowed:
         raise WorkflowError('计划补丁包含未允许的字段。')
@@ -1311,6 +1443,7 @@ def make_config(template, selected_ids, name, patch, completion_action='关闭�
     if completion_action not in {'无', '关闭游戏和软件'}:
         raise WorkflowError('不允许的完成后操作。')
     config['CompletionAction'] = completion_action
+    config['SkipFinalRewardCheck'] = skip_final_reward_check
     return config
 
 
@@ -1344,6 +1477,49 @@ def collect_log(directory, offsets, pid):
     return ''.join(filtered), warnings
 
 
+def startup_failure_evidence(text, config_name, pid):
+    """Read only native startup-block errors scoped to this process/config.
+
+    Callers supply the fresh log slice from ``collect_log``. A phrase inside
+    an OCR result, exception trace, unscoped legacy line, or another run is
+    insufficient: the native ERR message must be the first nonempty message
+    of its own stamped record, following this process's configuration record.
+    This proves a startup block only; it never proves a task result.
+    """
+    header_re = re.compile(
+        r'^\[\d{2}:\d{2}:\d{2}\.\d+\]\s+\[(\w{3})\]\s+'
+        r'\[[^\]\n]*:P(\d+)(?=:|\])[^\]\n]*\]\s+'
+        r'(BetterGenshinImpact\.[A-Za-z0-9_.]+)\s*$')
+    config_re = re.compile(
+        r'(?:参数指定|启用)(?:的)?一条龙配置\s*[：:]\s*([A-Za-z0-9_-]+)\s*$')
+    failure_re = re.compile(
+        r'(?:一条龙启动核验失败|配置组 .+ 启动核验失败)，未执行任务节点$')
+    active_config, config_line = None, None
+    line_offset = 0
+    for record in re.split(r'(?=^\[\d{2}:\d{2}:\d{2}\.\d+\])', text, flags=re.M):
+        lines = record.splitlines(keepends=True)
+        nonempty = [(index, line.strip()) for index, line in enumerate(lines) if line.strip()]
+        if len(nonempty) >= 2:
+            header = header_re.fullmatch(nonempty[0][1])
+            if header and int(header.group(2)) == pid:
+                source = header.group(3)
+                message_index, message = nonempty[1]
+                reference = config_re.fullmatch(message)
+                if reference:
+                    active_config = reference.group(1)
+                    config_line = line_offset + message_index + 1
+                elif (active_config == config_name and header.group(1) == 'ERR'
+                      and source.endswith(('.OneDragonFlowViewModel', '.ScriptService'))
+                      and failure_re.fullmatch(message)):
+                    return {
+                        'configName': config_name, 'bettergiPid': pid,
+                        'configLine': config_line, 'line': line_offset + message_index + 1,
+                        'text': message, 'evidenceScope': 'startup-block-only',
+                    }
+        line_offset += len(lines)
+    return None
+
+
 def packet_for(result):
     tasks = result.get('tasks', [])
     return {
@@ -1355,10 +1531,17 @@ def packet_for(result):
                   {'evidence': [{'line': e.get('line'), 'text': str(e.get('text', ''))[:450]}
                                 for e in task.get('evidence', [])[-4:]]} for task in tasks[:12]],
         'errors': [str(e)[:450] for e in result.get('errors', [])[-6:]],
+        'startupFailure': result.get('startupFailure'),
         'warnings': [str(e)[:450] for e in result.get('warnings', [])[-10:]],
         'rewards': result.get('rewards', {}),
         'resinEvents': result.get('resinEvents', [])[-12:],
         'hoyolabCheckin': result.get('hoyolabCheckin'),
+        'cultivation': ({key: result['cultivation'].get(key)
+                         for key in ('scope', 'readOnly', 'reportVerified', 'reportPath',
+                                     'targetReached', 'configuredConfirmedClaims', 'actualResinDelta',
+                                     'confirmedSubtotalOnly', 'verifiedStepResinDelta',
+                                     'verifiedStepIds', 'unverifiedStepIds', 'observedGains')}
+                        if isinstance(result.get('cultivation'), dict) else None),
         'performance': {'currentStage': result.get('performance', {}).get('currentStage'),
                         'bottlenecks': result.get('performance', {}).get('bottlenecks', [])[:4]},
         'allowedRecommendations': ['report', 'inspect_evidence', 'recommend_single_task_retry', 'stop'],
@@ -1481,15 +1664,67 @@ def check_resource_policy(global_config, names):
     if '自动地脉花' in names:
         if global_config.get('autoLeyLineOutcropConfig', {}).get('useFragileResin', False) is not False:
             raise WorkflowError('地脉花配置允许消耗脆弱树脂，与项目规则冲突。')
+    if '自动首领' in names or '培养材料' in names:
+        if global_config.get('autoBossConfig', {}).get('useFragileResin', False) is not False:
+            raise WorkflowError('首领配置允许消耗脆弱树脂，与项目规则冲突。')
+
+
+def verify_cultivation_analysis(analysis, exe, run_id, mode, target, directory,
+                               *, execution_outcome='running', expected_policy=None):
+    """A log event is a pointer, not proof; validate its private report separately."""
+    if target is None or not analysis.get('cultivation'):
+        return analysis
+    from cultivation import verify_cultivation_report
+    try:
+        verified = verify_cultivation_report(
+            analysis['cultivation'], exe.parent, run_id, mode, target, directory,
+            expected_policy=expected_policy)
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        analysis.setdefault('warnings', []).append('培养报告尚未核验：' + str(exc))
+        return analysis
+    analysis['cultivation'] = verified['cultivation']
+    if verified.get('report') is not None:
+        atomic_json(directory / 'cultivation-report.json', verified['report'])
+    for task in analysis.get('tasks', []):
+        if task['name'] == '培养材料':
+            task.update(status=verified['status'], reason=verified['reason'])
+    statuses = [task['status'] for task in analysis.get('tasks', [])]
+    if (execution_outcome == 'exited' and analysis.get('flowEnded')
+            and statuses and all(value in {'success', 'skipped'} for value in statuses)):
+        analysis['outcome'] = 'completed'
+    elif 'success' in statuses:
+        analysis['outcome'] = 'partial'
+    elif 'failed' in statuses:
+        analysis['outcome'] = 'failed'
+    else:
+        analysis['outcome'] = 'unknown'
+    return analysis
 
 
 def time_budget(cfg, task, profile, override=0):
-    default = cfg.get('taskTimeoutMinutes', {}).get(task, cfg.get('timeoutMinutes', 25)) if task else cfg.get('profileTimeoutMinutes', {}).get(profile, cfg.get('timeoutMinutes', 25))
+    if profile == 'party-preparation':
+        maximum = float(override or 5)
+        if not 0 < maximum <= min(5.0, float(cfg.get('maximumRunMinutes', 30))):
+            raise WorkflowError('队伍免费恢复整轮预算不能超过5分钟。')
+        return {'maximumMinutes': maximum, 'targetMinutes': None}
+    if profile == 'material-recovery':
+        maximum = float(override or 4)
+        if not 0 < maximum <= min(4.0, float(cfg.get('maximumRunMinutes', 30))):
+            raise WorkflowError('材料安全恢复整轮预算不能超过4分钟。')
+        return {'maximumMinutes': maximum, 'targetMinutes': None}
+    if profile in {'material-route', 'material-route-session'}:
+        maximum = float(override or 16)
+        if not 0 < maximum <= min(16.0, float(cfg.get('maximumRunMinutes', 30))):
+            raise WorkflowError('刀镡路线整轮预算不能超过16分钟。')
+        return {'maximumMinutes': maximum, 'targetMinutes': None}
+    default = (cfg.get('profileTimeoutMinutes', {}).get(profile, 8) if profile == 'combat-rehearsal'
+               else cfg.get('taskTimeoutMinutes', {}).get(task, cfg.get('timeoutMinutes', 25)) if task
+               else cfg.get('profileTimeoutMinutes', {}).get(profile, cfg.get('timeoutMinutes', 25)))
     maximum = float(override or default)
-    cap = float(cfg.get('maximumRunMinutes', 30))
+    cap = min(8.0, float(cfg.get('maximumRunMinutes', 30))) if profile == 'combat-rehearsal' else float(cfg.get('maximumRunMinutes', 30))
     if not 0 < maximum <= cap:
         raise WorkflowError('运行预算必须大于 0 且不超过 maximumRunMinutes。')
-    return {'maximumMinutes': maximum, 'targetMinutes': cfg.get('coreTargetMinutes', 20) if profile == 'core' and not task else None}
+    return {'maximumMinutes': maximum, 'targetMinutes': cfg.get('coreTargetMinutes', 20) if profile in {'core', 'cultivation'} and not task else None}
 
 
 def same_executable_path(actual, expected):
@@ -1616,6 +1851,21 @@ def execute(args, host=None):
     graphics_lease = None
     graphics_isolation_enabled = False
     persistent_warnings = []
+    cultivation_config = None
+    cultivation_group = None
+    cultivation_mode = getattr(args, 'cultivation_mode', 'scan')
+    cultivation_resin_check = bool(getattr(args, 'cultivation_resin_check', False))
+    cultivation_scan = False
+    combat_rehearsal = False
+    rehearsal_group = None
+    material_route = False
+    route_session = False
+    material_recovery = False
+    party_preparation = False
+    route_config = None
+    route_group = None
+    route_lease = None
+    route_started_monotonic = None
     code = 1
     try:
         with RunLock(root / 'state/workflow.lock'):
@@ -1623,6 +1873,8 @@ def execute(args, host=None):
             publish(root, directory, result, current=not args.dry_run)
             try:
                 cfg = read_json(root / 'config/settings.json')
+                if cultivation_resin_check and (cultivation_mode != 'scan' or graphics_check_only):
+                    raise WorkflowError('树脂只读探针不能与 execute 或画质验收组合。')
                 if graphics_check_only and args.task:
                     raise WorkflowError('启动画质验收不能与单节点任务同时运行。')
                 execution_mode = getattr(args, 'execution_mode', None) or cfg.get('executionMode', 'foreground')
@@ -1784,12 +2036,54 @@ def execute(args, host=None):
                 base_path = exe.parent / 'User/OneDragon' / (base_name + '.json')
                 template = read_json(base_path)
                 profile = getattr(args, 'profile', None) or cfg.get('defaultProfile', 'configured')
+                route_session = profile == 'material-route-session'
+                material_recovery = profile == 'material-recovery'
+                party_preparation = profile == 'party-preparation'
+                material_route = profile in {'material-route', 'material-route-session', 'material-recovery', 'party-preparation'}
+                if material_route:
+                    if args.task or graphics_check_only or cultivation_resin_check:
+                        raise WorkflowError('刀镡路线必须单独使用material-route档。')
+                    if offset_hours != 8 or reset_hour != 4:
+                        raise WorkflowError('刀镡路线只支持UTC+8每日04:00游戏日。')
+                    from material_route import inject_material_route_task, load_route_config, load_route_session_config, inject_material_recovery_task, load_material_recovery_config, inject_party_preparation_task, load_party_preparation_config
+                    route_config = (load_party_preparation_config(resolved(root, getattr(args, 'preparation_config', None) or 'config/party-preparation.json'))
+                        if party_preparation else load_material_recovery_config(resolved(root, getattr(args, 'recovery_config', None) or 'config/material-recovery.json'))
+                        if material_recovery else load_route_session_config(resolved(root, getattr(args, 'route_session_config', None) or 'config/material-route-session.json'))
+                            if route_session else load_route_config(resolved(root, getattr(args, 'route_config', None) or 'config/material-route.json')))
+                    template = inject_party_preparation_task(template) if party_preparation else inject_material_recovery_task(template) if material_recovery else inject_material_route_task(template)
+                    result['mode'] = 'dry-run' if args.dry_run else profile
+                combat_rehearsal = profile == 'combat-rehearsal'
+                if combat_rehearsal:
+                    if args.task or graphics_check_only or cultivation_resin_check:
+                        raise WorkflowError('战斗演练必须单独使用 combat-rehearsal 档，不能与其他节点或扫描/画质探针组合。')
+                    from combat_rehearsal import inject_combat_rehearsal_task
+                    template = inject_combat_rehearsal_task(template)
+                    result['mode'] = 'dry-run' if args.dry_run else 'combat-rehearsal'
+                if cultivation_resin_check:
+                    if args.task not in (None, '培养材料') or not (profile == 'cultivation' or args.task == '培养材料'):
+                        raise WorkflowError('树脂只读探针只允许 cultivation 扫描档或培养材料单节点，不能与 execute/画质验收/其他任务组合。')
+                    result['cultivationResinCheck'] = True
+                if profile == 'cultivation' or args.task == '培养材料':
+                    from cultivation import inject_cultivation_task, load_cultivation_config
+                    cultivation_config = load_cultivation_config(
+                        root / 'config/cultivation.json', cultivation_mode)
+                    template = inject_cultivation_task(template)
                 selected, names = task_selection(template, args.task, profile)
+                cultivation_scan = cultivation_config is not None and cultivation_mode == 'scan'
+                if cultivation_scan:
+                    selected = [key for key in (template['TaskOrder'] if cultivation_resin_check else selected)
+                                if template['TaskDefinitions'][key] == '培养材料']
+                    names = ['培养材料']
+                    result['mode'] = 'cultivation-scan' if not args.dry_run else 'dry-run'
+                if cultivation_config is not None:
+                    result['cultivationMode'] = cultivation_mode
                 requested_profile_tasks = list(names)
                 result['requestedProfileTasks'] = requested_profile_tasks
-                if (not args.task and not graphics_check_only and not args.allow_repeat
+                if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route and not args.allow_repeat
                         and cfg.get('resumeVerifiedTasks', True)):
                     verified = prior_verified_tasks(root, result['gameDate'], names)
+                    # Every cultivation attempt needs a new game snapshot, even after a scan.
+                    verified.pop('培养材料', None)
                     if verified:
                         definitions = template['TaskDefinitions']
                         selected = [task_id for task_id in selected
@@ -1922,17 +2216,80 @@ def execute(args, host=None):
                         raise WorkflowError('计划器没有返回可执行的秘境配置。')
                 generated_name = 'AutoGame_' + run_id
                 keep_game = bool(getattr(args, 'keep_game', False))
-                if keep_game and not args.task:
+                if keep_game and not args.task and not cultivation_scan:
                     raise WorkflowError('保持游戏打开仅用于单节点诊断。')
                 generated = make_config(template, selected, generated_name, patch,
-                                        '无' if keep_game else '关闭游戏和软件')
+                                        '无' if keep_game else '关闭游戏和软件',
+                                        skip_final_reward_check=cultivation_scan or combat_rehearsal or material_route)
+                if material_route:
+                    from material_route import build_route_group, constrain_route_day, verify_route_file, prepare_material_route_plugin, build_route_session_group, constrain_route_session_day, build_route_recovery_group, build_party_preparation_group
+                    if party_preparation:
+                        route_group = build_party_preparation_group(run_id, route_config, game_date=result['gameDate'])
+                    elif material_recovery:
+                        route_group = build_route_recovery_group(run_id, route_config, game_date=result['gameDate'])
+                    elif route_session:
+                        for segment in route_config['segments']:
+                            verify_route_file(exe.parent, segment['route'])
+                        result['materialRouteEligibility'] = constrain_route_session_day(root, result['gameDate'], route_config, now=now)
+                        route_group = build_route_session_group(run_id, route_config, game_date=result['gameDate'])
+                        result['sessionId'] = run_id
+                    else:
+                        route = verify_route_file(exe.parent, route_config['route'])
+                        result['materialRouteEligibility'] = constrain_route_day(
+                            root, result['gameDate'], route, now=now, overlap_distance=route_config['overlapDistance'],
+                            budget_seconds=route_config['timeoutSeconds'])
+                        route_group = build_route_group(run_id, route_config, route, game_date=result['gameDate'],
+                            max_minutes=min(route_config['timeoutSeconds'] // 60, int(result['timeBudget']['maximumMinutes'])))
+                    result['materialRoutePlugin'] = prepare_material_route_plugin(
+                        root / 'bgi-scripts/AutoGameMaterialRoute', exe.parent, dry_run=args.dry_run)
+                    material_task_name = '队伍免费恢复' if party_preparation else '材料安全恢复' if material_recovery else '刀镡路线'
+                    generated['TaskDefinitions'] = {key: route_group['Name'] if value == material_task_name else value
+                        for key, value in generated['TaskDefinitions'].items()}
+                    atomic_json(directory / 'material-route-group.json', route_group)
+                    if material_recovery:
+                        atomic_json(directory / 'material-recovery-group.json', route_group)
+                    if party_preparation:
+                        atomic_json(directory / 'party-preparation-group.json', route_group)
+                if combat_rehearsal:
+                    from combat_rehearsal import build_combat_rehearsal_group
+                    rehearsal_group = build_combat_rehearsal_group(
+                        run_id, read_json(root / 'config/cultivation.json'),
+                        max_minutes=min(5, max(1, int(result['timeBudget']['maximumMinutes']))))
+                    generated['TaskDefinitions'] = {
+                        key: rehearsal_group['Name'] if value == '战斗演练' else value
+                        for key, value in generated['TaskDefinitions'].items()}
+                    atomic_json(directory / 'combat-rehearsal-group.json', rehearsal_group)
+                if cultivation_config is not None:
+                    from cultivation import build_cultivation_group
+                    if cultivation_mode == 'execute' and (cultivation_config['policy'].get('validationMode') or cultivation_config['policy'].get('dailyMode')):
+                        from cultivation_validation import constrain_validation
+                        cultivation_config, authorization = constrain_validation(
+                            root, exe.parent, cultivation_config, run_id, result['gameDate'])
+                        result['cultivationAuthorization'] = authorization
+                        result['cultivationTarget'] = cultivation_config['target']
+                        result['cultivationLaunchAttempted'] = False
+                        if not args.dry_run:
+                            # Publish proof of not-yet-launched before registering this run.
+                            publish(root, directory, result)
+                            cultivation_config, authorization = constrain_validation(
+                                root, exe.parent, cultivation_config, run_id, result['gameDate'], assign=True)
+                            result['cultivationAuthorization'] = authorization
+                    cultivation_group = build_cultivation_group(
+                        run_id, cultivation_config, cultivation_mode, read_json(global_path))
+                    if cultivation_resin_check:
+                        cultivation_group['Projects'][0]['JsScriptSettingsObject']['resinDiagnosticOnly'] = True
+                    generated['TaskDefinitions'] = {
+                        key: cultivation_group['Name'] if value == '培养材料' else value
+                        for key, value in generated['TaskDefinitions'].items()}
+                    atomic_json(directory / 'cultivation-group.json', cultivation_group)
+                    result['cultivationTarget'] = cultivation_config['target']
                 result['keepGameOpen'] = keep_game
                 atomic_json(directory / 'one-dragon.json', generated)
                 result['plannedConfig'] = str(directory / 'one-dragon.json')
                 persistent_warnings = list(result['warnings'])
 
                 if args.dry_run:
-                    if not graphics_check_only:
+                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route:
                         hoyolab_summary = execute_hoyolab_checkin(root, dry_run=True)
                         result['hoyolabCheckin'] = hoyolab_summary
                         if hoyolab_summary.get('warning'):
@@ -1940,10 +2297,10 @@ def execute(args, host=None):
                     result.update(outcome='planned', executionOutcome='not_started')
                     code = 0
                 else:
-                    if (not args.task and not graphics_check_only
+                    if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route
                             and cfg.get('checkpointOnly', True)):
                         raise WorkflowError('当前处于检查点阶段：请指定单项任务，完成实机验收后再启用整条龙。')
-                    previous = (None if graphics_check_only
+                    previous = (None if graphics_check_only or cultivation_config is not None or combat_rehearsal or material_route
                                 else prior_success(root, result['gameDate'], names))
                     if previous and not args.allow_repeat:
                         raise WorkflowError('同一游戏日已有成功记录 ' + previous + '，本次未重复运行。', 6)
@@ -1994,18 +2351,51 @@ def execute(args, host=None):
                         if not prelaunch_graphics.get('allMatched'):
                             raise WorkflowError(
                                 '自动化画质或窗口配置写入后校验失败；未启动游戏。')
-                    if not graphics_check_only:
+                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route:
                         hoyolab_summary = execute_hoyolab_checkin(root, dry_run=False)
                         result['hoyolabCheckin'] = hoyolab_summary
                         if hoyolab_summary.get('warning'):
                             result['warnings'].append(hoyolab_summary['warning'])
                             persistent_warnings.append(hoyolab_summary['warning'])
+                    if cultivation_group is not None:
+                        from cultivation import install_cultivation_plugin
+                        result['cultivationPlugin'] = install_cultivation_plugin(
+                            root / 'bgi-scripts/AutoGameCultivation', exe.parent)
+                        group_path = exe.parent / 'User/ScriptGroup' / (cultivation_group['Name'] + '.json')
+                        atomic_json(group_path, cultivation_group)
+                        result['runtimeCultivationGroup'] = str(group_path)
+                    if rehearsal_group is not None:
+                        from combat_rehearsal import verify_rehearsal_plugin
+                        result['combatRehearsalPlugin'] = verify_rehearsal_plugin(
+                            root / 'bgi-scripts/AutoGameCombatRehearsal', exe.parent)
+                        group_path = exe.parent / 'User/ScriptGroup' / (rehearsal_group['Name'] + '.json')
+                        atomic_json(group_path, rehearsal_group)
+                        result['runtimeCombatRehearsalGroup'] = str(group_path)
+                    if route_group is not None:
+                        from material_route import prepare_material_route_plugin, verify_route_file, assign_route_day, assign_route_session_day
+                        result['materialRoutePlugin'] = prepare_material_route_plugin(
+                            root / 'bgi-scripts/AutoGameMaterialRoute', exe.parent)
+                        for segment in [] if material_recovery or party_preparation else route_config['segments'] if route_session else [{'route': route_config['route']}]:
+                            verify_route_file(exe.parent, segment['route'])
+                        group_path = exe.parent / 'User/ScriptGroup' / (route_group['Name'] + '.json')
+                        atomic_json(group_path, route_group)
+                        result['runtimeMaterialRouteGroup'] = str(group_path)
+                        if not material_recovery and not party_preparation:
+                            route_lease = (assign_route_session_day(root, result['gameDate'], route_config, run_id, now=datetime.now(timezone(timedelta(hours=8))))
+                                if route_session else assign_route_day(root, result['gameDate'], route_config['route'], run_id, now=datetime.now(timezone(timedelta(hours=8))),
+                                    overlap_distance=route_config['overlapDistance'], budget_seconds=route_config['timeoutSeconds']))
+                            route_started_monotonic = time.monotonic()
+                            result['materialRouteLease'] = route_lease
                     atomic_json(runtime_path, generated)
                     result['runtimeConfig'] = str(runtime_path)
                     logs = resolved(root, cfg['bettergiLogDir'])
                     offsets = log_offsets(logs)
                     atomic_json(directory / 'log-offsets.json', offsets)
                     result['executionOutcome'] = 'starting'
+                    if result.get('cultivationAuthorization'):
+                        # A crash after this point requires a durable plugin checkpoint;
+                        # absence of that evidence never refunds the authorization.
+                        result['cultivationLaunchAttempted'] = True
                     publish(root, directory, result)
                     if execution_mode == 'childSession':
                         owned_process, launch_metadata = host.launch_child_session(
@@ -2103,6 +2493,21 @@ def execute(args, host=None):
                             if game_first_seen_elapsed is None:
                                 game_first_seen_elapsed = time.monotonic() - start
 
+                        # The native engine returns before entering any task node on
+                        # this explicit error. Stop the owned run promptly rather
+                        # than waiting for its much longer workflow timeout.
+                        text, log_warnings = collect_log(logs, offsets, owned_process.pid)
+                        startup_failure = startup_failure_evidence(
+                            text, generated_name, owned_process.pid)
+                        if startup_failure:
+                            result['startupFailure'] = startup_failure
+                            termination = 'startup_verification_failed'
+                            termination_error = (
+                                '原生启动核验失败，未执行任务节点；已停止本次自有进程，'
+                                '任务结果保留 unknown，不自动重放。')
+                            break
+
+                        if current_game_pids:
                             if execution_mode in ('foreground', 'childSession') and unrelated_names:
                                 cleanup_elapsed = time.monotonic() - start
                                 cleanup_interval = float(
@@ -2189,12 +2594,44 @@ def execute(args, host=None):
                         if not game_seen and elapsed >= float(cfg['gameStartTimeoutMinutes']) * 60:
                             termination = 'gameNeverStarted'
                             break
-                        text, log_warnings = collect_log(logs, offsets, owned_process.pid)
-                        analysis = analyze_log(text, names, execution_outcome='running', config_name=generated_name)
+                        analysis = analyze_log(text, names, execution_outcome='running', config_name=generated_name,
+                                               run_id=run_id, cultivation_mode=cultivation_mode)
+                        if rehearsal_group is not None:
+                            from combat_rehearsal import verify_combat_rehearsal_analysis
+                            analysis = verify_combat_rehearsal_analysis(
+                                text, exe.parent, run_id, rehearsal_group, generated_name, 'running')
+                        if route_group is not None:
+                            from material_route import verify_material_route_report, verify_material_route_session_report, verify_material_recovery_report, verify_party_preparation_report
+                            route_verify = verify_party_preparation_report if party_preparation else verify_material_recovery_report if material_recovery else verify_material_route_session_report if route_session else verify_material_route_report
+                            analysis = route_verify(text, exe.parent, run_id, route_group, generated_name, 'running')
+                        analysis = verify_cultivation_analysis(
+                            analysis, exe, run_id, cultivation_mode,
+                            cultivation_config['target'] if cultivation_config else None, directory,
+                            execution_outcome='running', expected_policy=(
+                                json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
+                                if cultivation_group else None))
                         performance = analyze_performance(text, names, now_elapsed_sec=elapsed)
                         result['performance'] = performance
                         result.update(tasks=analysis.get('tasks', []), rewards=analysis.get('rewards', {}),
                                       resinEvents=analysis.get('resinEvents', []), gameProcessSeen=game_seen)
+                        if analysis.get('cultivation'):
+                            result['cultivation'] = analysis['cultivation']
+                        if analysis.get('materialRoute'):
+                            result['materialRoute'] = analysis['materialRoute']
+                        if analysis.get('materialRouteReport'):
+                            atomic_json(directory / 'material-route-report.json', analysis['materialRouteReport'])
+                        if analysis.get('partyPreparation'):
+                            result['partyPreparation'] = analysis['partyPreparation']
+                        if analysis.get('partyPreparationReport'):
+                            atomic_json(directory / 'party-preparation-report.json', analysis['partyPreparationReport'])
+                        if analysis.get('materialRecovery'):
+                            result['materialRecovery'] = analysis['materialRecovery']
+                        if analysis.get('materialRecoveryReport'):
+                            atomic_json(directory / 'material-recovery-report.json', analysis['materialRecoveryReport'])
+                        if analysis.get('combatRehearsal'):
+                            result['combatRehearsal'] = analysis['combatRehearsal']
+                        if analysis.get('combatRehearsalReport'):
+                            atomic_json(directory / 'combat-rehearsal-report.json', analysis['combatRehearsalReport'])
                         result['warnings'] = list(dict.fromkeys(
                             persistent_warnings + log_warnings + analysis.get('warnings', [])))
 
@@ -2222,7 +2659,9 @@ def execute(args, host=None):
                                 '已立即停止且不把本次验收记为成功。')
                             break
 
-                        if (graphics_verification_required and adopted_game_pid is None
+                        if (graphics_verification_required and current_game_pids
+                                and not analysis.get('flowEnded')
+                                and adopted_game_pid is None
                                 and game_first_seen_elapsed is not None):
                             should_check_registry = (
                                 graphics_last_check_elapsed is None
@@ -2233,6 +2672,19 @@ def execute(args, host=None):
                                                   if graphics_profile else None),
                                     quality_level=graphics_quality,
                                     display_settings=display_settings)
+                                if not runtime_graphics.get('allMatched') and runtime_graphics.get('graphicsDiagnostic'):
+                                    diagnostic_path = directory / 'automation-graphics-diagnostic.json'
+                                    atomic_json(diagnostic_path, {
+                                        'runId': run_id, 'checkedAt': runtime_graphics.get('checkedAt'),
+                                        **runtime_graphics['graphicsDiagnostic']})
+                                    result['graphicsVerification']['diagnosticPath'] = str(diagnostic_path)
+                                if (not runtime_graphics.get('allMatched')
+                                        and type(host) is WindowsHost):
+                                    try:
+                                        atomic_json(directory / 'automation-graphics-mismatch.json',
+                                                    snapshot_genshin_graphics_settings())
+                                    except (OSError, ValueError, WorkflowError) as capture_error:
+                                        result['warnings'].append('无法保存图形白名单差异：' + str(capture_error))
                                 result['graphicsVerification']['runtimeRegistry'] = runtime_graphics
                                 graphics_last_check_elapsed = elapsed
                             else:
@@ -2262,11 +2714,11 @@ def execute(args, host=None):
                                         f'原神实际窗口为 {observed_size["width"]}x'
                                         f'{observed_size["height"]}，预期为 '
                                         f'{display_settings["width"]}x{display_settings["height"]}；'
-                                        '已在执行日常任务前停止。')
+                                        '已停止本次自动化并保留诊断证据。')
                                 else:
                                     termination_error = (
                                         '原神启动后的兼容模式或窗口注册表值与自动化配置不一致；'
-                                        '已在执行日常任务前停止。')
+                                        '已停止本次自动化并保留诊断证据。')
                                 break
                             if runtime_graphics.get('allMatched') and expected_size_matched:
                                 result['graphicsVerification'].update(
@@ -2318,10 +2770,43 @@ def execute(args, host=None):
                                 result.get('launcherPidsClosed', []) + closed))
                     text, log_warnings = collect_log(logs, offsets, owned_process.pid)
                     (directory / 'bettergi.log').write_text(text, encoding='utf-8')
-                    analysis = analyze_log(text, names, execution_outcome=termination, config_name=generated_name)
+                    analysis = analyze_log(text, names, execution_outcome=termination, config_name=generated_name,
+                                           run_id=run_id, cultivation_mode=cultivation_mode)
+                    if rehearsal_group is not None:
+                        from combat_rehearsal import verify_combat_rehearsal_analysis
+                        analysis = verify_combat_rehearsal_analysis(
+                            text, exe.parent, run_id, rehearsal_group, generated_name, termination)
+                        if analysis.get('combatRehearsalReport'):
+                            atomic_json(directory / 'combat-rehearsal-report.json', analysis.pop('combatRehearsalReport'))
+                    if route_group is not None:
+                        from material_route import verify_material_route_report, verify_material_route_session_report, verify_material_recovery_report, verify_party_preparation_report
+                        route_verify = verify_party_preparation_report if party_preparation else verify_material_recovery_report if material_recovery else verify_material_route_session_report if route_session else verify_material_route_report
+                        analysis = route_verify(text, exe.parent, run_id, route_group, generated_name, termination)
+                        if analysis.get('materialRouteReport'):
+                            atomic_json(directory / 'material-route-report.json', analysis.pop('materialRouteReport'))
+                        if analysis.get('partyPreparationReport'):
+                            atomic_json(directory / 'party-preparation-report.json', analysis.pop('partyPreparationReport'))
+                        if analysis.get('materialRecoveryReport'):
+                            atomic_json(directory / 'material-recovery-report.json', analysis.pop('materialRecoveryReport'))
+                    analysis = verify_cultivation_analysis(
+                        analysis, exe, run_id, cultivation_mode,
+                        cultivation_config['target'] if cultivation_config else None, directory,
+                        execution_outcome=termination, expected_policy=(
+                            json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
+                            if cultivation_group else None))
                     result['performance'] = analyze_performance(text, names, now_elapsed_sec=time.monotonic() - start)
                     saved_errors = result['errors']
                     result.update({k: v for k, v in analysis.items() if k != 'schemaVersion'})
+                    if termination == 'startup_verification_failed':
+                        # A native startup block is negative evidence, never a
+                        # completed task or permission to replay a requested task.
+                        result.update(outcome='unknown', rewards={}, resinEvents=[])
+                        for task in result.get('tasks', []):
+                            task.update(
+                                status='unknown',
+                                reason='native startup verification blocked task execution',
+                                evidence=[{'line': startup_failure['line'],
+                                           'text': startup_failure['text']}])
                     result.update(executionOutcome=termination, gameProcessSeen=game_seen,
                                   bettergiExitCode=owned_process.poll(),
                                   gameStillRunning=bool(observed_game_pids()))
@@ -2374,6 +2859,23 @@ def execute(args, host=None):
                     try:
                         text, _ = collect_log(logs, offsets, owned_process.pid)
                         (directory / 'bettergi.log').write_text(text, encoding='utf-8')
+                        if route_group is not None:
+                            from material_route import verify_material_route_report, verify_material_route_session_report, verify_material_recovery_report, verify_party_preparation_report
+                            route_verify = verify_party_preparation_report if party_preparation else verify_material_recovery_report if material_recovery else verify_material_route_session_report if route_session else verify_material_route_report
+                            route_analysis = route_verify(text, exe.parent, run_id, route_group, generated_name, result['executionOutcome'])
+                            material_analysis_key = 'partyPreparation' if party_preparation else 'materialRecovery' if material_recovery else 'materialRoute'
+                            result[material_analysis_key] = route_analysis[material_analysis_key]
+                            result['tasks'] = route_analysis['tasks']
+                            if (route_session or material_recovery or party_preparation) and result.get('outcome') == 'completed' and route_analysis['outcome'] != 'completed':
+                                result['outcome'] = route_analysis['outcome']
+                                code = EXIT_CODES.get(result['outcome'], 1)
+                            result['warnings'].extend(route_analysis['warnings'])
+                            if route_analysis.get('materialRouteReport'):
+                                atomic_json(directory / 'material-route-report.json', route_analysis['materialRouteReport'])
+                            if route_analysis.get('partyPreparationReport'):
+                                atomic_json(directory / 'party-preparation-report.json', route_analysis['partyPreparationReport'])
+                            if route_analysis.get('materialRecoveryReport'):
+                                atomic_json(directory / 'material-recovery-report.json', route_analysis['materialRecoveryReport'])
                     except Exception as log_error:
                         result['warnings'].append('归档失败：' + str(log_error))
                     try:
@@ -2382,6 +2884,22 @@ def execute(args, host=None):
                         result['gameStillRunning'] = None
                         result['warnings'].append('无法核实游戏进程是否仍在运行。')
             finally:
+                if route_lease is not None:
+                    try:
+                        from material_route import finalize_route_day, finalize_route_session_day
+                        route_outcome = result.get('outcome', 'unknown')
+                        if not result.get('materialRoute', {}).get('reportVerified'):
+                            route_outcome = 'unknown'
+                        route_wall = max(0.0, time.monotonic() - route_started_monotonic)
+                        result['materialRouteLease'] = (finalize_route_session_day(root, route_lease, result.get('materialRoute', {}),
+                            directory=directory, bettergi_dir=exe.parent, wall_seconds=route_wall) if route_session else finalize_route_day(
+                                root, route_lease['gameDate'], run_id, route_outcome,
+                                evidence=result.get('materialRoute', {}), wall_seconds=route_wall,
+                                farming_seconds=result.get('materialRoute', {}).get('farmingSeconds')))
+                    except Exception as ledger_error:
+                        result['errors'].append('保存刀镡当日预留失败：' + str(ledger_error))
+                        result['outcome'] = 'unknown'
+                        code = 1
                 if graphics_lease is not None and cfg is not None:
                     try:
                         active_game_pids = host.processes(cfg['gameProcessNames'])
@@ -2461,7 +2979,15 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     run = commands.add_parser('run')
     run.add_argument('--task')
-    run.add_argument('--profile', choices=['core', 'extras', 'configured'])
+    run.add_argument('--profile', choices=['core', 'extras', 'configured', 'cultivation', 'combat-rehearsal', 'material-route', 'material-route-session', 'material-recovery', 'party-preparation'])
+    run.add_argument('--preparation-config', default='config/party-preparation.json', help='固定神像零道具队伍恢复参数，仅party-preparation档读取')
+    run.add_argument('--route-config', default='config/material-route.json', help='本机固定刀镡路线配置，仅material-route档读取')
+    run.add_argument('--route-session-config', default='config/material-route-session.json', help='本机两段固定路线配置，仅material-route-session档读取')
+    run.add_argument('--recovery-config', default='config/material-recovery.json', help='本机固定安全区域与四人名单，仅material-recovery档读取')
+    run.add_argument('--cultivation-mode', choices=['scan', 'execute'], default='scan',
+                     help='培养档默认只读取游戏；执行还需本机配置开启和材料类别验收')
+    run.add_argument('--cultivation-resin-check', action='store_true',
+                     help='培养扫描档仅检查树脂读取并导出 unknown 诊断报告，不扫描材料或执行日常')
     run.add_argument('--dry-run', action='store_true')
     run.add_argument('--no-delay', action='store_true')
     run.add_argument('--allow-repeat', action='store_true')
@@ -2478,11 +3004,19 @@ def main(argv=None):
         if name == 'review':
             sub.add_argument('--response', help='只校验模型 JSON 建议；不执行建议')
     commands.add_parser('restore-graphics')
+    graphics_diagnose = commands.add_parser('diagnose-graphics', help='离线比较已保存的图形白名单快照，不访问注册表或启动游戏')
+    graphics_diagnose.add_argument('--snapshot', required=True)
+    graphics_diagnose.add_argument('--profile', help='参考兼容模式JSON；默认使用本项目配置')
     args = parser.parse_args(argv)
     try:
         if args.command == 'run':
             return execute(args)
         root = Path(args.root).resolve()
+        if args.command == 'diagnose-graphics':
+            profile_path = args.profile or root / 'config/genshin-compat-profile.json'
+            print(json.dumps(diagnose_saved_genshin_graphics(read_json(args.snapshot), read_json(profile_path)),
+                             ensure_ascii=False, indent=2))
+            return 0
         if args.command == 'restore-graphics':
             print(json.dumps(restore_manual_graphics(root), ensure_ascii=False, indent=2))
             return 0

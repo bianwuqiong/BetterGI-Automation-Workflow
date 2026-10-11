@@ -1,0 +1,102 @@
+[
+  {
+    "name": "runId",
+    "type": "input",
+    "label": "运行ID"
+  },
+  {
+    "name": "gameDate",
+    "type": "input",
+    "label": "游戏日"
+  },
+  {
+    "name": "mode",
+    "type": "input",
+    "label": "运行模式"
+  },
+  {
+    "name": "route",
+    "type": "input",
+    "label": "路线信息"
+  },
+  {
+    "name": "routeJson",
+    "type": "input",
+    "label": "固定路线参数"
+  },
+  {
+    "name": "partyName",
+    "type": "input",
+    "label": "队伍"
+  },
+  {
+    "name": "strategyName",
+    "type": "input",
+    "label": "战斗策略"
+  },
+  {
+    "name": "requireZhongliShield",
+    "type": "checkbox",
+    "label": "核验钟离护盾"
+  },
+  {
+    "name": "maxMinutes",
+    "type": "input",
+    "label": "单段时间上限"
+  },
+  {
+    "name": "originalResinBudget",
+    "type": "input",
+    "label": "原粹预算"
+  },
+  {
+    "name": "condensedResinBudget",
+    "type": "input",
+    "label": "浓缩预算"
+  },
+  {
+    "name": "fragileResinBudget",
+    "type": "input",
+    "label": "脆弱预算"
+  },
+  {
+    "name": "transientResinBudget",
+    "type": "input",
+    "label": "须臾预算"
+  },
+  {
+    "name": "allowCrafting",
+    "type": "checkbox",
+    "label": "合成开关"
+  },
+  {
+    "name": "allowUpgrade",
+    "type": "checkbox",
+    "label": "升级开关"
+  },
+  {
+    "name": "timeoutSeconds",
+    "type": "input",
+    "label": "单段秒数上限"
+  },
+  {
+    "name": "expectedTeamJson",
+    "type": "input",
+    "label": "实际四人队伍"
+  },
+  {
+    "name": "sessionJson",
+    "type": "input",
+    "label": "连续路线参数"
+  },
+  {
+    "name": "preparationJson",
+    "type": "input",
+    "label": "免费神像队伍恢复参数"
+  },
+  {
+    "name": "recoveryJson",
+    "type": "input",
+    "label": "安全恢复参数"
+  }
+]

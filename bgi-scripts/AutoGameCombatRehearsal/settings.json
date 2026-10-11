@@ -1,0 +1,7 @@
+[
+  {"name":"runId","type":"input-text","label":"运行编号","default":""},
+  {"name":"domainName","type":"input-text","label":"演练秘境","default":"逆悬的冰河"},
+  {"name":"partyName","type":"input-text","label":"已核实队伍","default":"待命队伍"},
+  {"name":"strategyName","type":"input-text","label":"战斗策略","default":"木偶星超导"},
+  {"name":"maxMinutes","type":"input-text","label":"单轮战斗上限（分钟）","default":"5"}
+]

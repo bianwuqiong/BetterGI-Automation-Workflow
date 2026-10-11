@@ -153,6 +153,28 @@ class ChildSessionFakeHost(FakeHost):
         }
 
 
+def native_startup_log(name, pid, *, failure='一条龙启动核验失败，未执行任务节点'):
+    return (
+        f'[12:01:00.000] [INF] [Primary:S4:P{pid}:T123456] '
+        'BetterGenshinImpact.ViewModel.Pages.OneDragonFlowViewModel\n'
+        f'参数指定的一条龙配置：{name}\n\n'
+        f'[12:04:00.000] [ERR] [Primary:S4:P{pid}:T123456] '
+        'BetterGenshinImpact.Service.ScriptService\n'
+        '启动等待超时，禁止执行任务节点：模式=BitBlt，尺寸=1920x1080\n\n'
+        f'[12:04:00.010] [ERR] [Primary:S4:P{pid}:T123456] '
+        'BetterGenshinImpact.ViewModel.Pages.OneDragonFlowViewModel\n'
+        f'{failure}\nSystem.TimeoutException: startup deadline\n\n')
+
+
+class StartupFailureFakeHost(FakeHost):
+    def launch(self, exe, name):
+        self.launched = True
+        self.process = FakeProcess(stuck=True)
+        (exe.parent / 'log/new.log').write_text(
+            native_startup_log(name, self.process.pid), encoding='utf-8')
+        return self.process
+
+
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.root = ROOT / 'tests/.artifacts' / ('workflow-' + uuid4().hex[:10])
@@ -435,7 +457,63 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['graphicsVerification']['state'], 'failed')
         self.assertEqual(result['graphicsVerification']['observedWindow'],
                          {'width': 2560, 'height': 1440})
-        self.assertIn('执行日常任务前停止', ' '.join(result['errors']))
+        self.assertIn('已停止本次自动化并保留诊断证据', ' '.join(result['errors']))
+
+    def test_runtime_graphics_change_is_guarded_only_while_game_is_alive(self):
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.cfg.update(checkpointOnly=False, resumeVerifiedTasks=False,
+                        gameDisplaySettings=display, verifyAutomationGraphicsAfterStart=True,
+                        restoreManualGraphicsAfterRun=False)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        for closes_game, finishes_flow in ((True, False), (False, False), (False, True)):
+            with self.subTest(closes_game=closes_game, finishes_flow=finishes_flow):
+                class ClosingHost(FakeHost):
+                    sleep_count = 0
+                    game_alive = True
+
+                    def processes(self, names):
+                        if self.launched and 'GenshinImpact' in names:
+                            return [888] if self.game_alive else []
+                        return []
+
+                    def launch(self, exe, name):
+                        host = self
+                        class FinishingProcess(FakeProcess):
+                            def poll(self):
+                                if host.sleep_count >= 3:
+                                    self.returncode = 0
+                                return self.returncode
+                        super().launch(exe, name)
+                        self.process = FinishingProcess(stuck=True)
+                        path = exe.parent / 'log/new.log'
+                        self.graphics_log = exe.parent / 'log' / ('graphics-' + uuid4().hex + '.log')
+                        self.graphics_log.write_text(path.read_text(encoding='utf-8').replace('一条龙和配置组任务结束\n', '') +
+                            '遮罩窗口已启动，游戏大小1920x1080，素材缩放1.00\n', encoding='utf-8')
+                        return self.process
+
+                    def advance(self, _):
+                        self.sleep_count += 1
+                        if finishes_flow and self.sleep_count == 1:
+                            with self.graphics_log.open('a', encoding='utf-8') as log:
+                                log.write('一条龙和配置组任务结束\n')
+                        if closes_game or (finishes_flow and self.sleep_count >= 2):
+                            self.game_alive = False
+
+                host = ClosingHost(self.root)
+                with (patch.object(wf, 'ensure_genshin_display_settings', return_value={}),
+                      patch.object(wf, 'verify_genshin_automation_graphics',
+                          side_effect=lambda **_: {'allMatched': host.sleep_count == 0}) as verify,
+                      patch.object(wf.time, 'monotonic', side_effect=lambda: host.sleep_count * 6.0),
+                      patch.object(wf.time, 'sleep', side_effect=host.advance)):
+                    _, result = self.run_flow(host=host)
+                if closes_game or finishes_flow:
+                    self.assertEqual(result['executionOutcome'], 'exited')
+                    self.assertEqual(result['graphicsVerification']['state'], 'passed')
+                    self.assertEqual(verify.call_count, 2)  # preflight and one live-game check
+                else:
+                    self.assertEqual(result['executionOutcome'], 'graphics_verification_failed')
+                    self.assertEqual(result['graphicsVerification']['state'], 'failed')
+                    self.assertEqual(verify.call_count, 3)
 
     def test_graphics_check_exits_successfully_without_running_daily_tasks(self):
         outer = self
@@ -526,6 +604,123 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(host.stopped, [987654])
         self.assertEqual(host.stopped_game_pids, [888])
         self.assertEqual(self.base_path.read_bytes(), self.before)
+
+    def test_native_startup_failure_stops_promptly_without_confirming_or_replaying_tasks(self):
+        host = StartupFailureFakeHost(self.root)
+        with (patch.object(wf.time, 'monotonic', side_effect=[0, 0.1]),
+              patch.object(wf.time, 'sleep', side_effect=AssertionError('must stop before polling again'))):
+            code, result = self.run_flow(host=host)
+
+        self.assertEqual(code, 8)
+        self.assertEqual(result['executionOutcome'], 'startup_verification_failed')
+        self.assertEqual(result['outcome'], 'unknown')
+        self.assertEqual(host.stopped, [987654])
+        self.assertEqual(host.stopped_game_pids, [888])
+        self.assertFalse(result['gameStillRunning'])
+        self.assertEqual(result['tasks'][0]['status'], 'unknown')
+        self.assertEqual(result['performance']['tasks'][0]['elapsedSec'], None)
+        self.assertEqual(result['rewards'], {})
+        self.assertEqual(result['resinEvents'], [])
+        self.assertEqual(result['startupFailure']['configName'],
+                         wf.read_json(result['runtimeConfig'])['Name'])
+        self.assertEqual(result['startupFailure']['bettergiPid'], 987654)
+        self.assertEqual(result['startupFailure']['evidenceScope'], 'startup-block-only')
+        self.assertEqual(self.base_path.read_bytes(), self.before)
+        self.assertIsNone(wf.prior_success(self.root, result['gameDate'], ['合成树脂']))
+        context = wf.read_json(Path(result['resultPath']).parent / 'agent-context.json')
+        self.assertEqual(context['startupFailure'], result['startupFailure'])
+
+    def test_native_startup_failure_restores_manual_graphics_after_owned_processes_stop(self):
+        profile_path = self.root / 'config/genshin-compat-profile.json'
+        profile_path.write_bytes((ROOT / 'config/genshin-compat-profile.json').read_bytes())
+        self.cfg.update(gameGraphicsProfile='config/genshin-compat-profile.json',
+                        gameGraphicsQualityLevel=None, restoreManualGraphicsAfterRun=True)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        snapshot = wf.make_genshin_graphics_snapshot(
+            json.dumps({'graphicsData': '{}', 'globalPerfData': '{}'}).encode() + b'\0')
+        host = StartupFailureFakeHost(self.root)
+
+        def restore_after_stop(actual_snapshot):
+            self.assertEqual(actual_snapshot, snapshot)
+            self.assertEqual(host.stopped, [987654])
+            self.assertEqual(host.stopped_game_pids, [888])
+            return {'restored': True, 'restoredAt': '2026-09-12T12:01:00+00:00',
+                    'changedGeneralFields': ['graphicsData'], 'changedRegistryValues': []}
+
+        with (patch.object(wf, 'snapshot_genshin_graphics_settings', return_value=snapshot),
+              patch.object(wf, 'ensure_genshin_graphics_profile', return_value={'changed': True}),
+              patch.object(wf, 'verify_genshin_automation_graphics', return_value={'allMatched': True}),
+              patch.object(wf, 'restore_genshin_graphics_settings', side_effect=restore_after_stop) as restore):
+            code, result = self.run_flow(host=host)
+
+        self.assertEqual(code, 8)
+        self.assertEqual(result['outcome'], 'unknown')
+        restore.assert_called_once_with(snapshot)
+        self.assertTrue(result['graphicsIsolation']['restored'])
+        self.assertEqual(wf.read_json(
+            self.root / 'state/graphics-profile-lease.json')['state'], 'restored')
+
+    def test_native_startup_error_requires_exact_owned_record_and_current_configuration(self):
+        name, pid = 'AutoGame_test', 987654
+        current = native_startup_log(name, pid)
+        expected_text = '一条龙启动核验失败，未执行任务节点'
+        for invalid in (
+                native_startup_log('AutoGame_other', pid),
+                native_startup_log(name, 111),
+                current.replace('[ERR]', '[INF]'),
+                current.replace('Pages.OneDragonFlowViewModel', 'Pages.OcrScanViewModel'),
+                current.replace(expected_text, 'OCR识别文字：' + expected_text),
+                current.replace(expected_text, '其他异常\n' + expected_text),
+                expected_text,
+                f'参数指定的一条龙配置：{name}\n' + expected_text,
+                current[current.index('[12:04:00.000]'):],
+                current.replace('[12:04:00.000]', '[12:03:00.000] [INF] '
+                                f'[Primary:S4:P{pid}:T123456] '
+                                'BetterGenshinImpact.ViewModel.Pages.OneDragonFlowViewModel\n'
+                                '启用一条龙配置：AutoGame_other\n\n[12:04:00.000]'),
+                current.replace(expected_text, '启动核验失败')):
+            with self.subTest(log=invalid):
+                self.assertIsNone(wf.startup_failure_evidence(invalid, name, pid))
+        evidence = wf.startup_failure_evidence(current, name, pid)
+        self.assertEqual(evidence['text'], expected_text)
+        self.assertLess(evidence['configLine'], evidence['line'])
+        self.assertEqual(current.splitlines()[evidence['line'] - 1], expected_text)
+        group = native_startup_log(name, pid, failure='配置组 "CurrentGroup" 启动核验失败，未执行任务节点')
+        self.assertIsNotNone(wf.startup_failure_evidence(group, name, pid))
+
+    def test_native_startup_error_from_history_or_foreign_pid_is_not_attributed(self):
+        name, pid = 'AutoGame_test', 987654
+        directory = self.root / 'BetterGI/log'
+        path = directory / 'sample.log'
+        path.write_text(native_startup_log(name, pid), encoding='utf-8')
+        offsets = wf.log_offsets(directory)
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(native_startup_log(name, 111))
+        text, warnings = wf.collect_log(directory, offsets, pid)
+        self.assertEqual(warnings, [])
+        self.assertIsNone(wf.startup_failure_evidence(text, name, pid))
+
+    def test_native_startup_error_stops_child_session_only(self):
+        self.cfg['executionMode'] = 'childSession'
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+
+        class StartupChildHost(ChildSessionFakeHost):
+            def launch_child_session(self, exe, name, bettergi_names, timeout_sec=180):
+                process, metadata = super().launch_child_session(
+                    exe, name, bettergi_names, timeout_sec)
+                process.stuck = True
+                (exe.parent / 'log/new.log').write_text(
+                    native_startup_log(name, process.pid), encoding='utf-8')
+                return process, metadata
+
+        host = StartupChildHost(self.root)
+        code, result = self.run_flow(host=host)
+        self.assertEqual(code, 8)
+        self.assertEqual(result['executionOutcome'], 'startup_verification_failed')
+        self.assertEqual(host.stopped, [host.CHILD_PID])
+        self.assertEqual(host.stopped_game_pids, [host.GAME_PID])
+        self.assertNotIn(host.ROOT_PID, host.stopped)
+        self.assertNotIn(host.ROOT_PID, host.stopped_game_pids)
 
     def test_child_session_mode_tracks_child_and_preserves_root(self):
         self.cfg['executionMode'] = 'childSession'

@@ -1,0 +1,364 @@
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionHelper.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionHelper.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionHelper.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionHelper.cs
+@@ -5,14 +5,17 @@
+ using BetterGenshinImpact.GameTask.AutoFight.Config;
+ using BetterGenshinImpact.GameTask.Common.Job;
+ using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.Area.Converter;
+ using BetterGenshinImpact.GameTask.Model.GameUI;
+ using Microsoft.Extensions.Logging;
+ using OpenCvSharp;
+ using System;
+ using System.Collections.Generic;
++using System.Diagnostics;
+ using System.Linq;
+ using System.Threading;
+ using System.Threading.Tasks;
++using Vanara.PInvoke;
+ using static BetterGenshinImpact.GameTask.Common.TaskControl;
+ 
+ namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
+@@ -225,16 +228,29 @@
+         ILogger logger,
+         CancellationToken ct)
+     {
++        using var selectionTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
++        selectionTimeout.CancelAfter(TimeSpan.FromSeconds(30));
++        ct = selectionTimeout.Token;
+         var gridParams = new GridParams(GridRoi1080, 5, 3, 40, 32, 0.024);
+         var scroller = new GridScroller(gridParams, logger, Simulation.SendInput, ct);
+         var gridRoi = Rect1080(assetScale, GridRoi1080.X, GridRoi1080.Y, GridRoi1080.Width, GridRoi1080.Height);
++        var selectionClicks = 0;
++        var searchElapsed = Stopwatch.StartNew();
+ 
+         while (true)
+         {
+             ct.ThrowIfCancellationRequested();
++            if (searchElapsed.Elapsed >= TimeSpan.FromSeconds(30))
++                throw new InvalidOperationException("角色选择超过三十秒总期限，目标姓名未核验");
++            if (!SystemControl.ActivateWindow(TaskContext.Instance().GameHandle))
++                throw new InvalidOperationException("角色选择无法核验游戏前台，禁止点击");
++            await Delay(150, ct);
++            var reacquireAfterKnownWrong = false;
+             for (var attempt = 1; attempt <= EmptyDetectionRetryCount; attempt++)
+             {
+                 using var capture = CaptureToRectArea();
++                if (!IsSelectionList(capture, assetScale))
++                    throw new InvalidOperationException("角色选择页面未核验，禁止盲点头像");
+                 using var gridRegion = capture.DeriveCrop(gridRoi);
+                 var cards = DetectCharacterCards(
+                     gridRegion.SrcMat, assetScale, out var rejectedCount, out var connectedComponentCount);
+@@ -263,14 +279,55 @@
+                         candidate.CharacterName, candidate.ElementType, candidate.Score);
+                     if (target.Matches(candidate.CharacterName) && candidate.Score >= MatchThreshold)
+                     {
++                        if (++selectionClicks > CharacterSelectionConfirmationPolicy.MaximumClicks)
++                            throw new InvalidOperationException("角色选择点击达到三次上限，目标姓名未核验");
++                        var desktop = ConvertRes<DesktopRegion>.ConvertPositionToTargetRegion(
++                            0, 0, cardRegion.Width, cardRegion.Height, cardRegion);
++                        logger.LogInformation(
++                            "角色选择点击诊断：目标={Target}，帧={Width}x{Height}，缩放={Scale}，网格ROI={GridRoi}，卡片ROI={CardRoi}，桌面矩形={DesktopRect}，桌面尺寸={DesktopWidth}x{DesktopHeight}，DPI={Dpi}",
++                            target.Name, capture.Width, capture.Height, assetScale, gridRoi, card.CardRect,
++                            desktop.ToRect(), desktop.TargetRegion.Width, desktop.TargetRegion.Height,
++                            TaskContext.Instance().DpiScale);
+                         cardRegion.Click();
++                        User32.GetCursorPos(out var actualCursor);
++                        logger.LogInformation("角色选择点击第 {Click}/{Maximum} 次，期望桌面中心={ExpectedX:F1},{ExpectedY:F1}，实际光标={ActualX},{ActualY}，实时捕获矩形={CaptureRect}",
++                            selectionClicks, CharacterSelectionConfirmationPolicy.MaximumClicks,
++                            desktop.X + desktop.Width / 2d, desktop.Y + desktop.Height / 2d,
++                            actualCursor.X, actualCursor.Y, SystemControl.GetCaptureRect(TaskContext.Instance().GameHandle));
+                         await Delay(300, ct);
+-                        return candidate;
++                        if (target.SkipDisplayNameConfirmation) return candidate; // 保留自定义显示名角色既有接口。
++                        var confirmation = new CharacterSelectionConfirmationPolicy(target.CandidateNames,
++                            DefaultAutoFightConfig.CombatAvatarMap.Keys);
++                        var result = CharacterSelectionObservation.Pending;
++                        for (var sample = 1; sample <= CharacterSelectionConfirmationPolicy.MaximumObservations; sample++)
++                        {
++                            using var observed = CaptureToRectArea();
++                            var listVerified = IsSelectionList(observed, assetScale);
++                            var name = listVerified ? ReadSelectedName(observed, assetScale) : "";
++                            result = confirmation.Observe(listVerified, name);
++                            logger.LogDebug("角色选择点击后核验 {Sample}/{Maximum}，列表={List}，姓名={Name}，结果={Result}",
++                                sample, CharacterSelectionConfirmationPolicy.MaximumObservations, listVerified, name, result);
++                            if (result != CharacterSelectionObservation.Pending) break;
++                            if (sample < CharacterSelectionConfirmationPolicy.MaximumObservations) await Delay(200, ct);
++                        }
++                        if (result == CharacterSelectionObservation.TargetConfirmed) return candidate;
++                        if (result == CharacterSelectionObservation.KnownWrongConfirmed &&
++                            selectionClicks < CharacterSelectionConfirmationPolicy.MaximumClicks)
++                        {
++                            logger.LogWarning("完整已知错误角色姓名连续三帧一致，将重新捕获列表和模型候选后局部重选");
++                            reacquireAfterKnownWrong = true;
++                            break;
++                        }
++                        throw new InvalidOperationException(result == CharacterSelectionObservation.KnownWrongConfirmed
++                            ? "角色选择三次点击后仍是已知错误角色，禁止继续档案读取"
++                            : "角色选择姓名为空、未知或未连续三帧一致，禁止盲目重复点击");
+                     }
+                 }
+ 
+                 break;
+             }
++
++            if (reacquireAfterKnownWrong) continue;
+ 
+             if (!await scroller.TryVerticalScollDown((src, _) =>
+                 {
+@@ -281,6 +338,19 @@
+                 return null;
+             }
+         }
++    }
++
++    internal static bool IsSelectionList(ImageRegion capture, double assetScale)
++    {
++        var assets = CharacterDevelopmentAssets.Get(capture.Width, capture.Height);
++        using var filter = capture.Find(assets.FilterRo);
++        return filter.IsExist() && !IsFilterPanel(capture, assetScale);
++    }
++
++    internal static string ReadSelectedName(ImageRegion capture, double assetScale, IOcrService? ocr = null)
++    {
++        using var name = capture.DeriveCrop(Rect1080(assetScale, 1466, 131, 244, 38));
++        return (ocr ?? OcrFactory.Paddle).OcrResult(name.SrcMat).Text.Trim();
+     }
+ 
+     /// <summary>
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -22,6 +22,12 @@
+ 原类型/等级/加成 OCR ROI 保持不变，独立颜色采样 padding 用于可靠背景估计。连续三次三元组一致、三个天赋完整核实及档案未知边界保持不变。72 项纯逻辑与 7 项私人页面的双尺寸同 Core 回放通过；静态夹具重复不等于独立实机帧，也未把离线修复称为实机验收通过。
+ 
+ The additional overlay verifies the talent-detail context before bounded text diagnostics and rejects ambiguous talent types, levels and bonus markers. It combines verified level-glyph evidence with the conditional bonus-label layout, preserves three consecutive samples and unknown outcomes, and shares one frame parser between production and private deterministic replay. OCR coordinates remain unchanged; extra color-sampling padding estimates the background. Offline and compressed-frame tests do not establish live BitBlt recognition success.
++
++## 2026-10-11 角色选择有限确认 / Bounded character selection confirmation
++
++第四份 `local-character-selection-fix-2026-10-11.patch` 复用既有头像模型和卡片定位，未修改匹配阈值或 DPI 倍率。点击后只有已核验列表内完整目标姓名连续三帧一致才返回候选；已知错误姓名连续三帧一致后允许重新捕获/模型定位并有限重选，上限三次。空、未知、部分或不稳定姓名不触发重按。记录必要坐标/前台诊断，选择有 30 秒取消期限；自定义显示名角色保留既有接口豁免。
++
++十四项纯逻辑聚焦回归通过。私人压缩网格素材未通过旧视觉候选回放，失败保留且不降低阈值；人工点击和离线结果不代表新的自动实机验收通过。
+ 
+ ## 2026-10-08 当前源码基线 / Current source baseline
+ 
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionConfirmationPolicy.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionConfirmationPolicy.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterSelectionConfirmationPolicy.cs
+@@ -0,0 +1,40 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Text;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++internal enum CharacterSelectionObservation { Pending, TargetConfirmed, KnownWrongConfirmed }
++
++/// <summary>只有角色列表内完整已知姓名连续三帧一致，才放行或允许局部重选。</summary>
++internal sealed class CharacterSelectionConfirmationPolicy
++{
++    internal const int MaximumClicks = 3;
++    internal const int MaximumObservations = 6;
++    private readonly HashSet<string> _targets;
++    private readonly HashSet<string> _known;
++    private readonly StableValueAccumulator<string> _stable = new(3);
++
++    public CharacterSelectionConfirmationPolicy(IEnumerable<string> targets, IEnumerable<string> knownNames)
++    {
++        _targets = targets.Select(Normalize).ToHashSet(StringComparer.Ordinal);
++        _known = knownNames.Select(Normalize).Concat(_targets).ToHashSet(StringComparer.Ordinal);
++    }
++
++    internal static string Normalize(string text) =>
++        string.Concat(text.Normalize(NormalizationForm.FormKC).Where(character => !char.IsWhiteSpace(character)));
++
++    public CharacterSelectionObservation Observe(bool isCharacterList, string text)
++    {
++        var name = Normalize(text);
++        if (!isCharacterList || string.IsNullOrEmpty(name) || !_known.Contains(name))
++        {
++            _stable.Reset();
++            return CharacterSelectionObservation.Pending;
++        }
++        if (!_stable.Add(name)) return CharacterSelectionObservation.Pending;
++        return _targets.Contains(name) ? CharacterSelectionObservation.TargetConfirmed
++            : CharacterSelectionObservation.KnownWrongConfirmed;
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionConfirmationPolicyTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionConfirmationPolicyTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionConfirmationPolicyTests.cs
+@@ -0,0 +1,95 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.Area.Converter;
++using BetterGenshinImpact.UnitTest.GameTaskTests.AutoFishingTests;
++using BetterGenshinImpact.View.Drawable;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CharacterSelectionConfirmationPolicyTests
++{
++    private static CharacterSelectionConfirmationPolicy Policy() => new(["目标角色"], ["目标角色", "已有角色"]);
++
++    [Fact]
++    public void TwoTargetObservationsCannotReleaseTheSelection()
++    {
++        var policy = Policy();
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "目标角色"));
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "目标角色"));
++        Assert.Equal(CharacterSelectionObservation.TargetConfirmed, policy.Observe(true, "目标角色"));
++    }
++
++    [Fact]
++    public void OnlyThreeCompleteKnownWrongNamesPermitLocalReacquisition()
++    {
++        var policy = Policy();
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "已有角色"));
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "已有角色"));
++        Assert.Equal(CharacterSelectionObservation.KnownWrongConfirmed, policy.Observe(true, "已有角色"));
++    }
++
++    [Theory]
++    [InlineData(false, "目标角色")]
++    [InlineData(true, "")]
++    [InlineData(true, "目标")]
++    [InlineData(true, "陌生角色")]
++    [InlineData(true, "已有")]
++    public void UnknownPageOrPartialNameNeverPermitsReleaseOrReclick(bool page, string name)
++    {
++        var policy = Policy();
++        for (var i = 0; i < CharacterSelectionConfirmationPolicy.MaximumObservations; i++)
++            Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(page, name));
++    }
++
++    [Theory]
++    [InlineData(false, "目标角色")]
++    [InlineData(true, "")]
++    [InlineData(true, "目标")]
++    public void UnknownObservationBreaksPriorTargetConsecutiveness(bool page, string name)
++    {
++        var policy = Policy();
++        policy.Observe(true, "目标角色"); policy.Observe(true, "目标角色");
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(page, name));
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "目标角色"));
++        Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, "目标角色"));
++        Assert.Equal(CharacterSelectionObservation.TargetConfirmed, policy.Observe(true, "目标角色"));
++    }
++
++    [Fact]
++    public void AlternatingKnownNamesCannotAuthorizeAnotherClick()
++    {
++        var policy = Policy();
++        for (var i = 0; i < 6; i++)
++            Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, i % 2 == 0 ? "已有角色" : "目标角色"));
++    }
++
++    [Fact]
++    public void WhitespaceNormalizationKeepsTheCompleteIdentity()
++    {
++        var policy = Policy();
++        policy.Observe(true, "目标角色"); policy.Observe(true, "目标 角色");
++        Assert.Equal(CharacterSelectionObservation.TargetConfirmed, policy.Observe(true, "目标\n角色"));
++    }
++
++    [Fact]
++    public void NestedGridCardTransformsToPhysicalDesktopWithoutDpiDivision()
++    {
++        var desktop = new DesktopRegion(2560, 1440, new FakeMouseSimulator());
++        using var pixels = new Mat(1080, 1920, MatType.CV_8UC3, Scalar.Black);
++        using var capture = desktop.Derive(pixels.Clone(), 400, 232);
++        using var grid = capture.DeriveCrop(new Rect(40, 76, 641, 897));
++        using var card = grid.DeriveCrop(new Rect(520, 25, 115, 140));
++        var converted = ConvertRes<DesktopRegion>.ConvertPositionToTargetRegion(0, 0, card.Width, card.Height, card);
++        Assert.Equal(new Rect(960, 333, 115, 140), converted.ToRect());
++        Assert.Equal(1017.5, converted.X + converted.Width / 2d);
++        Assert.Equal(2560, converted.TargetRegion.Width);
++    }
++
++    [Fact]
++    public void SelectionLimitsAreFinite()
++    {
++        Assert.Equal(3, CharacterSelectionConfirmationPolicy.MaximumClicks);
++        Assert.Equal(6, CharacterSelectionConfirmationPolicy.MaximumObservations);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterSelectionPrivateImageTests.cs
+@@ -0,0 +1,70 @@
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.View.Drawable;
++using Newtonsoft.Json;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CharacterSelectionPrivateImageTests(ITestOutputHelper output)
++{
++    [Theory]
++    [Trait("Fixture", "PrivateCharacterSelection")]
++    [InlineData("before")]
++    [InlineData("after")]
++    public void LocalGridFramesKeepTargetCandidateAndObservedFullNameSeparate(string caseId)
++    {
++        var directory = Environment.GetEnvironmentVariable("BETTERGI_PRIVATE_CHARACTER_GRID_FIXTURE_DIR");
++        Assert.False(string.IsNullOrWhiteSpace(directory), "私人头像夹具缺失不能记为通过");
++        var manifest = JsonConvert.DeserializeObject<Dictionary<string, Fixture>>(
++            File.ReadAllText(Path.Combine(directory!, "character-selection-fixtures.json")))!;
++        Assert.True(manifest.TryGetValue(caseId, out var expected));
++        using var screenshot = Cv2.ImRead(Path.Combine(directory!, expected!.Filename));
++        Assert.Equal(new Size(1538, 895), screenshot.Size());
++        using var client = new Mat(screenshot, new Rect(1, 30, 1536, 864));
++        using var recognizer = new AvatarGridIconRecognizer();
++        using var ocr = new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),
++            PaddleOcrService.PaddleOcrModelType.V6);
++        foreach (var width in new[] { 1536, 1920 })
++        {
++            var scale = width / 1920d;
++            using var frame = new Mat();
++            Cv2.Resize(client, frame, new Size(width, width * 9 / 16));
++            using var capture = new ImageRegion(frame.Clone(), 0, 0, drawContent: new DrawContent());
++            var name = CharacterSelectionHelper.ReadSelectedName(capture, scale, ocr);
++            Assert.Equal(expected.ObservedName, CharacterSelectionConfirmationPolicy.Normalize(name));
++            var roi = new Rect((int)Math.Round(40 * scale), (int)Math.Round(76 * scale),
++                (int)Math.Round(641 * scale), (int)Math.Round(897 * scale));
++            using var grid = capture.DeriveCrop(roi);
++            var cards = CharacterSelectionHelper.DetectCharacterCards(grid.SrcMat, scale, out _, out _);
++            var targetCards = cards.Select(card =>
++            {
++                using var avatar = grid.SrcMat.SubMat(card.AvatarRect);
++                using var element = grid.SrcMat.SubMat(card.ElementRect);
++                var candidate = recognizer.Recognize(avatar, element, false);
++                return (Card: card, Candidate: candidate);
++            }).Where(pair => pair.Candidate.CharacterName == expected.TargetName &&
++                pair.Candidate.Score >= CharacterSelectionHelper.MatchThreshold).ToArray();
++            Assert.Single(targetCards);
++            var policy = new CharacterSelectionConfirmationPolicy([expected.TargetName], [expected.ObservedName]);
++            Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, name));
++            Assert.Equal(CharacterSelectionObservation.Pending, policy.Observe(true, name));
++            Assert.Equal(expected.IsTarget ? CharacterSelectionObservation.TargetConfirmed
++                : CharacterSelectionObservation.KnownWrongConfirmed, policy.Observe(true, name));
++            output.WriteLine("case={0}; width={1}; card={2}; score={3}; name={4}", caseId, width,
++                targetCards[0].Card.CardRect, targetCards[0].Candidate.Score, name);
++        }
++    }
++
++    private sealed class Fixture
++    {
++        public string Filename { get; set; } = "";
++        public string TargetName { get; set; } = "";
++        public string ObservedName { get; set; } = "";
++        public bool IsTarget { get; set; }
++    }
++}

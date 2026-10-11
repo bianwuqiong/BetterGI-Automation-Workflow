@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([switch]$CheckOnly, [switch]$AllowRepeat)
 
 $ErrorActionPreference = 'Stop'

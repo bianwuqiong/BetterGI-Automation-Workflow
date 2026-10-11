@@ -1,0 +1,1 @@
+[AUTO_GAME_EVENT] "{\"task\":\"培养材料\",\"runId\":\"test-run\",\"status\":\"unknown\",\"evidenceVerified\":true,\"mode\":\"scan\",\"readOnly\":true,\"reportRelativePath\":\"record/test-run.json\",\"completedSteps\":0,\"targetReached\":false}"

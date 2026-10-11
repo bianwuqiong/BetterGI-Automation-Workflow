@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import json
 import unittest
 from pathlib import Path
 
@@ -24,6 +25,226 @@ def _full_markers(body: str = "") -> str:
 
 
 class AnalyzeRunTests(unittest.TestCase):
+    def test_serilog_wrapped_live_scan_event_retains_unknown_claim(self) -> None:
+        # Sanitized event-only fixture from the 2026-10-08 live scan.
+        text = (ROOT / "tests/fixtures/cultivation-serilog-event.txt").read_text(encoding="utf-8")
+        result = analyze_log(text, ["培养材料"], run_id="test-run", cultivation_mode="scan")
+        self.assertEqual(result["cultivation"]["claimedStatus"], "unknown")
+        self.assertEqual(result["cultivation"]["reportRelativePath"], "record/test-run.json")
+        self.assertIs(result["cultivation"]["reportVerified"], False)
+        self.assertEqual(result["tasks"][0]["status"], "unknown")
+        self.assertEqual(result["resinEvents"], [])
+
+    def test_serilog_wrapped_event_keeps_scope_status_and_evidence_checks(self) -> None:
+        for override in ({"runId": "other-run"}, {"mode": "execute"},
+                         {"readOnly": False}, {"evidenceVerified": False},
+                         {"evidenceVerified": 1}, {"status": "skipped"},
+                         {"reportRelativePath": "record/../test-run.json"}):
+            with self.subTest(override=override):
+                raw = self.cultivation_event(mode="scan", readOnly=True)
+                payload = json.loads(raw.split(" ", 1)[1])
+                payload.update(override)
+                wrapped = "[AUTO_GAME_EVENT] " + json.dumps(json.dumps(payload, ensure_ascii=False))
+                result = analyze_log(wrapped, ["培养材料"], run_id="test-run", cultivation_mode="scan")
+                self.assertIsNone(result["cultivation"])
+                self.assertEqual(result["tasks"][0]["status"], "unknown")
+
+    def test_serilog_event_unwraps_once_without_searching_for_json(self) -> None:
+        raw = self.cultivation_event(mode="scan", readOnly=True).split(" ", 1)[1]
+        for payload in (json.dumps(json.dumps(raw)), json.dumps("prefix " + raw),
+                        json.dumps(raw + " suffix"), json.dumps("not JSON"),
+                        json.dumps([json.loads(raw)])):
+            with self.subTest(payload=payload):
+                result = analyze_log("[AUTO_GAME_EVENT] " + payload, ["培养材料"],
+                                     run_id="test-run", cultivation_mode="scan")
+                self.assertIsNone(result["cultivation"])
+        result = analyze_log("OCR: [AUTO_GAME_EVENT] " + json.dumps(raw), ["培养材料"],
+                             run_id="test-run", cultivation_mode="scan")
+        self.assertIsNone(result["cultivation"])
+
+    def test_serilog_wrapped_inline_event_uses_standard_log_header(self) -> None:
+        raw = self.cultivation_event(mode="scan", readOnly=True).split(" ", 1)[1]
+        text = '[12:00:00.123] [INF] [Primary:S1:P1:T1] [AUTO_GAME_EVENT] ' + json.dumps(raw)
+        result = analyze_log(text, ["培养材料"], run_id="test-run", cultivation_mode="scan")
+        self.assertEqual(result["cultivation"]["claimedStatus"], "success")
+        self.assertEqual(result["tasks"][0]["status"], "unknown")
+
+    def cultivation_event(self, **overrides) -> str:
+        payload = {
+            "task": "培养材料", "runId": "test-run", "status": "success",
+            "evidenceVerified": True, "mode": "execute",
+            "reportRelativePath": "record/test-run.json",
+            "steps": [{"name": "菫色之庭", "status": "success"}],
+            "observedGains": {"「浮世」的教导": 2},
+        }
+        payload.update(overrides)
+        return "[AUTO_GAME_EVENT] " + json.dumps(payload, ensure_ascii=False)
+
+    def test_mixed_builtin_and_cultivation_group_keep_separate_scopes(self) -> None:
+        text = "\n".join([
+            "一条龙任务执行: 1/2",
+            '[AUTO_GAME_EVENT] {"task":"领取邮件","status":"success","evidenceVerified":true}',
+            "配置组任务执行: 1/1", "任务执行异常：JS首次尝试",
+            self.cultivation_event(), "一条龙任务执行: 2/2",
+            "检查每日奖励结果：今日奖励已领取", "一条龙和配置组任务结束",
+        ])
+        result = analyze_log(text, ["领取邮件", "培养材料", "领取每日奖励"], run_id="test-run")
+        self.assertEqual([t["status"] for t in result["tasks"]], ["success", "unknown", "success"])
+        self.assertEqual(result["outcome"], "partial")
+        self.assertEqual(result["cultivation"]["claimedStatus"], "success")
+        self.assertEqual(result["cultivation"]["observedGains"], {"「浮世」的教导": 2})
+        self.assertEqual(result["cultivation"]["steps"][0]["name"], "菫色之庭")
+        self.assertIs(result["cultivation"]["reportVerified"], False)
+
+    def legacy_total_cultivation_log(self):
+        return '\n'.join(['参数指定的一条龙配置：AutoGame_test-run',
+            '启用一条龙配置：AutoGame_test-run', '一条龙任务执行: 1/3',
+            '[AUTO_GAME_EVENT] {"task":"领取邮件","status":"success","evidenceVerified":true}',
+            '配置组任务执行: 1/1', '任务执行异常：培养独立范围',
+            self.cultivation_event(status='unknown'), '一条龙任务执行: 2/3',
+            '前往冒险家协会领取奖励执行异常：网络波动后未能恢复到游戏主界面',
+            '一条龙和配置组任务结束', '游戏已退出，BetterGI 自动停止截图器'])
+
+    def test_legacy_total_denominator_uses_builtin_ordinals_with_exact_cultivation_scope(self):
+        result = analyze_log(self.legacy_total_cultivation_log(),
+            ['领取邮件', '培养材料', '领取每日奖励'], run_id='test-run', config_name='AutoGame_test-run')
+        self.assertTrue(result['flowEnded'])
+        self.assertEqual([task['status'] for task in result['tasks']], ['success', 'unknown', 'failed'])
+        self.assertEqual(result['cultivation']['claimedStatus'], 'unknown')
+        self.assertFalse(result['cultivation']['reportVerified'])
+        self.assertEqual(result['outcome'], 'partial')
+
+    def test_legacy_total_denominator_requires_exact_config_run_and_group_proof(self):
+        text = self.legacy_total_cultivation_log()
+        variants = [(text, None, 'AutoGame_test-run'), (text, 'other', 'AutoGame_test-run'),
+                    (text, 'test-run', None), (text, 'test-run', 'OtherRun'),
+                    (text.replace('配置组任务执行: 1/1', ''), 'test-run', 'AutoGame_test-run'),
+                    (text.replace('配置组任务执行: 1/1', '配置组任务执行: 1/2'), 'test-run', 'AutoGame_test-run'),
+                    (text.replace('启用一条龙配置：AutoGame_test-run', '启用一条龙配置：OtherRun'), 'test-run', 'AutoGame_test-run')]
+        for changed, run_id, config_name in variants:
+            with self.subTest(run_id=run_id, config=config_name, changed=changed):
+                result = analyze_log(changed, ['领取邮件', '培养材料', '领取每日奖励'],
+                                     run_id=run_id, config_name=config_name)
+                self.assertFalse(result['flowEnded'])
+                self.assertIsNone(result['cultivation'])
+                self.assertTrue(all(task['status'] == 'unknown' for task in result['tasks']))
+                self.assertEqual(result['rewards'], {})
+
+    def test_legacy_total_mixed_runs_duplicate_groups_and_wrong_group_position_are_rejected(self):
+        text = self.legacy_total_cultivation_log()
+        variants = [text + '\n' + text,
+            text.replace('配置组任务执行: 1/1', '配置组任务执行: 1/1\n配置组任务执行: 1/1'),
+            text.replace('一条龙任务执行: 2/3', '一条龙任务执行: 2/2'),
+            text.replace('配置组任务执行: 1/1', '').replace('一条龙任务执行: 2/3', '一条龙任务执行: 2/3\n配置组任务执行: 1/1'),
+            text.replace('一条龙任务执行: 2/3', '一条龙任务执行: 3/3')]
+        for changed in variants:
+            result = analyze_log(changed, ['领取邮件', '培养材料', '领取每日奖励'],
+                                 run_id='test-run', config_name='AutoGame_test-run')
+            self.assertFalse(result['flowEnded'])
+            self.assertIsNone(result['cultivation'])
+            self.assertTrue(all(task['status'] == 'unknown' for task in result['tasks']))
+
+    def test_legacy_total_scoped_event_must_be_inside_the_unique_group(self):
+        text = self.legacy_total_cultivation_log()
+        for changed in (text.replace(self.cultivation_event(status='unknown'), ''),
+                        text.replace(self.cultivation_event(status='unknown'), self.cultivation_event(runId='other')),
+                        text.replace(self.cultivation_event(status='unknown'), '') + '\n' + self.cultivation_event(status='unknown')):
+            result = analyze_log(changed, ['领取邮件', '培养材料', '领取每日奖励'],
+                                 run_id='test-run', config_name='AutoGame_test-run')
+            self.assertFalse(result['flowEnded'])
+            self.assertIsNone(result['cultivation'])
+
+    def test_single_scan_retains_claim_without_confirming_farming(self) -> None:
+        text = "\n".join(["配置组任务执行: 1/1",
+            self.cultivation_event(mode="scan", readOnly=True), "一条龙和配置组任务结束"])
+        result = analyze_log(text, ["培养材料"], run_id="test-run", cultivation_mode="scan")
+        self.assertEqual(result["outcome"], "unknown")
+        self.assertEqual(result["tasks"][0]["status"], "unknown")
+        self.assertTrue(result["flowEnded"])
+        self.assertIs(result["cultivation"]["readOnly"], True)
+        self.assertEqual(result["cultivation"]["reportRelativePath"], "record/test-run.json")
+        self.assertEqual(result["rewards"], {})
+
+    def test_cultivation_wrong_or_missing_run_id_is_ignored(self) -> None:
+        for run_id in (None, "different-run"):
+            with self.subTest(run_id=run_id):
+                result = analyze_log(self.cultivation_event(), ["培养材料"], run_id=run_id)
+                self.assertIsNone(result["cultivation"])
+                self.assertEqual(result["tasks"][0]["status"], "unknown")
+
+    def test_cultivation_terminal_claims_wait_for_report_verification(self) -> None:
+        for status in ("unknown", "blocked", "failed"):
+            with self.subTest(status=status):
+                result = analyze_log(self.cultivation_event(status=status), ["培养材料"], run_id="test-run")
+                self.assertEqual(result["cultivation"]["claimedStatus"], status)
+                self.assertEqual(result["tasks"][0]["status"], "unknown")
+
+    def test_cultivation_mode_scope_mismatch_is_rejected(self) -> None:
+        cases = [("scan", "execute", True), ("execute", "scan", False)]
+        for event_mode, requested_mode, read_only in cases:
+            with self.subTest(event_mode=event_mode):
+                result = analyze_log(self.cultivation_event(mode=event_mode, readOnly=read_only),
+                    ["培养材料"], run_id="test-run", cultivation_mode=requested_mode)
+                self.assertIsNone(result["cultivation"])
+                self.assertEqual(result["outcome"], "unknown")
+
+    def test_cultivation_requires_strict_path_and_read_only_contract(self) -> None:
+        cases = [
+            {"reportRelativePath": "record/../other.json"},
+            {"reportRelativePath": "C:/record/test-run.json"},
+            {"mode": "scan", "readOnly": False},
+            {"mode": "scan", "readOnly": 1},
+            {"mode": "execute", "readOnly": True},
+            {"mode": "execute", "readOnly": 0},
+            {"evidenceVerified": False},
+            {"status": "skipped"},
+            {"status": []},
+            {"task": {"unexpected": "object"}},
+        ]
+        for override in cases:
+            with self.subTest(override=override):
+                result = analyze_log(self.cultivation_event(**override), ["培养材料"],
+                    run_id="test-run", cultivation_mode=override.get("mode", "execute"))
+                self.assertIsNone(result["cultivation"])
+
+    def test_cultivation_group_end_without_event_stays_unknown(self) -> None:
+        result = analyze_log("配置组任务执行: 1/1\n培养材料任务结束\n一条龙和配置组任务结束",
+            ["培养材料"], run_id="test-run")
+        self.assertEqual(result["outcome"], "unknown")
+        self.assertIsNone(result["cultivation"])
+
+    def test_cultivation_event_can_precede_builtin_markers(self) -> None:
+        text = "\n".join(["配置组任务执行: 1/1", self.cultivation_event(),
+            "一条龙任务执行: 1/1", "检查每日奖励结果：今日奖励已领取",
+            "一条龙和配置组任务结束"])
+        result = analyze_log(text, ["培养材料", "领取每日奖励"], run_id="test-run")
+        self.assertEqual(result["tasks"][1]["status"], "success")
+        self.assertEqual(result["cultivation"]["claimedStatus"], "success")
+
+    def test_cultivation_mixed_runs_or_wrong_config_reject_claims(self) -> None:
+        for text, config_name in [
+            ("一条龙任务执行: 1/1\n" + self.cultivation_event()
+                + "\n一条龙任务执行: 1/1", None),
+            ("参数指定的一条龙配置：OtherRun\n" + self.cultivation_event(), "ExpectedRun"),
+        ]:
+            with self.subTest(config_name=config_name):
+                tasks = ["培养材料"] if config_name else ["培养材料", "领取每日奖励"]
+                result = analyze_log(text, tasks, run_id="test-run", config_name=config_name)
+                self.assertIsNone(result["cultivation"])
+                self.assertTrue(all(task["status"] == "unknown" for task in result["tasks"]))
+
+    def test_foreign_run_crafting_event_is_not_accounted(self) -> None:
+        payload = {
+            "task": "合成树脂", "runId": "other-run", "status": "success", "evidenceVerified": True,
+            "originalResinBefore": 60, "originalResinAfter": 0,
+            "condensedResinBefore": 0, "condensedResinAfter": 1,
+            "condensedResinCreated": 1, "originalResinSpent": 60,
+        }
+        text = "一条龙任务执行: 1/1\n[AUTO_GAME_EVENT] " + json.dumps(payload) + "\n一条龙和配置组任务结束"
+        result = analyze_log(text, ["合成树脂"], run_id="test-run")
+        self.assertEqual(result["tasks"][0]["status"], "unknown")
+        self.assertEqual(result["resinEvents"], [])
+
     def test_failed_multi_task_run_is_not_completed(self) -> None:
         text = "\n".join([
             "一条龙任务执行: 1/6",
@@ -241,6 +462,98 @@ class AnalyzeRunTests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "completed")
         self.assertEqual(result["tasks"][0]["status"], "success")
+
+    def test_daily_reward_claim_success_preserves_separate_unverified_dispatch_scope(self) -> None:
+        result = analyze_log(
+            "一条龙任务执行: 1/1\n检查每日奖励结果：今日奖励已领取\n一条龙和配置组任务结束",
+            ["领取每日奖励"],
+        )
+        task = result["tasks"][0]
+        self.assertEqual(result["outcome"], "completed")
+        self.assertEqual(task["dailyRewardClaim"]["status"], "success")
+        self.assertEqual(task["dailyRewardClaim"]["evidence"], task["evidence"])
+        self.assertEqual(task["successScope"], "daily-reward-claim-only")
+        self.assertIs(result["fullDailyScopeVerified"], False)
+        dispatch = result["dispatchVerification"]
+        self.assertIs(dispatch["evidenceVerified"], False)
+        for field in ("status", "collectionStatus", "reassignmentStatus", "postStateStatus"):
+            self.assertEqual(dispatch[field], "unknown")
+        self.assertEqual(dispatch["legacyEvidence"], [])
+        self.assertIn("full daily dispatch scope remains unverified", "\n".join(result["warnings"]))
+
+    def test_dispatch_clicks_and_completion_are_retained_as_unverified_prose_only(self) -> None:
+        lines = ["一条龙任务执行: 1/1", "探索派遣：全部领取", "探索派遣：再次派遣",
+                 "探索派遣：完成", "探索派遣：重新派遣完成",
+                 "检查每日奖励结果：今日奖励已领取", "一条龙和配置组任务结束"]
+        result = analyze_log("\n".join(lines), ["领取每日奖励"])
+        self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "success")
+        dispatch = result["dispatchVerification"]
+        self.assertEqual([row["line"] for row in dispatch["legacyEvidence"]], [2, 3, 4, 5])
+        self.assertEqual(dispatch["collectionStatus"], "unknown")
+        self.assertEqual(dispatch["reassignmentStatus"], "unknown")
+        self.assertEqual(dispatch["postStateStatus"], "unknown")
+        self.assertIs(result["fullDailyScopeVerified"], False)
+
+    def test_missing_dispatch_or_no_collect_button_never_means_verified_skip(self) -> None:
+        for prose in ("", "探索派遣：未找到领取按钮", "▶ 探索派遣 未探索完成或已领取"):
+            with self.subTest(prose=prose):
+                result = analyze_log(
+                    "一条龙任务执行: 1/1\n" + prose + "\n一条龙和配置组任务结束",
+                    ["领取每日奖励"],
+                )
+                self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "unknown")
+                self.assertEqual(result["dispatchVerification"]["status"], "unknown")
+                self.assertNotIn("successScope", result["tasks"][0])
+                self.assertEqual(result["outcome"], "unknown")
+
+    def test_commission_machine_claim_does_not_establish_dispatch_from_extra_flags(self) -> None:
+        event = {"task": "领取每日奖励", "runId": "test-run", "status": "success",
+                 "evidenceVerified": True, "dispatchVerified": True,
+                 "collectionStatus": "success", "reassignmentStatus": "success",
+                 "postStateStatus": "success"}
+        result = analyze_log("[AUTO_GAME_EVENT] " + json.dumps(event),
+                             ["领取每日奖励"], run_id="test-run")
+        self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "success")
+        self.assertEqual(result["tasks"][0]["successScope"], "daily-reward-claim-only")
+        self.assertEqual(result["dispatchVerification"]["reassignmentStatus"], "unknown")
+        self.assertIs(result["fullDailyScopeVerified"], False)
+
+    def test_dispatch_evidence_is_limited_to_its_selected_builtin_section(self) -> None:
+        text = "\n".join(["一条龙任务执行: 1/2", "探索派遣：再次派遣",
+                          "一条龙任务执行: 2/2", "探索派遣：未找到领取按钮",
+                          "检查每日奖励结果：今日奖励已领取", "一条龙和配置组任务结束"])
+        result = analyze_log(text, ["领取邮件", "领取每日奖励"])
+        self.assertEqual(result["dispatchVerification"]["legacyEvidence"],
+                         [{"line": 4, "text": "探索派遣：未找到领取按钮"}])
+
+    def test_wrong_config_and_mixed_runs_do_not_expose_attributed_dispatch_prose(self) -> None:
+        segment = "一条龙任务执行: 1/1\n探索派遣：再次派遣\n检查每日奖励结果：今日奖励已领取\n一条龙和配置组任务结束"
+        cases = [(segment + "\n" + segment, None),
+                 ("参数指定的一条龙配置：OtherRun\n" + segment, "ExpectedRun")]
+        for text, config_name in cases:
+            with self.subTest(config_name=config_name):
+                result = analyze_log(text, ["领取每日奖励"], config_name=config_name)
+                self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "unknown")
+                self.assertEqual(result["dispatchVerification"]["legacyEvidence"], [])
+                self.assertIs(result["fullDailyScopeVerified"], False)
+
+    def test_foreign_run_event_and_later_terminal_failure_keep_claim_boundaries(self) -> None:
+        event = {"task": "领取每日奖励", "runId": "other-run", "status": "success",
+                 "evidenceVerified": True}
+        result = analyze_log("[AUTO_GAME_EVENT] " + json.dumps(event),
+                             ["领取每日奖励"], run_id="test-run")
+        self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "unknown")
+        result = analyze_log("一条龙任务执行: 1/1\n检查每日奖励结果：今日奖励已领取\n任务被取消\n一条龙和配置组任务结束",
+                             ["领取每日奖励"])
+        self.assertEqual(result["tasks"][0]["dailyRewardClaim"]["status"], "failed")
+        self.assertEqual(result["dispatchVerification"]["status"], "unknown")
+        self.assertNotIn("successScope", result["tasks"][0])
+
+    def test_runs_without_daily_reward_do_not_assert_full_daily_or_dispatch_scope(self) -> None:
+        result = analyze_log("一条龙任务执行: 1/1\n一条龙和配置组任务结束", ["领取邮件"])
+        self.assertIsNone(result["dispatchVerification"])
+        self.assertIsNone(result["fullDailyScopeVerified"])
+        self.assertNotIn("dailyRewardClaim", result["tasks"][0])
 
     def test_insufficient_legacy_evidence_stays_unknown_and_timeout_cannot_complete(self) -> None:
         result = analyze_log(

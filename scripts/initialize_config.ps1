@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$IncludeTalentPlanning)
+param([switch]$IncludeTalentPlanning, [switch]$IncludeCultivation)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
@@ -7,6 +7,9 @@ $Config = Join-Path $Root 'config'
 $items = @('settings', 'goals')
 if ($IncludeTalentPlanning) {
     $items += @('domain-calendar', 'book-progress')
+}
+if ($IncludeCultivation) {
+    $items += @('cultivation', 'party-preparation')
 }
 
 foreach ($name in $items) {

@@ -1,0 +1,7 @@
+[
+  {"name":"runId","type":"input-text","label":"运行编号（由工作流填写）","default":""},
+  {"name":"mode","type":"select","label":"模式","options":["scan","execute"],"default":"scan"},
+  {"name":"targetConfigJson","type":"input-text","label":"培养目标 JSON","default":"{\"characterName\":\"梦见月瑞希\",\"targetLevel\":90,\"talentTargets\":{\"normal\":9,\"skill\":9,\"burst\":9},\"includeEquippedWeapon\":true,\"weaponTargetLevel\":90}"},
+  {"name":"policyJson","type":"input-text","label":"执行预算 JSON（只读模式可留空）","default":"{}"},
+  {"name":"resinDiagnosticOnly","type":"checkbox","label":"只读树脂诊断","default":false}
+]
