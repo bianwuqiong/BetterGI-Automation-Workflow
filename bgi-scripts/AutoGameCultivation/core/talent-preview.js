@@ -32,18 +32,23 @@ const rowText=(rows,box,s,full=true,projected=false)=>{
 };
 const pair=(a,b)=>{if(a.width!==b.width||a.height!==b.height||number(b.observedAt)-number(a.observedAt)<=0||b.observedAt-a.observedAt>5000)fail('talent_fresh_pair_missing');};
 const digits=raw=>/^(0|[1-9][0-9]{0,9})$/.test(clean(raw))?integer(Number(clean(raw))):fail('talent_complete_integer_missing');
-function quantity(q,start,finish,prefix=''){
+export function verifyTalentQuantity(q,start,finish,prefix=''){
   const s=dimensions(q,start,finish),box=rect(q.bounds),owned=integer(q.owned),required=integer(q.required,prefix?0:1);
   if(q.complete!==true||(q.prefix??'')!==prefix||!inside(box,{x:0,y:0,width:q.width,height:q.height}))fail('talent_complete_ratio_missing');
   if(q.slashPixelVerified===true){
     const slash=rect(q.slashBounds),left=rect(q.numeratorRegion),right=rect(q.denominatorRegion);
+    const method=q.splitRegionMethod;let top,bottom;
+    if(method==null){top=box.y;bottom=box.y+box.height;}
+    else if(method==='slash_vertical_band'&&q.splitVerticalPaddingReference===6){const pad=Math.max(3,roundEven(6*s));top=Math.max(box.y,slash.y-pad);bottom=Math.min(box.y+box.height,slash.y+slash.height+pad);}
+    else fail('talent_split_method_or_padding_not_reviewed');
     if(prefix||q.splitOcrScale!==4||box.width>=200*s||!inside(slash,box)||slash.width<2||slash.height<6
         ||slash.height/slash.width<1.5||slash.height/slash.width>5||integer(q.slashInkPixels)<6||number(q.slashCorrelation)<-1||q.slashCorrelation>-.75
         ||slash.x-box.x<=8||box.x+box.width-slash.x-slash.width<=8||slash.x-box.x<box.width*.2||slash.x+slash.width>box.x+box.width*.85
-        ||left.x!==box.x||left.y!==box.y||left.width!==slash.x-box.x-1||left.height!==box.height
-        ||right.x!==slash.x+slash.width+1||right.y!==box.y||right.width!==box.x+box.width-slash.x-slash.width-1||right.height!==box.height
+        ||left.x!==box.x||left.y!==top||left.width!==slash.x-box.x-1||left.height!==bottom-top
+        ||right.x!==slash.x+slash.width+1||right.y!==top||right.width!==box.x+box.width-slash.x-slash.width-1||right.height!==bottom-top
         ||q.numeratorRows?.length!==1||q.denominatorRows?.length!==1)fail('talent_actual_slash_geometry_missing');
-    const num=rowText(q.numeratorRows,left,s,true,true),den=rowText(q.denominatorRows,right,s,true,true);
+    const num=rowText(q.numeratorRows,left,s,true,method==null),den=rowText(q.denominatorRows,right,s,true,method==null);
+    if(method!=null)for(const [values,bounds] of [[q.numeratorRows,left],[q.denominatorRows,right]])if(values.some(row=>Math.min(row.bounds.y-bounds.y,bounds.y+bounds.height-row.bounds.y-row.bounds.height)<2*s))fail('talent_slash_band_integer_crop_edge');
     if(num!==clean(q.numeratorRaw)||den!==clean(q.denominatorRaw)||digits(num)!==owned||digits(den)!==required)fail('talent_split_integer_mismatch');
   }else{
     const raw=clean(q.raw);let detected=rowText(q.ocrRows,box,s);
@@ -53,6 +58,7 @@ function quantity(q,start,finish,prefix=''){
   }
   return {owned,required};
 }
+const quantity=verifyTalentQuantity;
 const roundEven=v=>{const floor=Math.floor(v);return v-floor===.5?(floor%2?floor+1:floor):Math.round(v);};
 const rectSame=(a,b)=>['x','y','width','height'].every(k=>a[k]===b[k]);
 function retainedInitial(q,parent,start,finish){
@@ -100,6 +106,59 @@ function coinIdentity(p){
   }else fail('talent_coin_variant_not_explicit_fixed_selection');
   if(p.coinName!=='摩拉'||number(p.coinScore)<.75||p.coinScore>1)fail('talent_primary_mora_model_missing');
 }
+function entryObservation(f,character,start,finish){
+  const s=dimensions(f,start,finish);
+  if(f.phase!=='talent_entry_observation'||f.focused!==true||f.overview!==true||f.promptVisible!==false||f.reviveVisible!==false)fail('talent_entry_known_focused_page_required');
+  const n=f.character;dimensions(n,start,finish);const nameBox=characterRegion(n);
+  if(n.observedAt!==f.observedAt||n.width!==f.width||n.height!==f.height||n.overview!==true||clean(n.name)!==clean(character)
+      ||n.nameRows?.length!==1||rowText(n.nameRows,nameBox,s)!==clean(character))fail('talent_entry_current_fullname_unverified');
+  const name=rect(n.nameRows[0].bounds);if(Math.min(name.y-nameBox.y,nameBox.y+nameBox.height-name.y-name.height)<2*s)fail('talent_entry_fullname_crop_edge');
+  const box=region(f,'region',[1536,0,384,900]);if(!Array.isArray(f.rows))fail('talent_entry_original_rows_missing');
+  const derived=[];
+  for(const row of f.rows){if(typeof row.text!=='string'||!inside(rect(row.bounds),box))fail('talent_entry_raw_row_outside_roi');const match=clean(row.text).match(/^(?:Lv\.?|等级)?([0-9]{1,2})$/i);if(match&&Number(match[1])>=1&&Number(match[1])<=15)derived.push(row);}
+  derived.sort((a,b)=>a.bounds.y-b.bounds.y);
+  if(derived.length!==3||!same(f.candidates,derived))fail('talent_entry_exact_three_raw_derived_candidates_required');
+  for(const row of derived){const b=rect(row.bounds);if(Math.min(b.x-box.x,b.y-box.y,box.x+box.width-b.x-b.width,box.y+box.height-b.y-b.height)<2*s)fail('talent_entry_four_edge_candidate_required');}
+  if(derived.some((row,i)=>i<2&&row.bounds.y+row.bounds.height>=derived[i+1].bounds.y))fail('talent_entry_candidates_overlap');
+  return derived;
+}
+function rollingIdentity(e,frames,names,character,start,finish){
+  if(e.characterIdentityMethod!=='bounded_rolling_exact_triple'||e.characterIdentityObservationLimitMs!==12000||e.characterIdentityPollMs!==300)fail('talent_rolling_identity_method_or_limits_invalid');
+  const trials=e.characterIdentityTrials,originals=frames.filter(f=>f.phase==='character_identity_observation');
+  if(!Array.isArray(trials)||trials.length<3||trials.length>41||!same(trials,originals)||!same(names,trials.slice(-3))
+      ||!same(frames.slice(0,trials.length),trials)||trials.at(-1).observedAt-trials[0].observedAt>=12000)fail('talent_rolling_raw_prefix_or_last_triple_missing');
+  const valid=[];
+  for(const [i,n] of trials.entries()){
+    const s=dimensions(n,start,finish),box=rect(n.nameRegion),expected={x:roundEven(1420*s),y:roundEven(110*s),width:roundEven(360*s),height:roundEven(68*s)},values=n.nameRows;
+    if(!same(box,expected)||typeof n.overview!=='boolean'||typeof n.name!=='string'||!Array.isArray(values)
+        ||values.some(r=>typeof r.text!=='string'||!inside(rect(r.bounds),box))||clean(n.name)!==values.map(r=>clean(r.text)).join('')
+        ||i&&n.observedAt-trials[i-1].observedAt<300)fail('talent_rolling_original_name_rows_or_poll_invalid');
+    let exact=n.overview&&values.length===1&&clean(n.name)===clean(character);
+    if(exact){const r=rect(values[0].bounds);exact=Math.min(r.x-box.x,r.y-box.y,box.x+box.width-r.x-r.width,box.y+box.height-r.y-r.height)>=2*s;}
+    valid.push(exact);
+    if(i>=2&&valid.slice(-3).every(Boolean)&&n.observedAt-trials[i-2].observedAt<=5000&&[i-1,i].every(j=>trials[j].observedAt-trials[j-1].observedAt<=5000)){
+      if(i!==trials.length-1)fail('talent_rolling_continued_after_first_verified_triple');return;
+    }
+  }
+  fail('talent_rolling_final_triple_unverified');
+}
+function entryBinding(e,frames,character,type,start,finish,names,details){
+  const selected=e.twoPickedEntryFrames,click=e.entryClickFrame;
+  if(!Array.isArray(selected)||selected.length!==2||!click||typeof click!=='object')fail('talent_explicit_entry_pair_click_required');
+  const entries=frames.filter(f=>f.phase==='talent_entry_observation'),all=[...selected,click];
+  if(all.some(f=>!included(f,entries))||same(selected[0],selected[1])||selected.some(f=>same(f,click)))fail('talent_entry_references_not_independent_raw');
+  const positions=all.map(f=>entries.findIndex(v=>same(v,f)));
+  if(positions[1]!==positions[0]+1||positions[2]!==positions[1]+1)fail('talent_entry_refs_not_original_consecutive_sequence');
+  if(selected[0].observedAt<=names.at(-1).observedAt||click.observedAt>=details[0].observedAt||click.observedAt-entries[0].observedAt>12000
+      ||entries.some(f=>f.observedAt<names.at(-1).observedAt||f.observedAt>click.observedAt))fail('talent_entry_sequence_or_deadline_invalid');
+  const result=all.map(f=>entryObservation(f,character,start,finish));pair(selected[0],selected[1]);pair(selected[1],click);
+  for(let i=0;i<3;i++){
+    const [a,b,c]=result.map(values=>rect(values[i].bounds)),cy=r=>r.y+Math.floor(r.height/2),cx=r=>r.x+Math.floor(r.width/2);
+    if(Math.abs(cy(a)-cy(b))>6||Math.abs(cy(b)-cy(c))>6||Math.abs(cx(b)-cx(c))>6||new Set(result.map(values=>clean(values[i].text))).size!==1)fail('talent_entry_stable_geometry_or_text_required');
+  }
+  const match=clean(result.at(-1)[TALENT_TYPES.indexOf(type)].text).match(/^(?:Lv\.?|等级)?([0-9]{1,2})$/i);
+  if(Number(match[1])!==integer(details[0].displayLevel,1,13))fail('talent_requested_index_does_not_bind_detail_level');
+}
 function detail(d,type,start,finish){
   const s=dimensions(d,start,finish);if(d.page!==true||d.type!==type)fail('talent_detail_page_type_mismatch');
   const title=rowText(d.titleRows,region(d,'titleRegion',[20,120,540,52]),s),actualType=rowText(d.typeRows,region(d,'typeRegion',[242,13,98,36]),s,false);
@@ -142,6 +201,7 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   const e=raw.evidence,frames=e?.rawFrames,names=e?.characterIdentity;
   if(e?.characterSelectionAfterIdentity!==false||e.tooltipRequirementUsedAsUpgradeCost!==false||!Array.isArray(frames)||names?.length!==3)fail('talent_identity_raw_missing');
   for(const [i,f] of frames.entries()){dimensions(f,start,finish);if(i&&(f.observedAt<=frames[i-1].observedAt||f.width!==frames[0].width||f.height!==frames[0].height))fail('talent_raw_timeline_or_client_changed');}
+  if(['characterIdentityMethod','characterIdentityTrials','characterIdentityObservationLimitMs','characterIdentityPollMs'].some(k=>k in e)||frames.some(f=>f.phase==='character_identity_observation'))rollingIdentity(e,frames,names,character,start,finish);
   for(const n of names){const s=dimensions(n,start,finish),box=characterRegion(n);if(!included(n,frames)||n.overview!==true||clean(n.name)!==clean(character)
       ||rowText(n.nameRows,box,s)!==clean(character)||n.nameRows.some(row=>Math.min(row.bounds.y-box.y,box.y+box.height-row.bounds.y-row.bounds.height)<2*s))fail('talent_official_name_incomplete');}
   pair(names[0],names[1]);pair(names[1],names[2]);if(names[2].observedAt-names[0].observedAt>5000)fail('talent_character_triple_stale');
@@ -149,6 +209,7 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   if(details.length!==2||details[0].observedAt<=names[2].observedAt)fail('talent_detail_pair_missing');pair(details[0],details[1]);
   const a=detail(details[0],type,start,finish),b=detail(details[1],type,start,finish);
   if(!same(a,b)||!same(e.detailIdentityCarryover,details[1])||raw.talentName!==b.title)fail('talent_identity_carryover_mismatch');
+  if('characterIdentityMethod' in e||'twoPickedEntryFrames' in e||'entryClickFrame' in e||frames.some(f=>f.phase==='talent_entry_observation'))entryBinding(e,frames,character,type,start,finish,names,details);
   const previews=frames.filter(f=>'materials' in f&&'current' in f);
   if(previews.length<2||previews.length%2||previews[0].observedAt<=details[1].observedAt||!same(e.preview,previews.at(-1)))fail('talent_popup_pair_missing');let costs;
   for(let i=0;i<previews.length;i+=2){pair(previews[i],previews[i+1]);for(const p of previews.slice(i,i+2)){const actual=preview(p,b.base,start,finish);if(costs&&!same(costs,actual))fail('talent_costs_changed');costs=actual;}}

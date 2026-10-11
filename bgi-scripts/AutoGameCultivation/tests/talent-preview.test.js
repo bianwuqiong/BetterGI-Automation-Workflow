@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {verifyTalentObservation,createTalentPreviewReader} from '../core/talent-preview.js';
+import {verifyTalentObservation,createTalentPreviewReader,verifyTalentQuantity} from '../core/talent-preview.js';
 import {runCultivation} from '../core/operator.js';
 const fixture=()=>JSON.parse(readFileSync(new URL('./fixtures/talent-preview-synthetic.json',import.meta.url),'utf8'));
 const BASE=1791734400000;
@@ -21,10 +21,48 @@ function variant17(){
   }
   return raw;
 }
+function entry19(){
+  const raw=fixture(),e=raw.evidence;
+  function shift(v){if(!v||typeof v!=='object')return;if(Number.isInteger(v.observedAt)&&v.observedAt>=BASE+800)v.observedAt+=1200;for(const item of Object.values(v))shift(item);}
+  shift(e);raw.observedAt=new Date(BASE+4200).toISOString();
+  const entries=[800,1100,1400].map(at=>{
+    const character=structuredClone(e.characterIdentity[0]);character.observedAt=BASE+at;
+    const candidates=[{text:'Lv.2',bounds:{x:1600,y:220,width:70,height:25}},{text:'Lv.1',bounds:{x:1600,y:330,width:70,height:25}},{text:'Lv.3',bounds:{x:1600,y:440,width:70,height:25}}];
+    return {phase:'talent_entry_observation',observedAt:BASE+at,width:1920,height:1080,focused:true,overview:true,promptVisible:false,reviveVisible:false,
+      character,region:{x:1536,y:0,width:384,height:900},rows:structuredClone(candidates),candidates,failureReason:'verified_entries'};
+  });
+  e.rawFrames.splice(3,0,...entries);e.twoPickedEntryFrames=entries.slice(0,2);e.entryClickFrame=entries[2];return raw;
+}
 test('actual-shaped synthetic readonly target replacement verifies next cost not aggregate tooltip requirement',()=>{
   const raw=fixture(),result=verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000);
   assert.equal(result.currentBaseLevel,1);assert.equal(result.nextBaseLevel,2);
   assert.equal(result.materials[0].required,3);assert.equal(raw.evidence.materialTooltips[0][0].quantity.required,99);
+});
+function rolling20(){
+  const raw=entry19(),e=raw.evidence,seen=new WeakSet();
+  function shift(v){if(!v||typeof v!=='object'||seen.has(v))return;seen.add(v);if(Number.isInteger(v.observedAt))v.observedAt+=600;for(const item of Object.values(v))shift(item);}
+  shift(e);
+  for(const [i,n] of e.characterIdentity.entries())Object.assign(n,{observedAt:BASE+[400,700,1000][i],phase:'character_identity_observation',nameRegion:{x:1420,y:110,width:360,height:68}});
+  const bad=structuredClone(e.characterIdentity[0]);bad.observedAt=BASE+100;bad.name='芭芭拉。';bad.nameRows[0].text='芭芭拉。';
+  e.rawFrames.splice(0,3,bad,...e.characterIdentity);
+  Object.assign(e,{characterIdentityMethod:'bounded_rolling_exact_triple',characterIdentityObservationLimitMs:12000,characterIdentityPollMs:300,characterIdentityTrials:e.rawFrames.slice(0,4)});
+  raw.observedAt=new Date(BASE+4800).toISOString();return raw;
+}
+test('rolling20 preserves bad original punctuation and accepts only first consecutive exact final triple',()=>{
+  const raw=rolling20(),snapshot=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800).currentBaseLevel,1);
+  assert.deepEqual(raw,snapshot);assert.equal(raw.evidence.characterIdentityTrials[0].name,'芭芭拉。');
+});
+test('rolling20 cannot drop failed trials, select old triple, trim punctuation or downgrade method and timing',()=>{
+  for(const mutate of [e=>delete e.characterIdentityMethod,e=>e.characterIdentityObservationLimitMs=15000,e=>e.characterIdentityPollMs=200,
+      e=>delete e.characterIdentityTrials,e=>e.characterIdentityTrials=e.characterIdentity,e=>e.characterIdentityTrials[0].name='芭芭拉',
+      e=>e.characterIdentity[0].nameRows[0].bounds.x=1421,e=>e.characterIdentityTrials[0].observedAt=BASE+200,
+      e=>e.characterIdentity=e.characterIdentityTrials.slice(0,3),e=>e.rawFrames.shift(),e=>delete e.characterIdentityTrials[0].phase,
+      e=>e.characterSelectionAfterIdentity=true]){
+    const raw=rolling20();mutate(raw.evidence);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800));
+  }
+  const raw=rolling20();raw.evidence.characterIdentityTrials[0].name='芭芭拉';raw.evidence.characterIdentityTrials[0].nameRows[0].text='芭芭拉';
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800),/first_verified/);
 });
 test('fixed actual cyan +3 is removed once from the display level without altering popup next cost',()=>{
   const raw=fixture();
@@ -67,6 +105,34 @@ test('variant17 crop/source-row forgery and high-confidence initial currency con
     const raw=variant17();for(const p of [...raw.evidence.rawFrames.filter(f=>'materials' in f),raw.evidence.preview])mutate(p);
     assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
   }
+});
+test('explicit slash glyph band has exact natural pad6 regions and complete four-edge integer rows',()=>{
+  const rect=(x,y,width,height)=>({x,y,width,height}),row=(text,x,y,w,h)=>({text,bounds:rect(x,y,w,h)});
+  const q={observedAt:BASE+1400,width:1920,height:1080,bounds:rect(754,710,90,35),complete:true,
+    owned:32,required:3,prefix:'',slashPixelVerified:true,raw:'3213',detectorRaw:'3213',ocrRows:[],splitOcrScale:4,
+    splitRegionMethod:'slash_vertical_band',splitVerticalPaddingReference:6,slashBounds:rect(794,720,4,10),slashCorrelation:-.9,slashInkPixels:12,
+    numeratorRegion:rect(754,714,39,22),denominatorRegion:rect(799,714,45,22),numeratorRaw:'32',denominatorRaw:'3',
+    numeratorRows:[row('32',760,717,26,16)],denominatorRows:[row('3',810,717,18,16)]};
+  assert.deepEqual(verifyTalentQuantity(q,BASE,BASE+4000),{owned:32,required:3});assert.equal(q.raw,'3213');
+  for(const mutate of [r=>r.splitVerticalPaddingReference=4,r=>r.splitRegionMethod='guess',r=>Object.assign(r.numeratorRegion,{y:710,height:35}),
+      r=>r.numeratorRows[0].bounds.y=715,r=>r.denominatorRows[0].text='3万',r=>r.slashCorrelation=-.74,
+      r=>Object.assign(r,{complete:false,owned:null,required:null})]){
+    const bad=structuredClone(q);mutate(bad);assert.throws(()=>verifyTalentQuantity(bad,BASE,BASE+4000));
+  }
+});
+test('explicit picked entry pair and actual third click frame bind the requested talent index',()=>{
+  const raw=entry19();assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5200).currentBaseLevel,1);
+});
+test('new entry methods cannot downgrade, forge raw rows, substitute references, change fullname or incomplete boxes',()=>{
+  for(const mutate of [e=>delete e.twoPickedEntryFrames,e=>e.twoPickedEntryFrames=[],e=>e.entryClickFrame.focused=false,
+      e=>e.entryClickFrame.promptVisible=true,e=>e.entryClickFrame.character.name='别的角色',e=>e.entryClickFrame.rows[1].text='Lv.2',
+      e=>e.entryClickFrame.candidates[1].bounds.x=1537,e=>e.entryClickFrame.candidates[1].bounds.y=340,
+      e=>e.entryClickFrame=structuredClone(e.twoPickedEntryFrames[1]),e=>e.entryClickFrame.region.width=400,
+      e=>e.characterIdentity=e.characterIdentity.slice(0,2)]){
+    const raw=entry19();mutate(raw.evidence);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5200));
+  }
+  const raw=entry19();for(const f of [...raw.evidence.twoPickedEntryFrames,raw.evidence.entryClickFrame]){f.rows[1].text='Lv.2';f.candidates[1].text='Lv.2';}
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5200));
 });
 test('weak Mora, crop truncation, stale frame, partial name, missing raw header and changed target stay unknown',()=>{
   for(const mutate of [r=>r.evidence.preview.coinScore=.52,r=>r.evidence.preview.mora.ocrRows[0].bounds.x=903,

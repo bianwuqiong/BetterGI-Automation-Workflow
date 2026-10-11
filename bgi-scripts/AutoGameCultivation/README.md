@@ -95,3 +95,7 @@ python scripts/workflow.py run --profile cultivation --task '培养材料' --cul
 数量的新裁剪必须可独立重建：Mora只接受初始固定(903,797,275,55)中唯一完整ratio detector实际行，四边加 `Math.Round(12*s)`并限制在秘境预览中部；材料只接受真实父count行横pad20/竖pad5后与实际材料card相交的区域，初始pad8读取原样保留。JS和Python重新计算框、全部初始原行和同帧时点，最终完整raw与detector整数必须一致，2px边缘规则不降低。初始失败不能替代最终成功；初始高置信数量冲突仍拒绝，不从已知常见费用补值。
 
 `privateCapture`仅保存完整预览的原生无resize无合成PNG和诊断元数据，不替代货币/数量/新鲜度证明。弱模型或不完整原行仍unknown；公开测试均是合成数据，不能当作第17版实机已验收。
+
+第18版分离数字只接受明确 `splitRegionMethod=slash_vertical_band` / `splitVerticalPaddingReference=6`：从实际斜杠glyph上下各扩 `max(3,Math.Round(6*s))` 个自然像素，并与原count框相交。JS/Python精确重算两侧绝对region；4倍OCR投影后的完整整数必须四边≥2*s。旧无方法字段的数据仅按满高legacy区域核验，不把新带宽猜成旧模式。原斜杠140/-0.75/至少6墨点阈值不降，整行错误文字不替换；左右OCR失败时原生真实slash/regions/raw仍保留，但费用仍null/unknown。
+
+四库存的角色养成页只新增精确完整头名“养成道具”，与旧“角色培养道具”均需唯一且两个独立帧的实际文字一致。贵重道具仍仅接受“贵重道具”；不做contains/模糊标题，不加入未审查别名，也不自动确认过期道具通知。其余同tab、完整标题/数量、实际模型、选中边框像素与新鲜时点标准不变。

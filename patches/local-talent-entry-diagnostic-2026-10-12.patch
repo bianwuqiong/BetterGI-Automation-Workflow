@@ -1,0 +1,399 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -108,6 +108,8 @@
+ - 第十七层增加四种固定周本转化资源的独立只读库存入口，具名图标模型、页标、四侧选中框、完整数量双帧及世界恢复均需原始证据；缺失为null，不提供转化规划或消费动作。天赋预览仅增私有原生无缩放PNG/时间/字节及像素SHA诊断、卡片内充分数字边距、唯一完整货币数字行的有界重读和明确单一真实背景币图区域；初始失败原文/区域保留，0.75模型与两帧/完整名字标准不降低。诊断图片不代替验证、不公开。第十六层的姓名/详情/世界恢复已独立实机通过，完整预览仍有未知成本，不宣称升级完成。
+ - 第十八层仅增加角色培养道具/养成道具两个完整页名的唯一exact匹配（读取、选tab与清理共用），贵重道具不扩；不自动确认过期通知或其他弹窗。原生预览PNG证明斜杠几何存在，数字分离改为该实际glyph上下6px自然带，避免金星和卡片边缘影响，所有数字四边2px、原140灰度及相关性标准保持。数字失败时也保留实际斜杠及左右原文/字框，未知不补数。旧满高数据兼容但不重写历史记录；只读、无转化/升级确认仍保持。
+ 
++- 第十九层在一次天赋导航之后采用原只读查找器的12秒/300ms有界新帧观察，完整原始行与候选、官方全名、场景和时间均保留；只接受连续两张恰好三条完整等级且同序位置稳定的列表，点击前第三张再核对完整名称、原始列表和目标位置绑定。不重按导航或确认，失败明确区分数量、位置、页面和新鲜度，未观察到的动画原因不推断。已核实角色列表、已核实选中材料提示页和四个固定周本物品的已核实选中背包场景新增私有原PNG/时间/双SHA诊断；数量或字框裁边仍unknown/null，所有旧数字/矿石读取及币模型标准不改。图片不能代替成功证据或公开。仍未增加最终升级、转化或消费确认。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -29,6 +29,8 @@
+     private CancellationToken token;
+     private bool opened;
+     private UpgradePreviewDetail? selectedDetail;
++    private UpgradePreviewTalentEntries[] twoPickedEntryFrames=[];
++    private UpgradePreviewTalentEntries? entryClickFrame;
+     private string inspectionPhase="entry";
+     private static long Now()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+     private ImageRegion Capture()
+@@ -60,14 +62,14 @@
+     private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level)
+     {
+         UpgradePreviewFrame Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,recognizer,at);
+-            if(read.Page)read=read with{PrivateCapture=RetainPreviewCapture(frame,at)};frames.Add(read);return read;}
++            if(read.Page)read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};frames.Add(read);return read;}
+         var first=Read();await Delay();var second=Read();
+         if(!TalentUpgradePreviewEvidence.PreviewPair(first,second,level,Now()))throw new InvalidOperationException("upgrade_preview_pair_unverified");
+         return(first,second);
+     }
+-    private InspectionPrivateCapture? RetainPreviewCapture(ImageRegion frame,long at)
+-    {
+-        // Only after the complete preview page was proved. Private diagnostics cannot verify
++    private InspectionPrivateCapture? RetainDiagnosticCapture(ImageRegion frame,long at)
++    {
++        // Only after the selected character, preview or selected material tooltip page was proved. Diagnostics cannot verify
+         // currency, numbers, freshness, consumption or identity in place of the normal evidence.
+         try
+         {
+@@ -78,7 +80,7 @@
+             return new(at,frame.Width,frame.Height,frame.SrcMat.Type().ToString(),path,
+                 encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize");
+         }
+-        catch(Exception ex){logger.LogWarning("Private native preview PNG save failed: {Type}",ex.GetType().Name);return null;}
++        catch(Exception ex){logger.LogWarning("Private native inspection PNG save failed: {Type}",ex.GetType().Name);return null;}
+     }
+     private async Task ClickKnownText(string text,Rect reference)
+     {
+@@ -104,24 +106,46 @@
+         frame.ClickTo(matches[0].Bounds.X+matches[0].Bounds.Width/2,matches[0].Bounds.Y+matches[0].Bounds.Height/2);
+         await Delay(500);
+     }
++    private UpgradePreviewTalentEntries ReadTalentEntries(ImageRegion frame)
++    {
++        var at=Now();var focused=SystemControl.IsGenshinImpactActiveByProcess();
++        var overview=focused&&Overview(frame);var prompt=focused&&Bv.IsInPromptDialog(frame);var revive=focused&&Bv.IsInRevivePrompt(frame);
++        var character=overview&&!prompt&&!revive?Character(frame) with{ObservedAt=at}:new UpgradePreviewCharacter(at,false,""){
++            Width=frame.Width,Height=frame.Height,NameRegion=TalentUpgradePreviewReader.Scale(TalentUpgradePreviewEvidence.InspectionNameReference,frame.Width)};
++        var rows=overview&&!prompt&&!revive?TalentUpgradePreviewReader.Rows(frame,TalentEntryObservationEvidence.ReferenceRegion,OcrFactory.Paddle):[];
++        var read=new UpgradePreviewTalentEntries(at,frame.Width,frame.Height,focused,overview,prompt,revive,character,
++            TalentUpgradePreviewReader.Scale(TalentEntryObservationEvidence.ReferenceRegion,frame.Width),rows,TalentEntryObservationEvidence.Candidates(rows));
++        read=read with{FailureReason=TalentEntryObservationEvidence.FrameFailure(read,official)};
++        if(TalentEntryObservationEvidence.KnownPage(read,official))read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};
++        frames.Add(read);return read;
++    }
+     private async Task OpenTalent()
+     {
+         inspectionPhase="talent_tab_navigation";
+         await ClickKnownText("天赋",new(0,80,370,900));
+         inspectionPhase="talent_entry_pair";
+-        Point[] Read(){using var frame=Capture();
+-            if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("talent_list_page_unverified");
+-            var rows=TalentUpgradePreviewReader.Rows(frame,new(1536,0,384,900),OcrFactory.Paddle)
+-                .Where(r=>CharacterDevelopmentStateMachineTask.TryParseTalentLevel(r.Text,out _))
+-                .OrderBy(r=>r.Bounds.Y).ToArray();
+-            return rows.Select(r=>new Point(r.Bounds.X+r.Bounds.Width/2,r.Bounds.Y+r.Bounds.Height/2)).ToArray();}
+-        var first=Read();await Delay();var second=Read();
+-        if(first.Length!=3||second.Length!=3||first.Zip(second).Any(p=>Math.Abs(p.First.Y-p.Second.Y)>6))
+-            throw new InvalidOperationException("three_combat_talent_entries_pair_unverified");
++        var timer=System.Diagnostics.Stopwatch.StartNew();UpgradePreviewTalentEntries? previous=null;
++        string failure="wrong_candidate_count";
++        // One navigation only. Each observation is new; incomplete/unstable pairs never cause an input.
++        for(int i=0;i<41&&timer.ElapsedMilliseconds<TalentEntryObservationEvidence.ObservationLimitMs;i++)
++        {
++            token.ThrowIfCancellationRequested();using var observation=Common.TaskControl.CaptureToRectArea(forceNew:true);
++            var current=ReadTalentEntries(observation);
++            if(timer.ElapsedMilliseconds>=TalentEntryObservationEvidence.ObservationLimitMs){failure="talent_entry_observation_deadline";break;}
++            failure=previous is null?current.FailureReason:TalentEntryObservationEvidence.PairFailure(previous,current,official,Now());
++            if(failure=="verified_entry_pair") {twoPickedEntryFrames=[previous!,current];break;}
++            if(!current.Focused||current.ReviveVisible||current.PromptVisible)throw new InvalidOperationException(current.FailureReason);
++            previous=current;
++            await Delay(TalentEntryObservationEvidence.ObservationIntervalMs);
++        }
++        if(twoPickedEntryFrames.Length!=2)throw new InvalidOperationException(failure);
+         int index=type switch{"普通攻击"=>0,"元素战技"=>1,_=>2};
+         inspectionPhase="talent_entry_click";
+-        using var frame=Capture();if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("fresh_talent_list_before_click_unverified");
+-        frame.ClickTo(second[index].X,second[index].Y);await Delay(500);
++        using var frame=Capture();entryClickFrame=ReadTalentEntries(frame);
++        if(!TalentEntryObservationEvidence.ClickBound(twoPickedEntryFrames[1],entryClickFrame,official,Now()))
++            throw new InvalidOperationException("fresh_talent_entry_click_binding_unverified");
++        var point=entryClickFrame.Candidates[index].Bounds;
++        frame.ClickTo(point.X+point.Width/2,point.Y+point.Height/2);await Delay(500);
+     }
+     private async Task<UpgradePreviewTooltip[]> Tooltip(UpgradePreviewMaterial material)
+     {
+@@ -136,7 +160,9 @@
+             frame.ClickTo(card.X+card.Width/2,card.Y+card.Height/3);
+         }
+         await Delay(400);
+-        UpgradePreviewTooltip Read(){using var frame=Capture();var read=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now(),material.Name);frames.Add(read);return read;}
++        UpgradePreviewTooltip Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,at,material.Name);
++            if(read.Page&&read.Name==material.Name)read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};
++            frames.Add(read);return read;}
+         var first=Read();await Delay();var second=Read();
+         if(!TalentUpgradePreviewEvidence.TooltipPair(first,second,material,Now()))throw new InvalidOperationException("named_material_tooltip_pair_unverified");
+         using(var frame=Capture())
+@@ -193,6 +219,7 @@
+         TalentUpgradePreviewEvidence.ValidateRequest(characterName,talentType);
+         var target=CharacterSelectionHelper.CreateTarget(characterName);
+         if(target.SkipDisplayNameConfirmation)throw new ArgumentException("Preview requires a complete stable official character display name.");
++        frames.Clear();twoPickedEntryFrames=[];entryClickFrame=null;selectedDetail=null;opened=false;inspectionPhase="entry";
+         official=target.Name;type=talentType;
+         bool restored=false,verified=false;string primaryReason="unverified",cleanupReason="cleanup_not_started";
+         UpgradePreviewDetail? detailReceipt=null;UpgradePreviewFrame? previewReceipt=null;
+@@ -253,7 +280,7 @@
+             evidenceVerified=verified,mainUiRestored=restored,confirmationSubmitted=false,primaryReason,cleanupReason,phase=inspectionPhase,
+             reason=primaryReason!="verified_read_only_preview"?primaryReason:restored?primaryReason:cleanupReason,
+             observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
+-            evidence=new{characterIdentity=names,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
++            evidence=new{characterIdentity=names,twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+         },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
+         try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -45,6 +45,7 @@
+     string Path,string PngSha256,string NativePixelsSha256,string Source);
+ public sealed record UpgradePreviewTooltip(long ObservedAt,bool Page,string Name,string Kind,UpgradePreviewRatio Quantity,string RawName="",string AlternateRawName="")
+ {
++    public InspectionPrivateCapture? PrivateCapture{get;init;}
+     public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public Rect KindRegion{get;init;}public Rect SourceRegion{get;init;}
+     public UpgradePreviewRow[] NameRows{get;init;}=[];public UpgradePreviewRow[] AlternateNameRows{get;init;}=[];
+     public int AlternateNameScale{get;init;}public UpgradePreviewRow[] KindRows{get;init;}=[];public UpgradePreviewRow[] SourceRows{get;init;}=[];
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+@@ -0,0 +1,64 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: bounded read-only talent entry observations and click binding.
++using System;
++using System.Linq;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++public sealed record UpgradePreviewTalentEntries(long ObservedAt,int Width,int Height,bool Focused,bool Overview,
++    bool PromptVisible,bool ReviveVisible,UpgradePreviewCharacter Character,Rect Region,
++    UpgradePreviewRow[] Rows,UpgradePreviewRow[] Candidates)
++{
++    public string Phase{get;init;}="talent_entry_observation";
++    public string FailureReason{get;init;}="unverified";
++    public InspectionPrivateCapture? PrivateCapture{get;init;}
++}
++
++/// <summary>Read-only observations after one navigation. Never retries an input or relaxes identity.</summary>
++public static class TalentEntryObservationEvidence
++{
++    public const int ObservationLimitMs=12000;
++    public const int ObservationIntervalMs=300;
++    public static readonly Rect ReferenceRegion=new(1536,0,384,900);
++    public static UpgradePreviewRow[] Candidates(UpgradePreviewRow[] rows)=>rows
++        .Where(r=>CharacterDevelopmentStateMachineTask.TryParseTalentLevel(r.Text,out _))
++        .OrderBy(r=>r.Bounds.Y).ToArray();
++    public static bool KnownPage(UpgradePreviewTalentEntries frame,string official)=>
++        frame.Focused&&frame.Overview&&!frame.PromptVisible&&!frame.ReviveVisible&&
++        frame.Character.ObservedAt==frame.ObservedAt&&frame.Character.Width==frame.Width&&frame.Character.Height==frame.Height&&
++        TalentUpgradePreviewEvidence.CharacterFrame(frame.Character,official)&&
++        frame.Region==TalentUpgradePreviewReader.Scale(ReferenceRegion,frame.Width);
++    public static string FrameFailure(UpgradePreviewTalentEntries frame,string official)
++    {
++        if(!KnownPage(frame,official))return "talent_list_page_unverified";
++        if(frame.Candidates.Length!=3)return "wrong_candidate_count";
++        if(!frame.Candidates.SequenceEqual(Candidates(frame.Rows)))return "candidate_rows_unbound";
++        double margin=2*frame.Width/1920d;
++        foreach(var row in frame.Candidates)
++        {
++            var box=row.Bounds;var crop=frame.Region;
++            if(box.Width<=0||box.Height<=0||box.Left-crop.Left<margin||crop.Right-box.Right<margin||
++                box.Top-crop.Top<margin||crop.Bottom-box.Bottom<margin)return "candidate_box_incomplete";
++        }
++        if(frame.Candidates.Zip(frame.Candidates.Skip(1)).Any(p=>p.First.Bounds.Bottom>=p.Second.Bounds.Top))
++            return "candidate_geometry_unverified";
++        return "verified_entries";
++    }
++    public static string PairFailure(UpgradePreviewTalentEntries first,UpgradePreviewTalentEntries second,string official,long now)
++    {
++        var a=FrameFailure(first,official);if(a!="verified_entries")return a;
++        var b=FrameFailure(second,official);if(b!="verified_entries")return b;
++        if(first.Width!=second.Width||first.Height!=second.Height||!TalentUpgradePreviewEvidence.Fresh(first.ObservedAt,second.ObservedAt,now))
++            return "entry_pair_freshness_unverified";
++        if(first.Candidates.Zip(second.Candidates).Any(p=>
++            Math.Abs((p.First.Bounds.Y+p.First.Bounds.Height/2)-(p.Second.Bounds.Y+p.Second.Bounds.Height/2))>6||
++            TalentUpgradePreviewEvidence.Normalize(p.First.Text)!=TalentUpgradePreviewEvidence.Normalize(p.Second.Text)))
++            return "unstable_candidate_geometry";
++        return "verified_entry_pair";
++    }
++    public static bool ClickBound(UpgradePreviewTalentEntries second,UpgradePreviewTalentEntries click,string official,long now)=>
++        PairFailure(second,click,official,now)=="verified_entry_pair"&&second.Candidates.Zip(click.Candidates).All(p=>
++            Math.Abs((p.First.Bounds.X+p.First.Bounds.Width/2)-(p.Second.Bounds.X+p.Second.Bounds.Width/2))<=6);
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+@@ -10,6 +10,7 @@
+ using BetterGenshinImpact.Core.Config;
+ using BetterGenshinImpact.Core.Simulator;
+ using BetterGenshinImpact.Core.Simulator.Extensions;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
+ using BetterGenshinImpact.GameTask.Common.BgiVision;
+ using BetterGenshinImpact.GameTask.Common.Element.Assets;
+ using BetterGenshinImpact.GameTask.Model.Area;
+@@ -216,7 +217,22 @@
+             SelectedItemVerified = tab && active && !prompt && border.Verified,
+             SelectedItemRect = border.Verified ? selection.ItemRect : new(0, 0, 0, 0), SelectionEvidence = border };
+         var iconRegion=new BackpackRect(selection.ItemRect.X,selection.ItemRect.Y,selection.ItemRect.Width,(int)Math.Round(selection.ItemRect.Height*125d/153));
+-        return new(stack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion);
++        var read=new WeeklyInventoryFrameEvidence(stack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion);
++        if(WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read))
++        {
++            // The complete known bag, model, selected outline and actual name identify this private diagnostic scene.
++            // Numeric/title edge failures remain in the unmodified raw evidence and never become a verified count.
++            try
++            {
++                var folder=Global.Absolute("log\\weekly-conversion-inventory\\native-frames");System.IO.Directory.CreateDirectory(folder);
++                var path=System.IO.Path.Combine(folder,DateTimeOffset.FromUnixTimeMilliseconds(at).ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".png");
++                var encoded=InspectionNativeFrameEncoding.Encode(frame.SrcMat);System.IO.File.WriteAllBytes(path,encoded.Png);
++                read=read with{PrivateCapture=new(at,frame.Width,frame.Height,frame.SrcMat.Type().ToString(),path,
++                    encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize")};
++            }
++            catch(Exception ex){App.GetLogger<ReadWeeklyConversionInventoryTask>().LogWarning("Private weekly inventory PNG save failed: {Type}",ex.GetType().Name);}
++        }
++        return read;
+     }
+     private static async Task<bool> Restore(bool opened,WeeklyConversionInventoryResult result)
+     {
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+@@ -5,6 +5,7 @@
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Text.RegularExpressions;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
+ using BetterGenshinImpact.GameTask.Model.GameUI;
+ 
+ namespace BetterGenshinImpact.GameTask.Common.Job;
+@@ -56,7 +57,10 @@
+ public sealed record WeeklyInventoryFrameEvidence(BackpackFrameEvidence Stack, int Width, int Height,
+     string Category, bool GameActive, bool PromptVisible, bool TabVerified,
+     BackpackRect HeaderRegion, BackpackOcrRow[] HeaderRows, string? IconName,double IconScore,BackpackRect IconRegion)
+-{public string IconMethod {get;init;}="cell_resize_125x153_top_125x125";}
++{
++    public string IconMethod {get;init;}="cell_resize_125x153_top_125x125";
++    public InspectionPrivateCapture? PrivateCapture{get;init;}
++}
+ public sealed record WeeklyInventoryObservation(BackpackSelection Selection,
+     WeeklyInventoryFrameEvidence First, WeeklyInventoryFrameEvidence Second);
+ 
+@@ -80,6 +84,15 @@
+ 
+ public static class WeeklyConversionInventoryEvidence
+ {
++    // Private image retention proves no inventory value. Incomplete title/count boxes stay rejected by Count.
++    public static bool CanRetainDiagnostic(WeeklyInventoryFrameEvidence frame)=>
++        frame.Width>=800&&frame.Width*9==frame.Height*16&&frame.GameActive&&!frame.PromptVisible&&frame.TabVerified&&
++        (frame.Category is "characterDevelopmentItems" or "preciousItems")&&
++        frame.HeaderRegion==HeaderRect(frame.Width)&&HeaderVerified(frame.HeaderRows,frame.HeaderRegion,frame.Category)&&
++        frame.Stack.SelectedItemVerified&&frame.Stack.SelectionEvidence is BackpackBorderEvidence{Verified:true,Method:"four_side_neutral_outline"}&&
++        double.IsFinite(frame.IconScore)&&frame.IconScore>=.75&&WeeklyInventoryCatalog.Materials.Any(m=>
++            m.MaterialName==frame.IconName&&m.Category==frame.Category&&frame.Stack.NameRows.Count(r=>
++                BackpackInventoryEvidenceSafety.Normalize(r.Text)==m.MaterialName)==1);
+     public static BackpackRect HeaderRect(int width) => new((int)Math.Round(width * 100d / 1920), 0,
+         (int)Math.Round(width * 350d / 1920), (int)Math.Round(width * 100d / 1920));
+     public static bool HeaderVerified(BackpackOcrRow[] rows, BackpackRect region, string category) =>
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryObservationEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryObservationEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryObservationEvidenceTests.cs
+@@ -0,0 +1,62 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentEntryObservationEvidenceTests
++{
++    private const string Official="目标角色";
++    private static UpgradePreviewTalentEntries Frame(long at=100,int count=3,int yShift=0,int xShift=0)
++    {
++        var name=new UpgradePreviewCharacter(at,true,Official){Width=1920,Height=1080,
++            NameRegion=TalentUpgradePreviewEvidence.InspectionNameReference,
++            NameRows=[new(Official,new(1460,124,120,32))]};
++        var rows=Enumerable.Range(0,count).Select(i=>new UpgradePreviewRow("Lv.1",new(1800+xShift,250+i*100+yShift,80,25))).ToArray();
++        return new(at,1920,1080,true,true,false,false,name,TalentEntryObservationEvidence.ReferenceRegion,rows,
++            TalentEntryObservationEvidence.Candidates(rows));
++    }
++    [Fact] public void TwoCompleteDistinctFramesAndFreshClickAreBound()
++    {
++        var a=Frame();var b=Frame(400,yShift:2);var click=Frame(700,yShift:3,xShift:2);
++        Assert.Equal("verified_entry_pair",TalentEntryObservationEvidence.PairFailure(a,b,Official,450));
++        Assert.True(TalentEntryObservationEvidence.ClickBound(b,click,Official,750));
++    }
++    [Theory] [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(4)]
++    public void IncompleteOrAdditionalCandidateCountCannotPass(int count)=>
++        Assert.Equal("wrong_candidate_count",TalentEntryObservationEvidence.PairFailure(Frame(count:count),Frame(400),Official,450));
++    [Fact] public void TransitionGeometryIsDistinctFromWrongCount()=>
++        Assert.Equal("unstable_candidate_geometry",TalentEntryObservationEvidence.PairFailure(Frame(),Frame(400,yShift:7),Official,450));
++    [Fact] public void IdenticalTimestampOrExpiredPairRejects()
++    {
++        Assert.Equal("entry_pair_freshness_unverified",TalentEntryObservationEvidence.PairFailure(Frame(),Frame(),Official,100));
++        Assert.False(TalentEntryObservationEvidence.ClickBound(Frame(),Frame(400),Official,2000));
++    }
++    [Theory] [InlineData("prompt")] [InlineData("revive")] [InlineData("focus")] [InlineData("overview")] [InlineData("name")]
++    public void UnknownPageOrDifferentCharacterCannotClick(string failure)
++    {
++        var frame=Frame(400);frame=failure switch{
++            "prompt"=>frame with{PromptVisible=true},"revive"=>frame with{ReviveVisible=true},
++            "focus"=>frame with{Focused=false},"overview"=>frame with{Overview=false},
++            _=>frame with{Character=frame.Character with{Name="另一角色"}}};
++        Assert.False(TalentEntryObservationEvidence.ClickBound(Frame(),frame,Official,450));
++    }
++    [Fact] public void ClickUsesNewListPositionAndRejectsHorizontalDrift()=>
++        Assert.False(TalentEntryObservationEvidence.ClickBound(Frame(),Frame(400,xShift:7),Official,450));
++    [Fact] public void CandidateListMustBeDerivedFromFullRawRows()
++    {
++        var b=Frame(400) with{Rows=[]};
++        Assert.Equal("candidate_rows_unbound",TalentEntryObservationEvidence.PairFailure(Frame(),b,Official,450));
++    }
++    [Fact] public void TwoPixelEdgeRuleAndOrderedNonoverlapRemainRequired()
++    {
++        var bad=new UpgradePreviewRow("Lv.1",new(1537,250,80,25));
++        var frame=Frame(400);var rows=frame.Rows.ToArray();rows[0]=bad;
++        frame=frame with{Rows=rows,Candidates=TalentEntryObservationEvidence.Candidates(rows)};
++        Assert.Equal("candidate_box_incomplete",TalentEntryObservationEvidence.FrameFailure(frame,Official));
++        var overlap=Frame(400);var duplicate=overlap.Rows.ToArray();duplicate[1]=duplicate[0];
++        overlap=overlap with{Rows=duplicate,Candidates=TalentEntryObservationEvidence.Candidates(duplicate)};
++        Assert.Equal("candidate_geometry_unverified",TalentEntryObservationEvidence.FrameFailure(overlap,Official));
++    }
++    [Fact] public void ObservationBudgetMatchesExistingReadOnlyFinder()
++    {Assert.Equal(12000,TalentEntryObservationEvidence.ObservationLimitMs);Assert.Equal(300,TalentEntryObservationEvidence.ObservationIntervalMs);}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native19WeeklyDiagnosticTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native19WeeklyDiagnosticTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native19WeeklyDiagnosticTests.cs
+@@ -0,0 +1,35 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class Native19WeeklyDiagnosticTests
++{
++    private static WeeklyInventoryFrameEvidence Frame(long at,bool selected=true)
++    {
++        var rect=new BackpackRect(110,300,125,150);var names=BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920));
++        var count=BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(rect.ToRect()));
++        var border=new BackpackBorderEvidence(true,"four_side_neutral_outline",225,35,.9,[]);
++        var stack=new BackpackFrameEvidence{ObservedAt=at,NameRegion=names,
++            NameRows=[new("残火灯烛",names.X,names.Y+5,150,25)],CountRegion=count,CountRows=[],RawCountText="~7~",
++            SelectedItemVerified=selected,SelectedItemRect=rect,SelectionEvidence=border};
++        return new(stack,1920,1080,"characterDevelopmentItems",true,false,true,
++            WeeklyConversionInventoryEvidence.HeaderRect(1920),[new("养成道具",120,30,200,25)],"残火灯烛",.9,new(110,300,125,123));
++    }
++    [Fact] public void RejectedNumericAndTitleEdgesCanBeRetainedOnlyAsPrivateDiagnostics()
++    {
++        var first=Frame(400);var second=Frame(700);
++        Assert.True(WeeklyConversionInventoryEvidence.CanRetainDiagnostic(first));
++        var pair=new WeeklyInventoryObservation(new(new(110,300,125,150),172,365,100),first,second);
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(pair,WeeklyInventoryCatalog.Materials[0]));
++    }
++    [Theory] [InlineData("focus")] [InlineData("prompt")] [InlineData("tab")] [InlineData("header")]
++    [InlineData("model")] [InlineData("category")] [InlineData("selection")]
++    public void UnknownSceneCannotRetainImages(string fault)
++    {
++        var read=Frame(400);read=fault switch{
++            "focus"=>read with{GameActive=false},"prompt"=>read with{PromptVisible=true},"tab"=>read with{TabVerified=false},
++            "header"=>read with{HeaderRows=[new("养成",120,30,200,25)]},"model"=>read with{IconScore=.74},
++            "category"=>read with{Category="unknown"},_=>Frame(400,false)};
++        Assert.False(WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read));
++    }
++}

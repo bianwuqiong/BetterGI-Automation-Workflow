@@ -91,6 +91,21 @@
       "order": 17,
       "path": "patches/local-weekly-inventory-preview-diagnostic-2026-10-12.patch",
       "sha256": "f210a454bb803e965ac38746c792a6ac390b9a557c3d43fb606ea031e26a8afd"
+    },
+    {
+      "order": 18,
+      "path": "patches/local-header-glyph-band-fix-2026-10-12.patch",
+      "sha256": "97496278e44d831bcae9e059fa9b413991c2827d82b8a51d0f489920294f33d3"
+    },
+    {
+      "order": 19,
+      "path": "patches/local-talent-entry-diagnostic-2026-10-12.patch",
+      "sha256": "56b61c0ae59b3d99b732ff45f401d0e5e48054bd40516a337d51f046153516d5"
+    },
+    {
+      "order": 20,
+      "path": "patches/local-named-stack-count-2026-10-12.patch",
+      "sha256": "2f003a189643ca19d26a1282abaa9b8daac863dff157fc2ad16e38eb4f169a45"
     }
   ],
   "offlineValidation": {
@@ -224,5 +239,49 @@
     "actualTalentPreviewVerified": false,
     "actualConversionOrUpgradeExecutorIncluded": false,
     "validationDocument": "docs/LOCAL_WEEKLY_INVENTORY_PREVIEW_DIAGNOSTIC_2026-10-12.md"
+  },
+  "headerGlyphBandExtension": {
+    "selectedPureCSharp": 66,
+    "newExactHeaderAndSplitCases": 8,
+    "privateStaticCasesPassed": 2,
+    "privateQuantityCaseTwoNativePngAndTwoOcrModels": true,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "slashThresholdsUnchanged": true,
+    "numericFourSideTwoPixelEdgesRequired": true,
+    "failedSlashAndRawRetained": true,
+    "actualTalentPreviewVerified": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_HEADER_GLYPH_BAND_2026-10-12.md"
+  },
+  "talentEntryDiagnosticExtension": {
+    "selectedPureCSharp": 90,
+    "newPureCases": 24,
+    "singleTalentNavigationOnly": true,
+    "observationLimitMs": 12000,
+    "observationIntervalMs": 300,
+    "twoPickedEntryFramesAndFreshClickBindingRequired": true,
+    "privateNativePngDiagnosticOnly": true,
+    "existingNumericAndModelThresholdsUnchanged": true,
+    "actualTalentPreviewVerified": false,
+    "weeklyInventoryLiveVerified": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_TALENT_ENTRY_DIAGNOSTIC_2026-10-12.md"
+  },
+  "namedStackExactCountExtension": {
+    "selectedTests": 112,
+    "pureCases": 111,
+    "privateStaticCases": 1,
+    "actualPngReplayCount": 24,
+    "configuredV6AndFixedV4BothStrictlyObserved": true,
+    "actualV6FullTitlesPrivateReplayVerified": true,
+    "fixedDualModelNoSelectionOrNumericRepair": true,
+    "initialStackAndFailedV6DetectorRetained": true,
+    "configuredV6ProfileAndFiveActualBundledAssetsPinned": true,
+    "fullOfficialNameRollingExactTriple": true,
+    "actualWeeklyInventoryLiveVerified": false,
+    "actualTalentPreviewVerified": false,
+    "genericEightMaterialInventoryIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_NAMED_STACK_COUNT_2026-10-12.md"
   }
 }

@@ -738,7 +738,7 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
                 from .weekly_inventory import verify_weekly_inventory
             else:
                 from weekly_inventory import verify_weekly_inventory
-            weekly_verified=verify_weekly_inventory(raw.get('weeklyInventory'),raw.get('startedAt'),raw.get('finishedAt'))
+            weekly_verified=verify_weekly_inventory(raw.get('weeklyInventory'),raw.get('startedAt'),raw.get('finishedAt'),trusted_runtime_root=root)
             if claimed=='success' and not weekly_verified:
                 raise ValueError('weekly diagnostic success contradicts unknown native evidence')
             if claimed=='success':

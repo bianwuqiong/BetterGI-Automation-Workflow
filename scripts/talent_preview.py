@@ -48,16 +48,26 @@ def quantity(q,start,finish,prefix=''):
     owned,required=integer(q.get('owned')),integer(q.get('required'),0 if prefix else 1)
     if q.get('slashPixelVerified') is True:
         slash=_rect(q.get('slashBounds'));left=_rect(q.get('numeratorRegion'));right=_rect(q.get('denominatorRegion'))
+        method=q.get('splitRegionMethod')
+        if method is None:
+            top,bottom=box[1],box[1]+box[3]
+        elif method=='slash_vertical_band' and type(q.get('splitVerticalPaddingReference')) is int and q['splitVerticalPaddingReference']==6:
+            pad=max(3,round(6*s));top=max(box[1],slash[1]-pad);bottom=min(box[1]+box[3],slash[1]+slash[3]+pad)
+        else:raise ValueError('split method/padding is not the reviewed legacy or slash glyph band')
         if (prefix or q.get('splitOcrScale')!=4 or box[2]>=200*s or not _inside(slash,box)
                 or slash[2]<2 or slash[3]<6 or not 1.5<=slash[3]/slash[2]<=5 or integer(q.get('slashInkPixels'))<6
                 or not -1<=_number(q.get('slashCorrelation'))<=-.75 or slash[0]-box[0]<=8
                 or box[0]+box[2]-slash[0]-slash[2]<=8 or slash[0]-box[0]<box[2]*.2 or slash[0]+slash[2]>box[0]+box[2]*.85
-                or left!=(box[0],box[1],slash[0]-box[0]-1,box[3])
-                or right!=(slash[0]+slash[2]+1,box[1],box[0]+box[2]-slash[0]-slash[2]-1,box[3])
+                or left!=(box[0],top,slash[0]-box[0]-1,bottom-top)
+                or right!=(slash[0]+slash[2]+1,top,box[0]+box[2]-slash[0]-slash[2]-1,bottom-top)
                 or len(q.get('numeratorRows',[]))!=1 or len(q.get('denominatorRows',[]))!=1):
             raise ValueError('actual slash/split integer geometry unverified')
-        numerator=rows_text(q['numeratorRows'],left,s,projected=True)
-        denominator=rows_text(q['denominatorRows'],right,s,projected=True)
+        numerator=rows_text(q['numeratorRows'],left,s,projected=method is None)
+        denominator=rows_text(q['denominatorRows'],right,s,projected=method is None)
+        if method is not None:
+            for values,bounds in ((q['numeratorRows'],left),(q['denominatorRows'],right)):
+                if any(min(_rect(row['bounds'])[1]-bounds[1],bounds[1]+bounds[3]-_rect(row['bounds'])[1]-_rect(row['bounds'])[3])<2*s for row in values):
+                    raise ValueError('slash-band complete integer must clear all four actual crop edges')
         if numerator!=clean(q.get('numeratorRaw')) or denominator!=clean(q.get('denominatorRaw')) or (digits(numerator),digits(denominator))!=(owned,required):
             raise ValueError('split raw integers differ from parsed quantity')
     else:
@@ -136,6 +146,89 @@ def coin_identity(p):
     else:raise ValueError('currency variant is not an explicitly selected reviewed crop')
     if p.get('coinName')!='摩拉' or not .75<=_number(p.get('coinScore'))<=1:
         raise ValueError('actual primary Mora identity model missing; diagnostic image is not proof')
+
+def entry_observation(value,character,start,finish):
+    s=frame(value,start,finish)
+    if (value.get('phase')!='talent_entry_observation' or value.get('focused') is not True or value.get('overview') is not True
+            or value.get('promptVisible') is not False or value.get('reviveVisible') is not False):
+        raise ValueError('talent entry current focused known page required')
+    name=value.get('character');frame(name,start,finish);name_box=character_region(name)
+    if (name.get('observedAt')!=value['observedAt'] or (name['width'],name['height'])!=(value['width'],value['height'])
+            or name.get('overview') is not True or clean(name.get('name'))!=clean(character) or len(name.get('nameRows',[]))!=1
+            or rows_text(name['nameRows'],name_box,s)!=clean(character)):
+        raise ValueError('talent entry full current character identity unverified')
+    r=_rect(name['nameRows'][0]['bounds'])
+    if min(r[1]-name_box[1],name_box[1]+name_box[3]-r[1]-r[3])<2*s:raise ValueError('talent entry character cropped')
+    box=region(value,'region',(1536,0,384,900));raw_rows=value.get('rows')
+    if not isinstance(raw_rows,list):raise ValueError('talent entry complete original rows missing')
+    candidates=[]
+    for row in raw_rows:
+        if not isinstance(row.get('text'),str) or not _inside(_rect(row.get('bounds')),box):raise ValueError('talent list raw row outside fixed ROI')
+        text=clean(row['text']);match=re.fullmatch(r'(?:Lv\.?|等级)?([0-9]{1,2})',text,re.IGNORECASE)
+        if match and 1<=int(match[1])<=15:candidates.append(row)
+    candidates.sort(key=lambda row:row['bounds']['y'])
+    if len(candidates)!=3 or value.get('candidates')!=candidates:raise ValueError('talent candidates are not exactly the three raw-derived ordered level rows')
+    for row in candidates:
+        b=_rect(row['bounds'])
+        if min(b[0]-box[0],b[1]-box[1],box[0]+box[2]-b[0]-b[2],box[1]+box[3]-b[1]-b[3])<2*s:raise ValueError('talent candidate needs complete four-edge bounds')
+    if any(_rect(candidates[i]['bounds'])[1]+_rect(candidates[i]['bounds'])[3]>=_rect(candidates[i+1]['bounds'])[1] for i in range(2)):
+        raise ValueError('talent candidate boxes overlap or lose row order')
+    return candidates
+
+def rolling_identity(evidence,frames,names,character,start,finish):
+    if (evidence.get('characterIdentityMethod')!='bounded_rolling_exact_triple'
+            or type(evidence.get('characterIdentityObservationLimitMs')) is not int or evidence['characterIdentityObservationLimitMs']!=12000
+            or type(evidence.get('characterIdentityPollMs')) is not int or evidence['characterIdentityPollMs']!=300):
+        raise ValueError('unreviewed character rolling observation method/limits')
+    trials=evidence.get('characterIdentityTrials')
+    originals=[f for f in frames if f.get('phase')=='character_identity_observation']
+    if (not isinstance(trials,list) or not 3<=len(trials)<=41 or trials!=originals or names!=trials[-3:]
+            or frames[:len(trials)]!=trials or trials[-1]['observedAt']-trials[0]['observedAt']>=12000):
+        raise ValueError('rolling character trials must retain the complete raw prefix and final accepted triple')
+    valid=[]
+    for index,n in enumerate(trials):
+        s=frame(n,start,finish);box=_rect(n.get('nameRegion'));raw_rows=n.get('nameRows')
+        if (box!=tuple(round(v*s) for v in (1420,110,360,68)) or type(n.get('overview')) is not bool
+                or not isinstance(n.get('name'),str) or not isinstance(raw_rows,list)
+                or any(not isinstance(r.get('text'),str) or not _inside(_rect(r.get('bounds')),box) for r in raw_rows)
+                or clean(n['name'])!=''.join(clean(r['text']) for r in raw_rows)
+                or index and n['observedAt']-trials[index-1]['observedAt']<300):
+            raise ValueError('rolling trial original name rows/geometry/poll timing invalid')
+        exact=n['overview'] and len(raw_rows)==1 and clean(n['name'])==clean(character)
+        if exact:
+            r=_rect(raw_rows[0]['bounds'])
+            exact=min(r[0]-box[0],r[1]-box[1],box[0]+box[2]-r[0]-r[2],box[1]+box[3]-r[1]-r[3])>=2*s
+        valid.append(exact)
+        if index>=2 and all(valid[-3:]) and n['observedAt']-trials[index-2]['observedAt']<=5000 and all(trials[j]['observedAt']-trials[j-1]['observedAt']<=5000 for j in (index-1,index)):
+            if index!=len(trials)-1:raise ValueError('rolling observation continued after the first verified exact triple')
+            break
+    else:raise ValueError('rolling final triple lacks independent full-name proof')
+
+def entry_binding(evidence,frames,character,talent_type,start,finish,names,details):
+    selected=evidence.get('twoPickedEntryFrames');click=evidence.get('entryClickFrame')
+    if not isinstance(selected,list) or len(selected)!=2 or not isinstance(click,dict):raise ValueError('explicit two picked entry frames and fresh click frame required')
+    all_entries=[f for f in frames if f.get('phase')=='talent_entry_observation']
+    if any(f not in all_entries for f in [*selected,click]) or selected[0]==selected[1] or click in selected:
+        raise ValueError('explicit entry references are not independent actual raw frames')
+    positions=[all_entries.index(f) for f in [*selected,click]]
+    if positions[1]!=positions[0]+1 or positions[2]!=positions[1]+1:raise ValueError('picked entry pair/click must be consecutive original observations')
+    if selected[0]['observedAt']<=names[-1]['observedAt'] or click['observedAt']>=details[0]['observedAt']:
+        raise ValueError('entry click out of this character-to-detail sequence')
+    if not all_entries or click['observedAt']-all_entries[0]['observedAt']>12000:raise ValueError('talent entry bounded observation deadline exceeded')
+    if any(f['observedAt']<names[-1]['observedAt'] or f['observedAt']>click['observedAt'] for f in all_entries):
+        raise ValueError('extra entry observations outside original pre-click sequence')
+    result=[entry_observation(f,character,start,finish) for f in [*selected,click]]
+    pair(selected[0],selected[1]);pair(selected[1],click)
+    for index in range(3):
+        a,b,c=(_rect(values[index]['bounds']) for values in result)
+        center_y=lambda r:r[1]+int(r[3])//2
+        center_x=lambda r:r[0]+int(r[2])//2
+        if abs(center_y(a)-center_y(b))>6 or abs(center_y(b)-center_y(c))>6 or abs(center_x(b)-center_x(c))>6:
+            raise ValueError('talent entry pair/click geometry not stably bound')
+        if len({clean(values[index]['text']) for values in result})!=1:raise ValueError('talent entry raw level text changed')
+    picked=result[-1][TYPES.index(talent_type)]
+    level=int(re.fullmatch(r'(?:Lv\.?|等级)?([0-9]{1,2})',clean(picked['text']),re.IGNORECASE)[1])
+    if level!=integer(details[0].get('displayLevel'),1,13):raise ValueError('requested talent index does not bind to the actual clicked detail level')
 def detail(d,talent_type,start,finish):
     s=frame(d,start,finish)
     if d.get('page') is not True or d.get('type')!=talent_type: raise ValueError('talent detail type/page mismatch')
@@ -205,6 +298,9 @@ def verified_observation(raw,character,talent_type,started_at,finished_at):
         frame(f,start,finish)
         if index and (f['observedAt']<=frames[index-1]['observedAt'] or (f['width'],f['height'])!=(frames[0]['width'],frames[0]['height'])):
             raise ValueError('raw frame timeline is duplicated, unordered or changes game client')
+    if (any(key in evidence for key in ('characterIdentityMethod','characterIdentityTrials','characterIdentityObservationLimitMs','characterIdentityPollMs'))
+            or any(f.get('phase')=='character_identity_observation' for f in frames)):
+        rolling_identity(evidence,frames,names,character,start,finish)
     for n in names:
         s=frame(n,start,finish)
         box=character_region(n)
@@ -218,6 +314,8 @@ def verified_observation(raw,character,talent_type,started_at,finished_at):
     if len(details)!=2 or details[0]['observedAt']<=names[2]['observedAt']: raise ValueError('selected talent details not after actual character identity')
     pair(*details);a=detail(details[0],talent_type,start,finish);b=detail(details[1],talent_type,start,finish)
     if a!=b or evidence.get('detailIdentityCarryover')!=details[1] or raw.get('talentName')!=b[0]: raise ValueError('talent detail pair/carryover title mismatch')
+    if ('characterIdentityMethod' in evidence or 'twoPickedEntryFrames' in evidence or 'entryClickFrame' in evidence or any(f.get('phase')=='talent_entry_observation' for f in frames)):
+        entry_binding(evidence,frames,character,talent_type,start,finish,names,details)
     previews=[f for f in frames if 'materials' in f and 'current' in f]
     if len(previews)<2 or len(previews)%2 or previews[0]['observedAt']<=details[1]['observedAt'] or evidence.get('preview')!=previews[-1]: raise ValueError('independent full next-cost popup pair missing')
     costs=None

@@ -1,0 +1,237 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -106,6 +106,7 @@
+ - 第十五层仅扩宽只读预览的角色姓名区域，并在原生及外层保留完整字框四边至少2px、三次独立全名要求，不修改一般GetCharacter读取或校正截边OCR框。清理每个已核实页面需双帧且只允许一次Esc；过渡和未知页面不反复按键，完整派蒙菜单八个按钮及布局获双帧证明后才允许一次back。原始失败阶段/原因与清理原因分别返回，不能被清理失败覆盖。菜单识别不读取账号头部、昵称、UID或生日作为条件，私人图片不进入源码。未增加升级确认或周本消费功能。
+ - 第十六层仅将Inspection姓名区域进一步扩至`(1420,110,360,68)`，覆盖完整姓名的自然左右边距且避开下一行，保持唯一完整OCR框、四边至少2px及三张独立官方全名。旧一般角色读取、清理调度和所有资源确认限制不变。第十五层清理已由实际新鲜世界双帧独立验收，完整天赋预览仍未据此宣称成功；旧截边与unknown原样保留。
+ - 第十七层增加四种固定周本转化资源的独立只读库存入口，具名图标模型、页标、四侧选中框、完整数量双帧及世界恢复均需原始证据；缺失为null，不提供转化规划或消费动作。天赋预览仅增私有原生无缩放PNG/时间/字节及像素SHA诊断、卡片内充分数字边距、唯一完整货币数字行的有界重读和明确单一真实背景币图区域；初始失败原文/区域保留，0.75模型与两帧/完整名字标准不降低。诊断图片不代替验证、不公开。第十六层的姓名/详情/世界恢复已独立实机通过，完整预览仍有未知成本，不宣称升级完成。
++- 第十八层仅增加角色培养道具/养成道具两个完整页名的唯一exact匹配（读取、选tab与清理共用），贵重道具不扩；不自动确认过期通知或其他弹窗。原生预览PNG证明斜杠几何存在，数字分离改为该实际glyph上下6px自然带，避免金星和卡片边缘影响，所有数字四边2px、原140灰度及相关性标准保持。数字失败时也保留实际斜杠及左右原文/字框，未知不补数。旧满高数据兼容但不重写历史记录；只读、无转化/升级确认仍保持。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -18,6 +18,7 @@
+     public int SplitOcrScale{get;init;}public string Prefix{get;init;}="";
+     public UpgradePreviewRatio? InitialReading{get;init;}
+     public string CropMethod{get;init;}="fixed_or_initial";public UpgradePreviewRow? SourceCountRow{get;init;}
++    public string SplitRegionMethod{get;init;}="none";public int SplitVerticalPaddingReference{get;init;}
+ }
+ public sealed record UpgradePreviewMaterial(string Name,double IconScore,Rect Card,UpgradePreviewRatio Quantity)
+ {public Rect IconRegion{get;init;}}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -74,7 +74,7 @@
+         var names=rows.Select(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)).ToArray();
+         return new[]{"属性变更","所需材料","取消","确认"}.All(n=>names.Count(t=>t==n)==1);
+     }
+-    internal static UpgradePreviewRatio ReadRatio(ImageRegion frame,Rect box,IOcrService ocr,long at,string prefix="")
++    internal static UpgradePreviewRatio ReadRatio(ImageRegion frame,Rect box,IOcrService ocr,long at,string prefix="",bool requirePixelSplit=false)
+     {
+         using var crop=frame.DeriveCrop(box);
+         var rows=ocr.OcrResult(crop.SrcMat).Regions;
+@@ -91,6 +91,7 @@
+                 b.Top>=0&&b.Bottom<=crop.Height;
+         });
+         bool complete=full&&raw==detector&&parsed.Owned.HasValue&&parsed.Required.HasValue;
++        if(requirePixelSplit)complete=false; // Optional stricter inspection mode, never a relaxed fallback.
+         if(!complete&&prefix.Length==0&&box.Width<200*frame.Width/1920d)
+         {
+             // The card's actual slash may OCR as '1'. Never replace digits: prove the slash
+@@ -98,25 +99,29 @@
+             var slash=RecipeSlashCostEvidence.FindSlash(crop.SrcMat);
+             if(slash.Verified&&slash.Bounds.X>8&&slash.Bounds.Right<crop.Width-8)
+             {
+-                using var left=new Mat(crop.SrcMat,new Rect(0,0,slash.Bounds.X-1,crop.Height));
+-                using var right=new Mat(crop.SrcMat,new Rect(slash.Bounds.Right+1,0,crop.Width-slash.Bounds.Right-1,crop.Height));
++                int ypad=Math.Max(3,(int)Math.Round(6*frame.Width/1920d));
++                int bandTop=Math.Max(0,slash.Bounds.Top-ypad),bandBottom=Math.Min(crop.Height,slash.Bounds.Bottom+ypad);
++                using var left=new Mat(crop.SrcMat,new Rect(0,bandTop,slash.Bounds.X-1,bandBottom-bandTop));
++                using var right=new Mat(crop.SrcMat,new Rect(slash.Bounds.Right+1,bandTop,crop.Width-slash.Bounds.Right-1,bandBottom-bandTop));
+                 (string Raw,int? Value,bool Full,UpgradePreviewRow[] Rows) ReadInteger(Mat original,Rect absolute)
+                 {
+                     using var large=original.Resize(new Size(original.Width*4,original.Height*4),0,0,InterpolationFlags.Cubic);
+                     var integerRows=ocr.OcrResult(large).Regions;
+                     var integerRaw=TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(large));
+                     bool fullInteger=integerRows.Length==1&&integerRaw==TalentUpgradePreviewEvidence.Normalize(integerRows[0].Text);
+-                    if(fullInteger){var b=integerRows[0].Rect.BoundingRect();fullInteger=b.Left>=2*frame.Width/1920d*4&&large.Width-b.Right>=2*frame.Width/1920d*4;}
++                    if(fullInteger){var b=integerRows[0].Rect.BoundingRect();double margin=2*frame.Width/1920d*4;
++                        fullInteger=b.Left>=margin&&large.Width-b.Right>=margin&&b.Top>=margin&&large.Height-b.Bottom>=margin;}
+                     return(integerRaw,TalentUpgradePreviewEvidence.Integer(integerRaw),fullInteger,Project(integerRows,absolute,4));
+                 }
+-                var numeratorBox=new Rect(box.X,box.Y,left.Width,left.Height);
+-                var denominatorBox=new Rect(box.X+slash.Bounds.Right+1,box.Y,right.Width,right.Height);
++                var numeratorBox=new Rect(box.X,box.Y+bandTop,left.Width,left.Height);
++                var denominatorBox=new Rect(box.X+slash.Bounds.Right+1,box.Y+bandTop,right.Width,right.Height);
+                 var numerator=ReadInteger(left,numeratorBox);var denominator=ReadInteger(right,denominatorBox);
+-                if(numerator.Full&&denominator.Full&&numerator.Value.HasValue&&denominator.Value.HasValue)
+-                    return new(at,raw,box,numerator.Value,denominator.Value,true,true,numerator.Raw,denominator.Raw){
++                bool splitComplete=numerator.Full&&denominator.Full&&numerator.Value.HasValue&&denominator.Value.HasValue;
++                return new(at,raw,box,splitComplete?numerator.Value:null,splitComplete?denominator.Value:null,splitComplete,true,numerator.Raw,denominator.Raw){
+                         Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix,
+                         SlashBounds=new(slash.Bounds.X+box.X,slash.Bounds.Y+box.Y,slash.Bounds.Width,slash.Bounds.Height),SlashCorrelation=slash.Correlation,SlashInkPixels=slash.InkPixels,
+-                        NumeratorRegion=numeratorBox,DenominatorRegion=denominatorBox,NumeratorRows=numerator.Rows,DenominatorRows=denominator.Rows,SplitOcrScale=4};
++                        NumeratorRegion=numeratorBox,DenominatorRegion=denominatorBox,NumeratorRows=numerator.Rows,DenominatorRows=denominator.Rows,SplitOcrScale=4,
++                        SplitRegionMethod="slash_vertical_band",SplitVerticalPaddingReference=6};
+             }
+         }
+         return new(at,raw,box,complete?parsed.Owned:null,complete?parsed.Required:null,complete){Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix};
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+@@ -23,6 +23,10 @@
+     });
+     public static string Header(string category) => category switch {
+         "characterDevelopmentItems" => "角色培养道具", "preciousItems" => "贵重道具",
++        _ => throw new ArgumentException("Unsupported weekly inventory category.")
++    };
++    public static string[] Headers(string category) => category switch {
++        "characterDevelopmentItems" => ["角色培养道具", "养成道具"], "preciousItems" => ["贵重道具"],
+         _ => throw new ArgumentException("Unsupported weekly inventory category.")
+     };
+     public static string TabPrefix(string category) => category switch {
+@@ -80,8 +84,8 @@
+         (int)Math.Round(width * 350d / 1920), (int)Math.Round(width * 100d / 1920));
+     public static bool HeaderVerified(BackpackOcrRow[] rows, BackpackRect region, string category) =>
+         rows.All(r => BackpackInventoryEvidenceSafety.Inside(new(r.X, r.Y, r.Width, r.Height), region)) &&
+-        rows.Count(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == WeeklyInventoryCatalog.Header(category)) == 1 &&
+-        rows.Where(r=>BackpackInventoryEvidenceSafety.Normalize(r.Text)==WeeklyInventoryCatalog.Header(category))
++        rows.Count(r => WeeklyInventoryCatalog.Headers(category).Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text),StringComparer.Ordinal)) == 1 &&
++        rows.Where(r=>WeeklyInventoryCatalog.Headers(category).Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text),StringComparer.Ordinal))
+             .All(r=>AwayFromEdges(r,region,2*region.Width/350d));
+     private static bool AwayFromEdges(BackpackOcrRow row, BackpackRect region, double margin) =>
+         row.X - region.X >= margin && row.Y - region.Y >= margin &&
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18ExactEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18ExactEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18ExactEvidenceTests.cs
+@@ -0,0 +1,56 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class Native18ExactEvidenceTests
++{
++    [Theory] [InlineData("角色培养道具",true)] [InlineData("养成道具",true)] [InlineData("养成",false)]
++    [InlineData("养成道具材料",false)] [InlineData("贵重道具",false)]
++    public void ReviewedHeaderAliasesAreExactCompleteAndUnique(string text,bool verified)
++    {
++        var box=WeeklyConversionInventoryEvidence.HeaderRect(1920);
++        Assert.Equal(verified,WeeklyConversionInventoryEvidence.HeaderVerified([new(text,120,30,200,25)],box,"characterDevelopmentItems"));
++    }
++    [Fact] public void BothAliasLabelsOrRepeatedHeaderNeverPass()
++    {
++        var box=WeeklyConversionInventoryEvidence.HeaderRect(1920);
++        Assert.False(WeeklyConversionInventoryEvidence.HeaderVerified([new("角色培养道具",120,30,200,25),new("养成道具",120,60,200,25)],box,"characterDevelopmentItems"));
++        Assert.False(WeeklyConversionInventoryEvidence.HeaderVerified([new("养成道具",120,30,200,25),new("养成道具",120,60,200,25)],box,"characterDevelopmentItems"));
++        Assert.False(WeeklyConversionInventoryEvidence.HeaderVerified([new("养成道具",101,30,200,25)],box,"characterDevelopmentItems"));
++    }
++    [Fact] public void ActualSlashControlsOnlyNumericVerticalBandAndNeverRepairsTheWholeMisread()
++    {
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.White);
++        var box=new Rect(200,200,120,50);
++        Cv2.Line(image,new Point(270,216),new Point(263,234),Scalar.Black,2);
++        using var frame=new ImageRegion(image.Clone(),0,0);
++        var r=TalentUpgradePreviewReader.ReadRatio(frame,box,new NumericOcr(false),100);
++        Assert.True(r.Complete);Assert.True(r.SlashPixelVerified);Assert.Equal("7316",r.Raw);
++        Assert.Equal(73,r.Owned);Assert.Equal(6,r.Required);Assert.Equal("slash_vertical_band",r.SplitRegionMethod);
++        Assert.Equal(6,r.SplitVerticalPaddingReference);
++        Assert.True(r.NumeratorRegion!.Value.Top>box.Top&&r.NumeratorRegion.Value.Bottom<box.Bottom);
++    }
++    [Fact] public void FailedIntegerKeepsSlashEvidenceAndEveryFailedRawField()
++    {
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.White);var box=new Rect(200,200,120,50);
++        Cv2.Line(image,new Point(270,216),new Point(263,234),Scalar.Black,2);using var frame=new ImageRegion(image.Clone(),0,0);
++        var r=TalentUpgradePreviewReader.ReadRatio(frame,box,new NumericOcr(true),100);
++        Assert.False(r.Complete);Assert.True(r.SlashPixelVerified);Assert.Null(r.Owned);Assert.Null(r.Required);
++        Assert.Equal("7316",r.Raw);Assert.Equal("6x",r.DenominatorRaw);Assert.NotNull(r.SlashBounds);Assert.NotEmpty(r.DenominatorRows);
++    }
++    private sealed class NumericOcr(bool bad) : IOcrService
++    {
++        private string Text(Mat m)=>m.Width==120?"73/6":m.Width>230?"73":bad?"6x":"6";
++        public string Ocr(Mat m)=>Text(m);
++        public string OcrWithoutDetector(Mat m)=>m.Width==120?"7316":Text(m);
++        public OcrResult OcrResult(Mat m)
++        {
++            var b=m.Width==120?new Rect(10,10,70,25):new Rect(12,12,Math.Min(80,m.Width-24),Math.Min(50,m.Height-24));
++            return new([new(new RotatedRect(new Point2f(b.X+b.Width/2f,b.Y+b.Height/2f),new Size2f(b.Width,b.Height),0),Text(m),.99f)]);
++        }
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateQuantityTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateQuantityTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateQuantityTests.cs
+@@ -0,0 +1,35 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using BetterGenshinImpact.UnitTest.CoreTests.RecognitionTests.OCRTests;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class Native18PrivateQuantityTests
++{
++    [Fact] [Trait("Fixture","PrivateNative18Quantity")]
++    public void RetainedActualPngQuantityIsParsedByTheSameCandidateWithoutPretendingLiveFreshness()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_NATIVE18_QUANTITY_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path));
++        var f=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        var result=new List<object>();
++        var models=new PaddleFixture();
++        foreach(var file in f.Images)
++        {
++            using var image=Cv2.ImRead(file);using var frame=new ImageRegion(image.Clone(),0,0);
++            var b=f.QuantityBox;
++            foreach(var version in new[]{"V4","V5"})
++            {
++            var reading=TalentUpgradePreviewReader.ReadRatio(frame,new(b[0],b[1],b[2],b[3]),models.Get(version:version),0,requirePixelSplit:true);
++            result.Add(new{version,reading});
++            File.WriteAllText(f.DiagnosticPath,Newtonsoft.Json.JsonConvert.SerializeObject(new{source="actual_png_offline_candidate_not_live",frames=result}));
++            Assert.True(reading.SlashPixelVerified,"Actual slash geometry must be independently retained even if numeric methods fail.");
++            Assert.True(reading.Complete,$"Numerator={reading.NumeratorRaw}, Denominator={reading.DenominatorRaw}");
++            Assert.Equal(f.Owned,reading.Owned);Assert.Equal(f.Required,reading.Required);
++            }
++        }
++    }
++    private sealed class Fixture{public string[] Images{get;set;}=[];public int[] QuantityBox{get;set;}=[];public int? Owned{get;set;}public int? Required{get;set;}public string DiagnosticPath{get;set;}="";}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateHeaderTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateHeaderTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native18PrivateHeaderTests.cs
+@@ -0,0 +1,26 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class Native18PrivateHeaderTests
++{
++    [Fact] [Trait("Fixture","PrivateNative18Header")]
++    public void ActualNewBagHeaderUsesOnlyAnExactReviewedAlias()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_NATIVE18_HEADER_MANIFEST");Assert.False(string.IsNullOrWhiteSpace(path));
++        var f=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        using var image=Cv2.ImRead(f.File);var r=f.ClientRect;using var client=new Mat(image,new Rect(r[0],r[1],r[2],r[3]));
++        foreach(int width in new[]{1536,1920})
++        {
++            using var resized=new Mat();Cv2.Resize(client,resized,new Size(width,width*9/16));using var frame=new ImageRegion(resized.Clone(),0,0);
++            var region=WeeklyConversionInventoryEvidence.HeaderRect(width);using var crop=frame.DeriveCrop(region.ToRect());
++            var rows=OcrFactory.Paddle.OcrResult(crop.SrcMat).Regions.Select(row=>{var b=row.Rect.BoundingRect();return new BackpackOcrRow(row.Text,region.X+b.X,region.Y+b.Y,b.Width,b.Height);}).ToArray();
++            Assert.True(WeeklyConversionInventoryEvidence.HeaderVerified(rows,region,"characterDevelopmentItems"));
++            Assert.Equal("养成道具",BackpackInventoryEvidenceSafety.Normalize(Assert.Single(rows).Text));
++        }
++    }
++    private sealed class Fixture{public string File{get;set;}="";public int[] ClientRect{get;set;}=[];}
++}

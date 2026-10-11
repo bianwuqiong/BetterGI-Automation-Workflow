@@ -12,6 +12,7 @@ const integer=(v,min=0,max=999999999)=>Number.isInteger(v)&&v>=min&&v<=max?v:fai
 const rect=r=>r&&['x','y','width','height'].every(k=>Number.isInteger(r[k]))&&r.x>=0&&r.y>=0&&r.width>0&&r.height>0?r:fail('weekly_rect_invalid');
 const inside=(a,b)=>a.x>=b.x&&a.y>=b.y&&a.x+a.width<=b.x+b.width&&a.y+a.height<=b.y+b.height;
 const equal=(a,b)=>['x','y','width','height'].every(k=>a[k]===b[k]);
+const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 const round=v=>{const n=Math.floor(v),d=v-n;return d===.5?n+(n%2):Math.round(v);}; // .NET midpoint-to-even.
 const rows=(values,box,s,margin=true)=>{
   if(!Array.isArray(values)||!values.length)fail('weekly_raw_rows_missing');
@@ -25,6 +26,20 @@ const dimensions=(f,start,finish)=>{
   return f.width/1920;
 };
 const count=raw=>/^(0|[1-9][0-9]{0,8})$/.test(clean(raw))?integer(Number(clean(raw))):fail('weekly_complete_raw_quantity_missing');
+const headerAliases=category=>category==='preciousItems'?['贵重道具']:['角色培养道具','养成道具'];
+const modelAssets=[
+  ['PpOcrDetV4','Assets/Model/PaddleOCR/Det/V4/PP-OCRv4_mobile_det_infer/slim.onnx'],
+  ['PpOcrRecV4','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/slim.onnx'],
+  ['PpOcrRecV6','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/slim.onnx'],
+  ['PpOcrRecV4-labels','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/inference.yml'],
+  ['PpOcrRecV6-labels','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/inference.yml'],
+];
+function modelIdentity(r){
+  const m=r.modelEvidence,fixed={rawPaddleConfig:8,rawPaddleName:'V6',fixedDetectorConfig:7,fixedDetectorName:'V4',pinMethod:'actual_bundled_open_read_sha256_hold_session'};
+  if(!m||r.rawPaddleReadback!==8||Object.entries(fixed).some(([k,v])=>m[k]!==v)||!Array.isArray(m.assets)||m.assets.length!==5)fail('weekly_fixed_model_config_and_pin_evidence_missing');
+  for(const [i,a] of m.assets.entries())if(!a||a.modelName!==modelAssets[i][0]||a.relativePath!==modelAssets[i][1]
+      ||typeof a.sha256!=='string'||!/^[0-9a-fA-F]{64}$/.test(a.sha256)||integer(a.length,1,2147483647)!==a.length)fail('weekly_fixed_actual_model_asset_identity_invalid');
+}
 function border(raw,item,w,h){
   if(raw?.verified!==true||raw.method!=='four_side_neutral_outline'||raw.minimumChannel!==225||raw.maximumSpread!==35||raw.minimumFraction!==.9||raw.sides?.length!==4)fail('weekly_raw_selection_border_missing');
   const radius=Math.max(3,round(item.width*8/125));
@@ -47,21 +62,71 @@ function border(raw,item,w,h){
     if(neutral/positions.length<.9||neutral>side.neutralCount||side.neutralCount-neutral>side.sampleCount-positions.length)fail('weekly_border_pixels_contradict_selection');
   }
 }
+function namedCount(r,item,s){
+  const fixed={method:'grid_hsv_foreground_exact_dual_ocr',sourceScale:3,maximumSaturation:140,maximumValue:210,minimumComponentArea:20,
+    minimumComponentHeight:12,minimumComponentBottomRatio:.55,maximumComponentAspectRatio:3,glyphHeight:48,horizontalPadding:24,verticalPadding:24,topPaddingReference:8,bottomPaddingReference:8,
+    ocrScale:1,detectorModel:'PaddleV4_fixed',rawModel:'configured_native_paddle_without_detector',sourceInterpolation:'linear',glyphInterpolation:'nearest',ocrInterpolation:'nearest'};
+  if(!r||Object.entries(fixed).some(([k,v])=>r[k]!==v))fail('weekly_named_count_method_parameters_missing');
+  modelIdentity(r);
+  const pad=Math.max(1,round(8*item.width/125));
+  const source={x:item.x+Math.trunc(item.width*5/125),y:item.y+Math.trunc(item.height*128/153)-pad,
+    width:Math.trunc(item.width*120/125)-Math.trunc(item.width*5/125),height:Math.trunc(item.height*150/153)-Math.trunc(item.height*128/153)+2*pad};
+  if(!equal(rect(r.sourceRegion),source))fail('weekly_named_count_source_geometry_invalid');
+  const all=r.allComponents,mask={x:0,y:0,width:source.width*3,height:source.height*3};
+  if(!Array.isArray(all)||all.length<1||all.length>1000||all.some(c=>!inside(rect(c),mask))
+      ||!same(all,[...all].sort((a,b)=>a.x-b.x||a.y-b.y)))fail('weekly_original_mask_components_invalid');
+  const chosen=all.filter(c=>c.width>1&&c.height>=12&&c.width*c.height>=20&&c.y+c.height>=mask.height*.55&&c.width/c.height<=3);
+  if(!chosen.length||!same(r.components,chosen))fail('weekly_filtered_components_not_derived');
+  const left=Math.min(...chosen.map(c=>c.x)),top=Math.min(...chosen.map(c=>c.y));
+  const f={x:left,y:top,width:Math.max(...chosen.map(c=>c.x+c.width))-left,height:Math.max(...chosen.map(c=>c.y+c.height))-top};
+  const glyph=Math.max(1,round(f.width*48/f.height)),canvas={x:0,y:0,width:glyph+48,height:96};
+  const fg={x:source.x+Math.floor(f.x/3),y:source.y+Math.floor(f.y/3),width:Math.ceil((f.x+f.width)/3)-Math.floor(f.x/3),height:Math.ceil((f.y+f.height)/3)-Math.floor(f.y/3)};
+  if(!equal(rect(r.foregroundBounds),f)||!equal(rect(r.foregroundSourceBounds),fg)||integer(r.glyphWidth,1)!==glyph
+      ||integer(r.normalizedWidth,1)!==canvas.width||integer(r.normalizedHeight,1)!==96||integer(r.ocrInputWidth,1)!==canvas.width||integer(r.ocrInputHeight,1)!==96)fail('weekly_foreground_union_or_normalization_invalid');
+  if(['sourcePixelsSha256','maskPixelsSha256','normalizedPixelsSha256','ocrInputPixelsSha256'].some(k=>typeof r[k]!=='string'||! /^[0-9a-fA-F]{64}$/.test(r[k])))fail('weekly_preprocessing_pixel_fingerprints_missing');
+  if(r.ocrInputPixelsSha256!==r.normalizedPixelsSha256)fail('weekly_dual_models_not_using_same_original_canvas');
+  if(r.detectorRows?.length!==1||r.sourceRows?.length!==1)fail('weekly_named_count_dual_ocr_rows_missing');
+  const row=r.detectorRows[0],b=rect(row),input=canvas,margin=Math.max(2,2*s*48*3/f.height);
+  if(!inside(b,input)||Math.min(b.x,b.y,input.width-b.x-b.width,input.height-b.y-b.height)<margin)fail('weekly_normalized_integer_clipped');
+  const x=source.x+Math.floor((f.x+(b.x-24)*f.width/glyph)/3),y=source.y+Math.floor((f.y+(b.y-24)*f.height/48)/3);
+  const right=source.x+Math.ceil((f.x+(b.x+b.width-24)*f.width/glyph)/3),bottom=source.y+Math.ceil((f.y+(b.y+b.height-24)*f.height/48)/3);
+  if(!equal(rect(r.sourceRows[0]),{x,y,width:right-x,height:bottom-y})||row.text!==r.sourceRows[0].text)fail('weekly_original_source_row_projection_invalid');
+  rows(r.sourceRows,source,s);rows([{...fg,text:''}],source,s);
+  if(typeof r.raw!=='string'||typeof row.text!=='string'||r.raw.replace(/\s/g,'')!==row.text.replace(/\s/g,'')||!/^(0|[1-9][0-9]{0,8})$/.test(r.raw.replace(/\s/g,'')))fail('weekly_named_count_dual_ocr_disagrees');
+  return {value:integer(Number(r.raw.replace(/\s/g,''))),source};
+}
+function initialStack(f,stack,item){
+  const initial=f.initialStack,title={x:Math.trunc(f.width*.682),y:Math.trunc(f.width*.0625),width:Math.trunc(f.width*.256),height:Math.trunc(f.width*.03125)};
+  const amount={x:item.x+Math.trunc(item.width*5/125),y:item.y+Math.trunc(item.height*128/153),width:Math.trunc(item.width*120/125)-Math.trunc(item.width*5/125),height:Math.trunc(item.height*150/153)-Math.trunc(item.height*128/153)};
+  if(!initial||initial.observedAt!==stack.observedAt||initial.countMethod!=='raw_ocr_without_detector'||!equal(rect(initial.nameRegion),title)
+      ||!equal(rect(initial.countRegion),amount)||typeof initial.rawCountText!=='string'
+      ||['selectedItemVerified','selectedItemRect','selectionEvidence'].some(k=>!same(initial[k],stack[k])))fail('weekly_initial_stack_scope_or_geometry_changed');
+  for(const [key,box] of [['nameRows',title],['countRows',amount]])if(!Array.isArray(initial[key])||initial[key].some(r=>typeof r.text!=='string'||!inside(rect(r),box)))fail('weekly_initial_raw_rows_missing');
+  return initial;
+}
 function frame(f,target,selection,start,finish){
   const s=dimensions(f,start,finish),stack=f.stack,item=rect(selection.itemRect),client={x:0,y:0,width:f.width,height:f.height};
   if(f.gameActive!==true||f.promptVisible!==false||f.tabVerified!==true||f.category!==target.category
       ||f.iconName!==target.materialName||num(f.iconScore)<.75||f.iconScore>1||!inside(item,client))fail('weekly_category_focus_model_unverified');
   const header=rect(f.headerRegion),headerExpected={x:round(100*s),y:0,width:round(350*s),height:round(100*s)};
-  if(!equal(header,headerExpected)||rows(f.headerRows,header,s).filter(v=>v===(target.category==='preciousItems'?'贵重道具':'角色培养道具')).length!==1)fail('weekly_complete_category_header_unverified');
-  const title=rect(stack.nameRegion),titleExpected={x:Math.trunc(f.width*.682),y:Math.trunc(f.width*.0625),width:Math.trunc(f.width*.256),height:Math.trunc(f.width*.03125)};
-  const amount=rect(stack.countRegion),amountExpected={x:item.x+Math.trunc(item.width*5/125),y:item.y+Math.trunc(item.height*128/153),width:Math.trunc(item.width*120/125)-Math.trunc(item.width*5/125),height:Math.trunc(item.height*150/153)-Math.trunc(item.height*128/153)};
+  if(!equal(header,headerExpected)||rows(f.headerRows,header,s).filter(v=>headerAliases(target.category).includes(v)).length!==1)fail('weekly_complete_category_header_unverified');
+  const modern='countReading' in f||'initialStack' in f||stack.countMethod==='grid_hsv_foreground_exact_dual_ocr';
+  const initial=modern?initialStack(f,stack,item):null,reading=modern?namedCount(f.countReading,item,s):null;
+  const title=rect(stack.nameRegion),titleExpected=modern?{x:round(1280*s),y:round(110*s),width:round(540*s),height:round(78*s)}:{x:Math.trunc(f.width*.682),y:Math.trunc(f.width*.0625),width:Math.trunc(f.width*.256),height:Math.trunc(f.width*.03125)};
+  const amount=rect(stack.countRegion),amountExpected=modern?reading.source:{x:item.x+Math.trunc(item.width*5/125),y:item.y+Math.trunc(item.height*128/153),width:Math.trunc(item.width*120/125)-Math.trunc(item.width*5/125),height:Math.trunc(item.height*150/153)-Math.trunc(item.height*128/153)};
   const icon=rect(f.iconRegion),iconExpected={x:item.x,y:item.y,width:item.width,height:round(item.height*125/153)};
-  if(!equal(title,titleExpected)||!equal(amount,amountExpected)||!inside(title,client)||!inside(amount,item)||!equal(icon,iconExpected)
+  if(!equal(title,titleExpected)||!equal(amount,amountExpected)||!inside(title,client)||!inside(amount,modern?client:item)||!equal(icon,iconExpected)
       ||f.iconMethod!=='cell_resize_125x153_top_125x125'||stack.selectedItemVerified!==true||!equal(rect(stack.selectedItemRect),item)
       ||rows(stack.nameRows,title,s).length!==1||clean(stack.nameRows[0].text)!==target.materialName
-      ||stack.countMethod!=='raw_ocr_without_detector'||stack.countRows?.length!==1)fail('weekly_named_selected_stack_geometry_unverified');
+      ||stack.countMethod!==(modern?'grid_hsv_foreground_exact_dual_ocr':'raw_ocr_without_detector')||stack.countRows?.length!==1)fail('weekly_named_selected_stack_geometry_unverified');
   const detected=rows(stack.countRows,amount,s)[0],raw=clean(stack.rawCountText);
   if(raw!==detected)fail('weekly_quantity_detector_disagrees');
+  if(modern){
+    if(!same(stack.countRows,f.countReading.sourceRows)||stack.rawCountText!==f.countReading.raw||count(raw)!==reading.value)fail('weekly_stack_not_bound_to_actual_count_reading');
+    const old={...f,stack:initial};delete old.countReading;delete old.initialStack;let oldCount=null;
+    try{oldCount=frame(old,target,selection,start,finish);}catch{}
+    if(oldCount!==null&&oldCount!==reading.value)fail('weekly_initial_complete_count_conflicts');
+  }
   border(stack.selectionEvidence,item,f.width,f.height);
   return count(raw);
 }
@@ -81,6 +146,8 @@ export function verifyWeeklyObservation(raw,start,finish){
         ||b.stack.observedAt-a.stack.observedAt<100||b.stack.observedAt-a.stack.observedAt>5000)fail('weekly_independent_selected_frames_missing');
     const shape=`${a.width}x${a.height}`;if(client&&client!==shape)fail('weekly_capture_client_changed');client=shape;
     const first=frame(a,target,selection,start,finish),second=frame(b,target,selection,start,finish);
+    const aliases=headerAliases(target.category),ha=a.headerRows.map(row=>clean(row.text)).filter(text=>aliases.includes(text)),hb=b.headerRows.map(row=>clean(row.text)).filter(text=>aliases.includes(text));
+    if(ha.join()!==hb.join())fail('weekly_actual_reviewed_header_changed_between_frames');
     if(first!==second||integer(raw.inventory[target.materialId])!==second)fail('weekly_raw_pair_or_summary_count_disagrees');
     segments.push({clicked,finished:b.stack.observedAt});latest=Math.max(latest,b.stack.observedAt);
     inventory[target.materialId]={name:target.materialName,count:second,status:'exact',verified:true,source:raw.source,evidence:{materialId:target.materialId,...pair}};

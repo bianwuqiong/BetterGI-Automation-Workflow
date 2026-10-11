@@ -15,6 +15,7 @@ config/party-preparation.json
 config/cultivation-full.json
 config/artifact*.json
 !config/artifact*.example.json
+config/artifact-stages/
 logs/
 state/
 manual-graphics.json
