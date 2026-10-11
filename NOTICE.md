@@ -12,8 +12,9 @@ This repository is an independent community workflow that depends on and modifie
 - Reviewed source tag: [`automation-baseline-2026-10-08`](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-baseline-2026-10-08)
 - Modified source commit: `d8c0aa238a949d7d74bfe5087f3a48e39771575a`
 - Upstream base commit: `9424d1f3c344f8ba99363e0b0d3756f76bce836d`
-- Modification dates: 2026-09-12 through 2026-10-11
-- Development-transfer source: the pinned baseline above plus `patches/cultivation-engine.patch`; see the original snapshot manifest `docs/TRANSFER_MANIFEST_2026-10-11.json`. Subsequent local startup and talent fixes use separate patches in the order documented in `docs/TRANSFER_SETUP.md`. The baseline commit alone does not include the latest cultivation changes.
+- Modification dates: 2026-09-12 through 2026-10-12
+- Current corresponding source: the pinned baseline above plus every patch, applied once in the exact order and with the UTF-8/LF hashes recorded in [SOURCE_PATCH_SEQUENCE](docs/SOURCE_PATCH_SEQUENCE_2026-10-11.json). This includes the complete cultivation patch and subsequent startup, character, artifact, resource-reading and network-diagnostic changes. The baseline or cultivation patch alone does not provide the current modified engine. See [setup](docs/TRANSFER_SETUP.md) and [local validation boundaries](docs/LOCAL_WORKFLOW_VALIDATION_2026-10-12.md).
+- Original development-transfer snapshot: `docs/TRANSFER_MANIFEST_2026-10-11.json` remains the downloaded package's manifest. Later source changes have their own patches and validation records; account state and spending authorization are not transferred.
 
 This repository does not contain BetterGI binaries, Genshin Impact files, game assets, account data, or login credentials. BetterGI and Genshin Impact names are used only to identify compatibility and upstream origin. All related trademarks belong to their respective owners.
 

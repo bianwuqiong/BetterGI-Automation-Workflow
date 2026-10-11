@@ -3,5 +3,9 @@
   {"name":"mode","type":"select","label":"模式","options":["scan","execute"],"default":"scan"},
   {"name":"targetConfigJson","type":"input-text","label":"培养目标 JSON","default":"{\"characterName\":\"梦见月瑞希\",\"targetLevel\":90,\"talentTargets\":{\"normal\":9,\"skill\":9,\"burst\":9},\"includeEquippedWeapon\":true,\"weaponTargetLevel\":90}"},
   {"name":"policyJson","type":"input-text","label":"执行预算 JSON（只读模式可留空）","default":"{}"},
-  {"name":"resinDiagnosticOnly","type":"checkbox","label":"只读树脂诊断","default":false}
+  {"name":"resinDiagnosticOnly","type":"checkbox","label":"只读树脂诊断","default":false},
+  {"name":"resourceDiagnosticOnly","type":"checkbox","label":"只读摩拉与武器矿覆盖诊断","default":false},
+  {"name":"weeklyInventoryOnly","type":"checkbox","label":"只读周本三材料与异梦溶媒库存","default":false},
+  {"name":"talentPreviewOnly","type":"checkbox","label":"只读单天赋下一等级成本预览","default":false},
+  {"name":"talentPreviewType","type":"input-text","label":"只读天赋类型（普通攻击/元素战技/元素爆发）","default":"元素战技"}
 ]

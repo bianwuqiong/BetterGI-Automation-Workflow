@@ -1,0 +1,49 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -104,6 +104,7 @@
+ 
+ - 第十四层增加仅用于观测的天赋升级预览入口，复用角色导航，再核验完整官方角色名三帧、详情类型/完整标题/基础等级两帧及预览等级、具名材料tooltip和摩拉。提供尺寸、OCR字框/数字边缘、斜杠分离整数、等级字形颜色/加成及恢复世界的原始标量，供上层独立核验。未知字段为null；小币模型及稀字OCR/完整数量失败保持未知，不降低阈值。只有已核实页面的导航/材料tooltip/取消输入，未接入最终确认或升级消费。压缩静态回放存在失败，不等于物理新鲜截图通过；单角色实时预览仍待单独验收。
+ - 第十五层仅扩宽只读预览的角色姓名区域，并在原生及外层保留完整字框四边至少2px、三次独立全名要求，不修改一般GetCharacter读取或校正截边OCR框。清理每个已核实页面需双帧且只允许一次Esc；过渡和未知页面不反复按键，完整派蒙菜单八个按钮及布局获双帧证明后才允许一次back。原始失败阶段/原因与清理原因分别返回，不能被清理失败覆盖。菜单识别不读取账号头部、昵称、UID或生日作为条件，私人图片不进入源码。未增加升级确认或周本消费功能。
++- 第十六层仅将Inspection姓名区域进一步扩至`(1420,110,360,68)`，覆盖完整姓名的自然左右边距且避开下一行，保持唯一完整OCR框、四边至少2px及三张独立官方全名。旧一般角色读取、清理调度和所有资源确认限制不变。第十五层清理已由实际新鲜世界双帧独立验收，完整天赋预览仍未据此宣称成功；旧截边与unknown原样保留。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -50,7 +50,7 @@
+ /// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
+ public static class TalentUpgradePreviewEvidence
+ {
+-    public static readonly Rect InspectionNameReference=new(1460,124,264,52);
++    public static readonly Rect InspectionNameReference=new(1420,110,360,68);
+     public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
+     public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
+     public static void ValidateRequest(string name,string type)
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs
+@@ -14,10 +14,20 @@
+         Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(raw with{NameRegion=new(1466,131,244,38)},"目标角色"));
+         Assert.Equal(new Rect(1465,132,160,34),raw.NameRows[0].Bounds);
+     }
+-    [Theory] [InlineData(1461,132,160,34)] [InlineData(1465,125,160,34)]
+-    [InlineData(1465,132,258,34)] [InlineData(1465,132,160,43)]
++    [Theory] [InlineData(1421,132,160,34)] [InlineData(1465,111,160,34)]
++    [InlineData(1465,132,314,34)] [InlineData(1465,132,160,45)]
+     public void AnyCropEdgeBelowTwoPixelsRemainsUnknown(int x,int y,int w,int h)=>
+         Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(Frame(new(x,y,w,h)),"目标角色"));
++    [Fact] public void InspectionNameHasAmplePaddingAroundTheUnmodifiedObservedSingleLine()
++    {
++        var reference=TalentUpgradePreviewEvidence.InspectionNameReference;
++        Assert.Equal(new Rect(1420,110,360,68),reference);
++        var f=Frame(new(1455,127,182,41));
++        Assert.True(TalentUpgradePreviewEvidence.CharacterFrame(f,"目标角色"));
++        Assert.Equal(35,f.NameRows[0].Bounds.Left-reference.Left);
++        Assert.Equal(new Rect(1455,127,182,41),f.NameRows[0].Bounds);
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(f with{NameRows=[..f.NameRows,f.NameRows[0]]},"目标角色"));
++    }
+     [Fact] public void NameStillNeedsThreeIndependentExactFramesAndTheOverviewMarker()
+     {
+         var f=Frame(new(1465,132,160,34));

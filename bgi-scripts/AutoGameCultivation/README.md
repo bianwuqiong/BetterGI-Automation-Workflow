@@ -51,3 +51,47 @@ node --test tests/safety.test.js
 ```
 
 测试使用fake BGI和内存文件，不消费资源。所需上游计算核心与许可证见 [UPSTREAM.md](UPSTREAM.md)。
+
+## 独立只读资源覆盖诊断
+
+```powershell
+python scripts/workflow.py run --task '培养材料' --cultivation-mode scan --cultivation-resource-check --no-delay
+```
+
+此开关只运行一个scan节点，与树脂探针、画质验收及execute互斥。宿主生成临时零预算、禁用资源执行policy，不修改本机配置或消费授权。先调用 `ReadMoraSnapshot('{}',token)`，再以固定 `category=weaponExperience` 请求104011精锻用杂矿、104012精锻用良矿、104013精锻用魔矿。Mora原生读取会移开遮挡图标的指针；静态弱模型分数不能替代当前实机核验。
+
+报告保留独立 `metadata.diagnostic=resource-coverage-only` / `resourceCoverage`，包括全部原始双帧、模型身份/分数、完整整数、选中标题和数量区域证据。Python与JS都重新核验；任一未知则整体unknown，未知数量始终null，不补0。全部exact的success只说明这一轮资源读取覆盖，不表示完整培养材料扫描、等级内经验、总升级成本或实际升级完成。`upgradeBudgetComplete=false`、`levelExperienceObserved=false`、`targetReached=false`。
+
+这些数量不进入普通 `inventory`，正常扫描的202 excluded/manual保持原义。此只读入口也不解除任何paid unknown，不允许重放未确认消费。原始报告只存本机private `record` 和该run日志档案；公开测试只使用合成数据。
+
+## 独立周本四库存只读诊断
+
+```powershell
+python scripts/workflow.py run --profile cultivation --task '培养材料' --cultivation-mode scan --cultivation-weekly-inventory --no-delay
+```
+
+仅读取 `113060` 残火灯烛、`113061` 丝织之羽、`113062` 否定裁断和 `113021` 异梦溶媒；`101016` 不属于此请求。入口固定调用 `dispatcher.ReadWeeklyConversionInventory('{}',linkedToken)`，JSON按UTF-8字节计最多1MB。与execute、树脂/资源/天赋诊断、画质验收、圣遗物/路线/战斗演练及其他节点互斥；临时执行开关false、预算0、最多3分钟，不改本机配置与授权。
+
+JS与Python分别重新核验原始模型名称/分数≥.75、实际分类标题、完整选中材料名、原始整数与检测器OCR一致、四边2个缩放像素、四侧选中边框的实际像素和位置、独立新鲜双帧、统一客户端、当前读取时间范围及主界面恢复双帧。报告保留 `metadata.diagnostic=weekly-conversion-inventory-only` 和 `weeklyInventory.nativeObservation` 全部原始证据；普通17材料扫描和普通 `inventory` 保持原义。任一项不足，摘要全部保留unknown/null，不把未见堆栈填0，不通过通用网格库存替代证据。
+
+success只表示本次四库存读取完整；`targetReached=false`、`completedUpgrades=0`。此接口不提供转换、配方或费用推测，也不执行消费或解锁未知消费重放。原始报告保存在本机private record/run档案，公开测试使用匿名合成数据。
+
+## 单项天赋下一等级只读预览
+
+```powershell
+python scripts/workflow.py run --profile cultivation --task '培养材料' --cultivation-talent-preview --talent-type elemental-skill --no-delay
+```
+
+`--talent-type` 只允许 `normal-attack`、`elemental-skill`（默认）、`elemental-burst`，一次只读一项。目标来自本机 `cultivation.json` 的完整 `target.characterName`，由本run生成参数冻结；换角色重新读取，旧角色报告不能改名字复用。宿主复用互斥、游戏接管、画质与退出；新开关与execute、其它只读探针、画质验收及其它节点互斥，临时执行开关为false、预算0、最多3分钟，不改私人原配置或授权。
+
+调用 `dispatcher.InspectTalentUpgrade(characterName,talentType,linkedToken)`，返回JSON上限1MB。原生只打开已识别的角色/天赋详情和下一等级预览，读取材料说明后以已识别页面的Escape恢复世界；从不点击最终确认。报告 `metadata.diagnostic=talent-upgrade-preview-only` 和 `talentPreview.nativeObservation` 保存全部原始角色三帧、详情双帧、预览双帧、材料tooltip、实际货币身份与世界恢复双帧。JS和Python分别重算fullname/type、显示与基础等级和固定+3证据、基础等级→下一等级、真实完整整数及ROI边缘、实际材料名称/持有数量与Mora模型分数，不把verified布尔当成全部证据。
+
+材料tooltip的“培养需求”分母通常是培养目标合计，只核对持有分子；下一等级需求始终取实际升级popup，不能把合计分母替代成本。OCR将斜杠看作1时，只有原生实际斜杠像素几何与独立左右完整整数证据可以通过，不改原文字猜数字。当前Mora身份使用该popup实际模型≥0.75；若只有弱模型或余额常识，仍为unknown，不能伪造一个未读取的完整名称Mora tooltip。
+
+全部独立证明齐全才返回诊断success。任何未知保留原始证据、`costs=null`；普通17类材料扫描和202 excluded不受影响。无论预览是否成功，都保持 `completedUpgrades=0`、`targetReached=false`，资源消费步骤为空，不解除圣遗物unknown或授权实际升级。
+
+第17版还支持明确选定的实际背景货币区域：`coinVariant=real_background_padding_8_reference_53`，区域为(845,791,53,53)，旧(853,799,37,37)的名称/分数/区域仍完整保存在initialCoin字段。主区域仍必须真实Mora模型≥0.75，不能择两次识别的最高分；旧区域若高置信识别为其它货币则拒绝。旧14/15/16的37区域格式继续支持。
+
+数量的新裁剪必须可独立重建：Mora只接受初始固定(903,797,275,55)中唯一完整ratio detector实际行，四边加 `Math.Round(12*s)`并限制在秘境预览中部；材料只接受真实父count行横pad20/竖pad5后与实际材料card相交的区域，初始pad8读取原样保留。JS和Python重新计算框、全部初始原行和同帧时点，最终完整raw与detector整数必须一致，2px边缘规则不降低。初始失败不能替代最终成功；初始高置信数量冲突仍拒绝，不从已知常见费用补值。
+
+`privateCapture`仅保存完整预览的原生无resize无合成PNG和诊断元数据，不替代货币/数量/新鲜度证明。弱模型或不完整原行仍unknown；公开测试均是合成数据，不能当作第17版实机已验收。

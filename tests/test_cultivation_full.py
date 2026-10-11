@@ -12,6 +12,10 @@ from scripts.analyze_run import analyze_log
 
 DAY = '2026-10-10'
 TEAM = ['桑多涅', '奥黛塔', '八重神子', '钟离']
+MIZUKI_TARGET = {'characterName': '梦见月瑞希', 'targetLevel': 90,
+    'talentTargets': {'normal': 9, 'skill': 9, 'burst': 9}, 'includeEquippedWeapon': True, 'weaponTargetLevel': 90}
+OTHER_TARGET = {'characterName': '香菱', 'targetLevel': 80,
+    'talentTargets': {'normal': 6, 'skill': 8, 'burst': 8}, 'includeEquippedWeapon': False, 'weaponTargetLevel': None}
 
 
 def verified_dispatch_fixture():
@@ -21,14 +25,15 @@ def verified_dispatch_fixture():
             'postStateStatus': 'completed'}
 
 
-def child_fixture(profile='cultivation', outcome='completed', identifier='20261010T000001-12345678'):
+def child_fixture(profile='cultivation', outcome='completed', identifier='20261010T000001-12345678', target=None):
     result = {'runId': identifier, 'gameDate': DAY, 'profile': profile, 'outcome': outcome,
               'executionOutcome': 'not_started' if outcome == 'planned' else 'exited',
               'exitCode': 0 if outcome in {'planned', 'completed'} else 4,
               'finishedAt': '2026-10-10T00:02:00+00:00',
               'requestedProfileTasks': ['领取邮件', '培养材料', '领取每日奖励'] if profile == 'cultivation' else ['队伍免费恢复'] if profile == 'party-preparation' else ['刀镡路线'],
-              'cultivationTarget': deepcopy(full.TARGET), 'cultivationMode': 'execute'}
+              'cultivationTarget': deepcopy(target or MIZUKI_TARGET), 'cultivationMode': 'execute'}
     if profile == 'cultivation':
+        result['cultivation'] = {'reportVerified': outcome == 'completed', 'runId': identifier}
         claim_status = 'success' if outcome == 'completed' else 'unknown'
         result['tasks'] = [{'name': '领取每日奖励', 'status': claim_status,
             'dailyRewardClaim': {'status': claim_status, 'evidence': [
@@ -47,13 +52,18 @@ def child_fixture(profile='cultivation', outcome='completed', identifier='202610
             **dict.fromkeys(('reportVerified', 'preparationCompleted', 'allowStatueRevival',
                 'noRouteExecution', 'noItemConsumption', 'noRevivalItemConsumption',
                 'noResinSpend', 'noFood', 'noCrafting', 'noUpgrade'), True)}
-    return {'result': result, 'resultPath': f'logs/runs/{identifier}/result.json',
+    bundle = {'result': result, 'resultPath': f'logs/runs/{identifier}/result.json',
             'recordingPath': f'logs/runs/{identifier}/recording.json',
             'recording': {'complete': True, 'frameCoveragePassed': True}}
+    if profile == 'cultivation':
+        bundle['cultivationReport'] = {'runId': identifier, 'mode': 'execute', 'readOnly': False,
+            'status': 'success' if outcome == 'completed' else 'unknown', 'targetReached': False,
+            'target': deepcopy(target or MIZUKI_TARGET)}
+    return bundle
 
 
 class FakeHost:
-    def __init__(self, children=(), elapsed=(), start=None):
+    def __init__(self, children=(), elapsed=(), start=None, target=None):
         self.start = start or datetime(2026, 10, 10, 0, 0, tzinfo=timezone.utc)
         self.elapsed = 0
         self.children = list(children)
@@ -62,6 +72,10 @@ class FakeHost:
         self.scope_checks = []
         self.preparation_checks = []
         self.gate_error = None
+        self.target = deepcopy(target or MIZUKI_TARGET)
+
+    def load_target(self):
+        return deepcopy(self.target)
 
     def now(self):
         return self.start + timedelta(seconds=self.elapsed)
@@ -73,19 +87,21 @@ class FakeHost:
         self.calls.append((deepcopy(phase), minutes, dry_run, deadline, day))
         self.elapsed += self.durations.pop(0) if self.durations else 60
         child = self.children.pop(0) if self.children else child_fixture(phase['profile'], 'planned' if dry_run else 'completed',
-            identifier=f'20261010T0000{len(self.calls):02d}-{len(self.calls):08x}')
+            identifier=f'20261010T0000{len(self.calls):02d}-{len(self.calls):08x}', target=self.target)
         return deepcopy(child)
 
     def read_bundle(self, identifier):
         return deepcopy(self.resumes[identifier])
 
-    def verify_resume_scope(self, bundle, phase):
+    def verify_resume_scope(self, bundle, phase, target):
+        assert target == self.target
         self.scope_checks.append(phase['name'])
 
     def verify_preparation_scope(self, bundle, phase):
         self.preparation_checks.append(phase['name'])
 
-    def validate_resource_gate(self, day):
+    def validate_resource_gate(self, day, target):
+        assert target == self.target
         self.resource_checks.append(day)
         if self.gate_error:
             raise ValueError(self.gate_error)
@@ -94,6 +110,72 @@ class FakeHost:
 
 
 class FullSupervisorTests(unittest.TestCase):
+    def test_replacement_target_generates_its_own_plan_and_bound_children_without_upgrade_claim(self):
+        host = FakeHost(target=OTHER_TARGET)
+        report = full.supervise(host, dry_run=True)
+        self.assertEqual(report['outcome'], 'planned')
+        self.assertEqual(report['target'], OTHER_TARGET)
+        self.assertEqual(report['targetSha256'], full.target_identity(OTHER_TARGET))
+        self.assertNotEqual(report['targetSha256'], full.target_identity(MIZUKI_TARGET))
+        self.assertTrue(all(child['parentTarget'] == OTHER_TARGET for child in report['phases']))
+        self.assertFalse(report['targetReached'])
+        self.assertIsNone(report['fullDailyScopeVerified'])
+        self.assertEqual(host.resource_checks, [])
+
+    def test_old_mizuki_child_and_resume_cannot_complete_replacement_target(self):
+        old = child_fixture(target=MIZUKI_TARGET)
+        host = FakeHost([child_fixture('party-preparation'), old], target=OTHER_TARGET)
+        report = full.supervise(host, authorized=True)
+        self.assertEqual(report['outcome'], 'partial')
+        self.assertFalse(report['fullDailyScopeVerified'])
+        self.assertEqual(len(report['phases']), 1)
+        self.assertIn('requested cultivation target', report['errors'][0])
+        host = FakeHost(target=OTHER_TARGET)
+        host.resumes[old['result']['runId']] = old
+        report = full.supervise(host, authorized=True, resume_ids=[old['result']['runId']])
+        self.assertEqual(report['outcome'], 'unknown')
+        self.assertEqual(host.calls, [])
+        self.assertEqual(host.resource_checks, [])
+        self.assertEqual(host.scope_checks, [])
+
+    def test_target_config_change_during_parent_stops_before_next_resource_gate(self):
+        class ChangingHost(FakeHost):
+            def run_phase(self, *args):
+                bundle = super().run_phase(*args)
+                self.target = deepcopy(MIZUKI_TARGET)
+                return bundle
+        host = ChangingHost(target=OTHER_TARGET)
+        report = full.supervise(host, authorized=True)
+        self.assertEqual(report['outcome'], 'partial')
+        self.assertEqual(report['target'], OTHER_TARGET)
+        self.assertEqual(len(host.calls), 1)
+        self.assertEqual(host.resource_checks, [])
+        self.assertIn('target changed', report['errors'][0])
+
+    def test_old_archive_cannot_be_relabelled_as_a_new_target_by_result_summary(self):
+        child = child_fixture(target=OTHER_TARGET)
+        child['cultivationReport']['target'] = deepcopy(MIZUKI_TARGET)
+        host = FakeHost([child_fixture('party-preparation'), child], target=OTHER_TARGET)
+        report = full.supervise(host, authorized=True)
+        self.assertEqual(report['outcome'], 'partial')
+        self.assertFalse(report['fullDailyScopeVerified'])
+        self.assertIn('requested parent target', report['errors'][0])
+        host = FakeHost(target=OTHER_TARGET)
+        host.resumes[child['result']['runId']] = child
+        self.assertEqual(full.supervise(host, authorized=True, resume_ids=[child['result']['runId']])['outcome'], 'unknown')
+        self.assertEqual(host.calls, [])
+
+    def test_replacement_target_keeps_authorization_day_and_dispatch_gates(self):
+        with self.assertRaises(ValueError):
+            full.supervise(FakeHost(target=OTHER_TARGET))
+        child = child_fixture(target=OTHER_TARGET)
+        child['result']['dispatchVerification']['postStateStatus'] = 'unknown'
+        report = full.supervise(FakeHost([child_fixture('party-preparation'), child], target=OTHER_TARGET), authorized=True)
+        self.assertEqual(report['outcome'], 'partial')
+        self.assertFalse(report['fullDailyScopeVerified'])
+        child['result']['gameDate'] = '2026-10-09'
+        report = full.supervise(FakeHost([child_fixture('party-preparation'), child], target=OTHER_TARGET), authorized=True)
+        self.assertNotEqual(report['outcome'], 'completed')
     def test_preview_only_calls_plans_and_never_resource_gate(self):
         host = FakeHost()
         report = full.supervise(host, dry_run=True, with_routes=True, route_session_config='config/session.json')
@@ -458,6 +540,8 @@ class LocalHostFakeTests(unittest.TestCase):
             self.argv, self.spawn_kwargs = argv, kwargs
             directory.mkdir()
             (directory / 'result.json').write_text(json.dumps(result), encoding='utf-8')
+            if not dry_run:
+                (directory / 'cultivation-report.json').write_text(json.dumps(bundle['cultivationReport']), encoding='utf-8')
             if dry_run:
                 kwargs['stdout'].write(json.dumps({'runId': identifier, 'outcome': 'planned'}) + '\n')
                 kwargs['stdout'].flush()
@@ -507,7 +591,7 @@ class LocalHostFakeTests(unittest.TestCase):
     def test_real_resource_gate_rejects_config_or_ledger_expansion(self):
         host, _, _, _ = self.fixture()
         (host.root / 'config').mkdir()
-        config = {'target': deepcopy(full.TARGET), 'executionEnabled': True,
+        config = {'target': deepcopy(MIZUKI_TARGET), 'executionEnabled': True,
                   'policy': {'maxSteps': 1, 'originalResinBudget': 20, 'condensedResinBudget': 0,
                              'allowDomain': True, 'allowBoss': False, 'allowCrafting': False,
                              'validationMode': True, 'validationScopeId': 'mizuki-first-validation-20261008',
@@ -519,19 +603,31 @@ class LocalHostFakeTests(unittest.TestCase):
         path.write_text(json.dumps(config), encoding='utf-8')
         (host.root / 'config/settings.json').write_text(json.dumps({'bettergiExe': 'BetterGI_custom/BetterGI.exe'}), encoding='utf-8')
         with patch('scripts.cultivation_validation.constrain_validation', return_value=(config, gate)) as constrain:
-            self.assertEqual(host.validate_resource_gate(DAY)['runtimeOriginalResinBudget'], 20)
+            self.assertEqual(host.validate_resource_gate(DAY, MIZUKI_TARGET)['runtimeOriginalResinBudget'], 20)
             self.assertFalse(constrain.call_args.kwargs['assign'])
         for key, value in [('originalResinCap', 80), ('priorReservedOriginal', 0), ('runtimeOriginalResinBudget', 60), ('alreadyAttemptedSources', ['boss', 'domain'])]:
             changed = dict(gate, **{key: value})
             with patch('scripts.cultivation_validation.constrain_validation', return_value=(config, changed)):
                 with self.assertRaises(ValueError):
-                    host.validate_resource_gate(DAY)
+                    host.validate_resource_gate(DAY, MIZUKI_TARGET)
         for key, value in [('allowBoss', True), ('allowCrafting', True), ('originalResinBudget', 40), ('maxSteps', 2), ('requireZhongliShieldCast', False)]:
             changed = deepcopy(config)
             changed['policy'][key] = value
             path.write_text(json.dumps(changed), encoding='utf-8')
             with self.assertRaises(ValueError):
-                host.validate_resource_gate(DAY)
+                host.validate_resource_gate(DAY, MIZUKI_TARGET)
+
+    def test_local_target_is_loaded_from_config_and_old_identity_gate_is_rejected(self):
+        host, _, _, _ = self.fixture()
+        (host.root / 'config').mkdir()
+        path = host.root / 'config/cultivation.json'
+        path.write_text(json.dumps({'target': OTHER_TARGET}), encoding='utf-8')
+        self.assertEqual(host.load_target(), OTHER_TARGET)
+        old = child_fixture(target=MIZUKI_TARGET)
+        with self.assertRaisesRegex(ValueError, 'target/mode mismatch'):
+            host.verify_resume_scope(old, full.phases()[-1], OTHER_TARGET)
+        with self.assertRaisesRegex(ValueError, 'local cultivation config'):
+            host.verify_resume_scope(old, full.phases()[-1], MIZUKI_TARGET)
 
 
 if __name__ == '__main__':

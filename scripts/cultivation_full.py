@@ -19,11 +19,19 @@ import sys
 import time
 from uuid import uuid4
 
+try:
+    from .cultivation import _target
+except ImportError:
+    from cultivation import _target
+
 TERMINAL = {'planned', 'completed', 'partial', 'failed', 'unknown'}
 RUN_ID = re.compile(r'\d{8}T\d{6}-[0-9a-f]{8}\Z')
-TARGET = {'characterName': '梦见月瑞希', 'targetLevel': 90,
-          'talentTargets': {'normal': 9, 'skill': 9, 'burst': 9},
-          'includeEquippedWeapon': True, 'weaponTargetLevel': 90}
+
+
+def target_identity(target):
+    normalized = _target(target)
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, sort_keys=True,
+        separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def game_day(now):
@@ -165,7 +173,19 @@ def dispatch_scope_blocker(result):
     return None
 
 
-def verify_bundle(bundle, phase, day, dry_run=False):
+def verify_cultivation_target_archive(bundle, expected_target):
+    result = bundle['result']
+    report = bundle.get('cultivationReport')
+    summary = result.get('cultivation')
+    if (not isinstance(report, dict) or not isinstance(summary, dict) or summary.get('reportVerified') is not True
+            or summary.get('runId') != result['runId'] or report.get('runId') != result['runId']
+            or report.get('mode') != 'execute' or report.get('readOnly') is not False
+            or report.get('status') != 'success' or report.get('targetReached') is not False
+            or _target(report.get('target')) != _target(expected_target)):
+        raise ValueError('cultivation archive is not verified for the requested parent target')
+
+
+def verify_bundle(bundle, phase, day, dry_run=False, *, expected_target):
     result = bundle['result']
     identifier = result.get('runId')
     if not isinstance(identifier, str) or not RUN_ID.fullmatch(identifier):
@@ -176,6 +196,10 @@ def verify_bundle(bundle, phase, day, dry_run=False):
     claimed_outcome = outcome
     completion_blocker = reason = None
     dispatch_verified = None
+    expected_target = _target(expected_target)
+    if phase['profile'] == 'cultivation' and (
+            result.get('cultivationTarget') != expected_target or result.get('cultivationMode') != 'execute'):
+        raise ValueError('child is not bound to the requested cultivation target/execution mode')
     if outcome not in TERMINAL or not result.get('finishedAt'):
         raise ValueError('child result is not terminal')
     if dry_run:
@@ -190,10 +214,8 @@ def verify_bundle(bundle, phase, day, dry_run=False):
         expected = {'领取邮件', '培养材料', '领取每日奖励'} if phase['profile'] == 'cultivation' else {'队伍免费恢复'} if phase['profile'] == 'party-preparation' else {'刀镡路线'}
         if set(result.get('requestedProfileTasks', [])) != expected:
             raise ValueError('child requested task scope differs from the supported daily')
-        if phase['profile'] == 'cultivation' and (result.get('cultivationTarget') != TARGET
-                                                 or result.get('cultivationMode') != 'execute'):
-            raise ValueError('completed child is not the requested cultivation execution')
         if phase['profile'] == 'cultivation':
+            verify_cultivation_target_archive(bundle, expected_target)
             reason = dispatch_scope_blocker(result)
             dispatch_verified = reason is None
             if reason:
@@ -203,6 +225,7 @@ def verify_bundle(bundle, phase, day, dry_run=False):
         if phase['profile'] == 'party-preparation':
             verify_preparation(result.get('partyPreparation'), identifier)
     return {'phase': phase['name'], 'profile': phase['profile'], 'runId': identifier,
+            'parentTarget': expected_target, 'parentTargetSha256': target_identity(expected_target),
             'gameDate': day, 'outcome': outcome, 'executionOutcome': result.get('executionOutcome'),
             'claimedOutcome': claimed_outcome, 'completionBlocker': completion_blocker, 'reason': reason,
             'resultPath': bundle['resultPath'], 'recordingPath': bundle.get('recordingPath'),
@@ -227,14 +250,15 @@ def supervise(host, *, with_routes=False, route_session_config=None, dry_run=Fal
         raise ValueError('whole-run limit must be an integer from 20 to 35 minutes')
     if not dry_run and not authorized:
         raise ValueError('real execution requires explicit --authorized user invocation')
+    target = _target(host.load_target())
     requested = phases(with_routes, route_session_config, preparation_config)
     start, clock_start = host.now(), host.monotonic()
     day = game_day(start)
     deadline = clock_start + maximum_minutes * 60
     report = {'schemaVersion': 1, 'kind': 'supported-cultivation-daily', 'gameDate': day,
               'startedAt': start.isoformat(), 'mode': 'preview' if dry_run else 'execute',
-              'outcome': 'running', 'target': TARGET, 'targetReached': False,
-              'successMeaning': '仅确认现有培养日常节点；不代表90/9/9/9或武器90升级完成',
+              'outcome': 'running', 'target': target, 'targetSha256': target_identity(target), 'targetReached': False,
+              'successMeaning': '仅确认已核验的培养日常节点；不代表目标等级、天赋或武器升级完成',
               'maximumMinutes': maximum_minutes, 'coreTargetMinutes': 20,
               'materialRoutesMeasuredSeparately': with_routes, 'partyPreparationMeasuredSeparately': True,
               'allowStatueRevival': True, 'noRevivalItemConsumption': True,
@@ -252,19 +276,23 @@ def supervise(host, *, with_routes=False, route_session_config=None, dry_run=Fal
             phase = next((p for p in requested if p['profile'] == bundle['result'].get('profile')), None)
             if phase is None or phase['name'] in resumed:
                 raise ValueError('resume child is unrelated or duplicate')
-            child = verify_bundle(bundle, phase, day)
+            if _target(host.load_target()) != target:
+                raise ValueError('cultivation target changed while resuming the parent')
+            child = verify_bundle(bundle, phase, day, expected_target=target)
             if child['outcome'] != 'completed':
                 if child.get('completionBlocker') == 'dispatch_unverified':
                     child['resumeRejected'] = True
                     report['phases'].append(child)
                     raise ValueError('resume rejected: ' + child['reason'])
                 raise ValueError('only verified same-day completed phases can be resumed')
-            host.verify_resume_scope(bundle, phase)
+            host.verify_resume_scope(bundle, phase, target)
             child['resumed'] = True
             resumed[phase['name']] = child
         for index, phase in enumerate(requested):
             if game_day(host.now()) != day:
                 raise ValueError('game day changed; no next child started')
+            if _target(host.load_target()) != target:
+                raise ValueError('cultivation target changed during parent; no next child started')
             if phase['name'] in resumed:
                 report['phases'].append(resumed[phase['name']])
                 continue
@@ -274,19 +302,21 @@ def supervise(host, *, with_routes=False, route_session_config=None, dry_run=Fal
                 report['errors'].append('insufficient remaining time; resource phase was not started')
                 break
             if not dry_run and phase['profile'] == 'cultivation':
-                report['resourceGate'] = host.validate_resource_gate(day)
+                report['resourceGate'] = host.validate_resource_gate(day, target)
             minutes = min(phase['maximumMinutes'], remaining)
             if game_day(host.now() + timedelta(minutes=minutes, seconds=120)) != day:
                 report['pendingPhases'] = [p['name'] for p in requested[index:]]
                 report['errors'].append('child budget could cross the next game-day reset; not started')
                 break
             bundle = host.run_phase(phase, minutes, dry_run, deadline, day)
-            child = verify_bundle(bundle, phase, day, dry_run)
+            child = verify_bundle(bundle, phase, day, dry_run, expected_target=target)
             if any(prior['runId'] == child['runId'] for prior in report['phases']):
                 raise ValueError('different phases cannot reuse a child run ID')
             if not dry_run and child['outcome'] == 'completed' and phase['profile'] == 'party-preparation':
                 host.verify_preparation_scope(bundle, phase)
             report['phases'].append(child)
+            if _target(host.load_target()) != target:
+                raise ValueError('cultivation target changed while child ran; no next phase started')
             if game_day(host.now()) != day:
                 raise ValueError('child crossed the game-day boundary')
             expected = 'planned' if dry_run else 'completed'
@@ -325,6 +355,10 @@ class LocalHost:
     def monotonic():
         return time.monotonic()
 
+    def load_target(self):
+        """Read this machine's current config; never migrate another target or budget."""
+        return _target(read_json(self.root / 'config/cultivation.json').get('target'))
+
     def read_bundle(self, identifier):
         if not isinstance(identifier, str) or not RUN_ID.fullmatch(identifier):
             raise ValueError('invalid child ID')
@@ -341,6 +375,9 @@ class LocalHost:
         if result.get('profile') == 'party-preparation' and result.get('outcome') == 'completed':
             archive = directory / 'party-preparation-report.json'
             bundle.update(preparationReport=read_json(archive), preparationReportPath=str(archive))
+        if result.get('profile') == 'cultivation' and result.get('outcome') == 'completed':
+            archive = directory / 'cultivation-report.json'
+            bundle.update(cultivationReport=read_json(archive), cultivationReportPath=str(archive))
         return bundle
 
     def verify_preparation_scope(self, bundle, phase):
@@ -369,11 +406,15 @@ class LocalHost:
         if verified['outcome'] != 'completed' or verified.get('partyPreparationReport') != report:
             raise ValueError('party preparation did not pass the independent scoped archive/log verifier')
 
-    def verify_resume_scope(self, bundle, phase):
+    def verify_resume_scope(self, bundle, phase, expected_target):
+        expected_target = _target(expected_target)
+        if self.load_target() != expected_target:
+            raise ValueError('resume target no longer matches the local cultivation config')
         result = bundle['result']
         if phase['profile'] == 'cultivation':
-            if result.get('cultivationTarget') != TARGET or result.get('cultivationMode') != 'execute':
+            if result.get('cultivationTarget') != expected_target or result.get('cultivationMode') != 'execute':
                 raise ValueError('resume cultivation target/mode mismatch')
+            verify_cultivation_target_archive(bundle, expected_target)
         else:
             try:
                 from .material_route import load_route_session_config, build_route_session_group
@@ -384,7 +425,7 @@ class LocalHost:
             if group != build_route_session_group(result['runId'], config, game_date=result['gameDate']):
                 raise ValueError('resume route session config mismatch')
 
-    def validate_resource_gate(self, day):
+    def validate_resource_gate(self, day, expected_target):
         try:
             from .cultivation import load_cultivation_config
             from .cultivation_validation import constrain_validation
@@ -393,7 +434,7 @@ class LocalHost:
             from cultivation_validation import constrain_validation
         config = load_cultivation_config(self.root / 'config/cultivation.json', 'execute')
         policy = config['policy']
-        if (config['target'] != TARGET or policy['allowBoss'] or policy['allowCrafting']
+        if (config['target'] != _target(expected_target) or policy['allowBoss'] or policy['allowCrafting']
                 or not policy['allowDomain'] or not policy['validationMode']
                 or not policy['requireZhongliShieldCast'] or policy['maxSteps'] != 1
                 or policy['originalResinBudget'] != 20 or policy['condensedResinBudget'] != 0
@@ -409,8 +450,9 @@ class LocalHost:
                 or gate['priorReservedOriginal'] != 40 or gate['runtimeOriginalResinBudget'] != 20
                 or 'domain' in gate['alreadyAttemptedSources']):
             raise ValueError('remaining cumulative initial-validation resource gate is not exactly20')
-        return {key: gate[key] for key in ('scopeId', 'gameDate', 'originalResinCap',
-                'condensedResinCap', 'priorReservedOriginal', 'runtimeOriginalResinBudget')}
+        return {**{key: gate[key] for key in ('scopeId', 'gameDate', 'originalResinCap',
+                'condensedResinCap', 'priorReservedOriginal', 'runtimeOriginalResinBudget')},
+                'target': config['target'], 'targetSha256': target_identity(config['target'])}
 
     @staticmethod
     def owns_runner(runner_pid, parent_pid):

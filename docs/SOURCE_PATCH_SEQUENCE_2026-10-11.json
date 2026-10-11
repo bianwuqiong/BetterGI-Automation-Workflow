@@ -26,6 +26,71 @@
       "order": 4,
       "path": "patches/local-character-selection-fix-2026-10-11.patch",
       "sha256": "4f9c810b36bfbee8318d4d45b33ca7f53d84561bf58cd1e67d18c8226b0722c0"
+    },
+    {
+      "order": 5,
+      "path": "patches/local-artifact-engine-2026-10-12.patch",
+      "sha256": "53f38499fe1375349b294dcf402107f6d81696cb10f7ba87a5ae2804d7b92aa4"
+    },
+    {
+      "order": 6,
+      "path": "patches/local-resource-balance-engine-2026-10-12.patch",
+      "sha256": "2a39ff6387722dec289db84f7be36cf655278c056f0a4ab98ecb625a2edc507d"
+    },
+    {
+      "order": 7,
+      "path": "patches/local-network-diagnostic-engine-2026-10-12.patch",
+      "sha256": "da115cb70c95f0729b583314a0ae4ad0d5b4fb034e5d149990f3defe6f0f8eaf"
+    },
+    {
+      "order": 8,
+      "path": "patches/local-condensed-claim-row-fix-2026-10-12.patch",
+      "sha256": "fc882cabc343d1539e818181ad95105154b3fd1dcdd1a5c10bfb3c74cbe362ee"
+    },
+    {
+      "order": 9,
+      "path": "patches/local-source-notice-2026-10-12.patch",
+      "sha256": "6cfb9afc7a4bf1276c2416d4600933fe4e331dd7a5fde3a03a05952ccd3364a3"
+    },
+    {
+      "order": 10,
+      "path": "patches/local-mora-crop-pair-fix-2026-10-12.patch",
+      "sha256": "73502692abfe130a2059b07fed2ba6779a850eae4a98cbea0a839c3ec72f2de8"
+    },
+    {
+      "order": 11,
+      "path": "patches/local-shield-switch-phase-fix-2026-10-12.patch",
+      "sha256": "44bf503f2a5291c334dd5f366a8c607d77ee1dcad51bb44017e0492eb27088db"
+    },
+    {
+      "order": 12,
+      "path": "patches/local-domain-hud-gate-fix-2026-10-12.patch",
+      "sha256": "fc7d2a95c572075e9904ad372173939e9102caff07e04a92355b3459000bbdda"
+    },
+    {
+      "order": 13,
+      "path": "patches/local-shield-first-key-fix-2026-10-12.patch",
+      "sha256": "ba434d66778d745ecf6cde924f26b6d0e3510c65a6870ab5444d6c4c997d0703"
+    },
+    {
+      "order": 14,
+      "path": "patches/local-talent-upgrade-preview-2026-10-12.patch",
+      "sha256": "646f415606eb3a9d290dd4d3ae63516cce6ee826127d528c5aee201e4c5d52a3"
+    },
+    {
+      "order": 15,
+      "path": "patches/local-inspection-identity-cleanup-2026-10-12.patch",
+      "sha256": "11df32d88002bc3e6cfba12402d97712aac1d488f0cb87d71bafd20966f3ef47"
+    },
+    {
+      "order": 16,
+      "path": "patches/local-inspection-name-padding-2026-10-12.patch",
+      "sha256": "400d56f5634303d4c379b815036c37ee99a458d9976d03945eed89035c4fe588"
+    },
+    {
+      "order": 17,
+      "path": "patches/local-weekly-inventory-preview-diagnostic-2026-10-12.patch",
+      "sha256": "f210a454bb803e965ac38746c792a6ac390b9a557c3d43fb606ea031e26a8afd"
     }
   ],
   "offlineValidation": {
@@ -41,5 +106,123 @@
   "liveReadOnlyAcceptance": "passed for profile and 17 required material types, process exit, graphics restoration and network; Mora unknown/null and level experience outside supported scope; zero resource steps",
   "sourceOnly": true,
   "accountDataIncluded": false,
-  "nextFix": "authorized live combat/shield/dispatch validation and remaining resource coverage; normal-daily time target unverified"
+  "artifactEngineExtension": {
+    "selectedPureCSharp": 149,
+    "costAndCapacityRequireLocalInspection": true,
+    "liveArtifactClaimVerified": true,
+    "validationDocument": "docs/LOCAL_ARTIFACT_ENGINE_2026-10-12.md"
+  },
+  "resourceBalanceExtension": {
+    "selectedPureCSharp": 83,
+    "privateStaticRecipeCasesPassed": 2,
+    "privateMoraCasesFailed": 2,
+    "freshRecipeAndNoClaimCombatVerified": true,
+    "actualCondensedCraftVerified": true,
+    "actualArtifactClaimVerified": true,
+    "validationDocument": "docs/LOCAL_RESOURCE_BALANCE_ENGINE_2026-10-12.md"
+  },
+  "networkDiagnosticExtension": {
+    "selectedPureCSharp": 60,
+    "privateStaticDisconnectCasesPassed": 1,
+    "missingPopupDoesNotProveConnectivity": true,
+    "automaticReconnectOrReplay": false,
+    "validationDocument": "docs/LOCAL_NETWORK_DIAGNOSTIC_ENGINE_2026-10-12.md"
+  },
+  "nextFix": "authorized live combat/shield/dispatch validation and remaining resource coverage; normal-daily time target unverified",
+  "moraCropPairExtension": {
+    "selectedPureCSharp": 19,
+    "modelIdentityThresholdUnchanged": 0.75,
+    "digitCropEdgeSafetyUnchanged": true,
+    "differentCaptureRecordsAndTimestampsRequired": true,
+    "freshMoraObservationVerified": true,
+    "freshWeaponExperienceInventoryVerified": true,
+    "privateOccludedMoraFixturesRemainFailed": 2,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "accountInventoryNumbersIncluded": false,
+    "validationDocument": "docs/LOCAL_MORA_CROP_PAIR_2026-10-12.md"
+  },
+  "shieldSchedulingExtension": {
+    "selectedPureCSharp": 96,
+    "privateStaticStoppedSceneCasesPassed": 1,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "strictIdentityThresholdsUnchanged": true,
+    "actualFailurePairPendingLiveValidation": true,
+    "positiveAbortRequiresInvocationOwnedPreRewardPhase": true,
+    "noAutomaticReplay": true,
+    "validationDocument": "docs/LOCAL_SHIELD_SWITCH_PHASE_2026-10-12.md"
+  },
+  "domainHudGateExtension": {
+    "selectedPureCSharp": 108,
+    "privateStaticEntranceCasesPassed": 1,
+    "privateCaseIncludesTwoSizesAndMissingMarkerOrPartyNegativeCases": true,
+    "strictAvatarIdentityThresholdsUnchanged": true,
+    "sceneTemplateThreshold": 0.8,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "liveShieldAndArtifactClaimVerified": false,
+    "noAutomaticReplay": true,
+    "validationDocument": "docs/LOCAL_DOMAIN_HUD_GATE_2026-10-12.md",
+    "liveSceneGateVerified": true
+  },
+  "shieldFirstKeyExtension": {
+    "selectedPureCSharp": 122,
+    "newSchedulingCases": 14,
+    "noPreviousKeyRepresentedExplicitly": true,
+    "pendingTargetDoesNotRetriggerKey": true,
+    "pendingOtherCanRequestTargetThenFreshPairRequired": true,
+    "materialSwitchPolicyUnchanged": true,
+    "strictAvatarIdentityThresholdsUnchanged": true,
+    "liveRecurrenceShieldAndArtifactClaimVerified": true,
+    "noAutomaticReplay": true,
+    "validationDocument": "docs/LOCAL_SHIELD_FIRST_KEY_2026-10-12.md",
+    "liveBoundedCondensedCraftVerified": true,
+    "liveEvidenceIncludesFreshResinDeltaAndActualTargetArtifactRewards": true
+  },
+  "talentUpgradePreviewExtension": {
+    "selectedPureCSharp": 22,
+    "privateStaticCombinedCaseFailed": 1,
+    "privateStaticMoraIconRemainsUnknown": true,
+    "privateTooltipRareNameAndQuantityGapsRemainUnknown": true,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "finalConfirmationExecutorIncluded": false,
+    "actualTalentPreviewVerified": false,
+    "actualTalentUpgradeExecuted": false,
+    "validationDocument": "docs/LOCAL_TALENT_UPGRADE_PREVIEW_2026-10-12.md"
+  },
+  "inspectionIdentityCleanupExtension": {
+    "selectedPureCSharp": 35,
+    "newIdentityCleanupCases": 13,
+    "privateStaticPaimonCasePassed": 1,
+    "privateImageValidationIsNotLiveFreshFrames": true,
+    "oldGetCharacterRoiUnchanged": true,
+    "rawOcrBoundsNeverCorrected": true,
+    "threeFreshFullNameAndTwoPixelEdgesRequired": true,
+    "primaryAndCleanupReasonsSeparated": true,
+    "eachKnownLayerEscapedAtMostOnce": true,
+    "actualTalentPreviewVerified": false,
+    "actualTalentUpgradeExecuted": false,
+    "validationDocument": "docs/LOCAL_INSPECTION_IDENTITY_CLEANUP_2026-10-12.md",
+    "actualWorldRestorationVerified": true
+  },
+  "inspectionNamePaddingExtension": {
+    "selectedPureCSharp": 36,
+    "onlyInspectionNameRoiChanged": true,
+    "rawOcrBoundsNeverCorrected": true,
+    "threeFreshFullNameAndTwoPixelEdgesRequired": true,
+    "actualTalentPreviewVerified": false,
+    "actualTalentUpgradeExecuted": false,
+    "validationDocument": "docs/LOCAL_INSPECTION_NAME_PADDING_2026-10-12.md",
+    "actualFullCharacterIdentityVerified": true,
+    "actualTalentDetailVerified": true,
+    "actualWorldRestorationVerified": true
+  },
+  "weeklyInventoryPreviewDiagnosticExtension": {
+    "selectedPureCSharp": 58,
+    "privateStaticDiagnosticCasePassed": 1,
+    "diagnosticOnlyDoesNotVerifyCoinIdentity": true,
+    "rawNativePngPrivateOnly": true,
+    "weeklyInventoryLiveVerified": false,
+    "actualTalentPreviewVerified": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_WEEKLY_INVENTORY_PREVIEW_DIAGNOSTIC_2026-10-12.md"
+  }
 }

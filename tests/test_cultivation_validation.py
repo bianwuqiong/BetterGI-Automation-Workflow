@@ -59,6 +59,14 @@ class ValidationLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'replay'):
             self.guard(assign=True)
 
+    def test_replacing_target_cannot_reuse_old_receipt_or_unknown_budget_reservation(self):
+        self.prior(['boss'])
+        receipt_before = self.path.read_bytes()
+        self.config['target']['characterName'] = '香菱'
+        with self.assertRaisesRegex(ValueError, 'date/target/purpose mismatch'):
+            self.guard(assign=True)
+        self.assertEqual(self.path.read_bytes(), receipt_before)
+
     def test_unknown_boss_checkpoint_reserves_forty_and_disables_boss(self):
         self.prior(['boss'])
         cfg, summary = self.guard()

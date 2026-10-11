@@ -2,6 +2,8 @@
 import { runCultivation } from './core/operator.js';
 import { createWeaponGuideBgiApi, readWeaponGuideInventory } from './core/weapon-guide.js';
 import { createBackpackInventoryReader } from './core/backpack-reader.js';
+import { createTalentPreviewReader } from './core/talent-preview.js';
+import { createWeeklyInventoryReader } from './core/weekly-inventory.js';
 
 const data={rulebook:JSON.parse(file.ReadTextSync('upstream/data/rulebook.json')),
   materials:JSON.parse(file.ReadTextSync('upstream/data/materials.json')),
@@ -9,6 +11,18 @@ const data={rulebook:JSON.parse(file.ReadTextSync('upstream/data/rulebook.json')
   allowedBosses:JSON.parse(file.ReadTextSync('upstream/data/bettergi-boss-catalog.json')).bosses};
 const api={
   now:()=>Date.now(),
+  inspectTalentUpgrade:createTalentPreviewReader({dispatcher,log}),
+  readWeeklyConversionInventory:createWeeklyInventoryReader({dispatcher,log}),
+  async readMoraSnapshot(remainingMilliseconds) {
+    const cts=dispatcher.GetLinkedCancellationTokenSource();
+    try {
+      cts.CancelAfter(Math.max(1,Math.floor(remainingMilliseconds)));
+      const serialized=await dispatcher.ReadMoraSnapshot('{}',cts.Token);
+      if(typeof serialized!=='string'||serialized.length>1000000)throw Error('mora_native_json_invalid_or_unbounded');
+      const result=JSON.parse(serialized);
+      log.Info('[CULTIVATION_MORA_OBSERVATION] {payload}',JSON.stringify(result));return result;
+    } finally {cts.Dispose();}
+  },
   getCharacter:(name,categories)=>characterDevelopmentTask.GetCharacter(name,categories),
   async readResinSnapshot() {
     const r=await dispatcher.ReadResinSnapshot();

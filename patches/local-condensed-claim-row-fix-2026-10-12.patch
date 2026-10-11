@@ -1,0 +1,327 @@
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -526,6 +526,28 @@
+         return ReadGameNetworkSnapshotTask.Serialize(await new ReadGameNetworkSnapshotTask().Start(linked.Token));
+     }
+ 
++    public async Task<string> ReadCondensedRewardPromptSnapshot(CancellationToken? customCt = null)
++    {
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,
++            CancellationContext.Instance.Cts.Token);
++        return CondensedRewardPromptSnapshotTask.Serialize(await new CondensedRewardPromptSnapshotTask().Start(linked.Token));
++    }
++
++    public async Task<Dictionary<string,int>> RunSingleCondensedClaimOnlyTask(AutoDomainParam param,CancellationToken? customCt=null)
++    {
++        ArgumentNullException.ThrowIfNull(param);
++        ArtifactClaimObservation.ValidateCorrelation(param.ArtifactRunId,param.ArtifactStepId);
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,
++            CancellationContext.Instance.Cts.Token);
++        var rewards=await new AutoDomainTask(param).StartSingleCondensedClaimOnly(linked.Token);
++        var verified=rewards.Count>0 && rewards.All(pair=>pair.Value>0);
++        _logger.LogInformation("[AUTO_GAME_EVENT] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(new {
++            task="artifact-domain-claim",runId=param.ArtifactRunId,stepId=param.ArtifactStepId,resin="condensed",status="observed",
++            rewards,evidenceVerified=verified,rewardEvidenceVerified=verified,resinEvidenceVerified=false,claimOnly=true
++        }));
++        return rewards;
++    }
++
+     public async Task<object?> RunCountInventoryItemTask(CountInventoryItemParam param, CancellationToken? customCt = null)
+     {
+         if (param == null)
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
+--- a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
++++ b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
+@@ -14,6 +14,9 @@
+ using static BetterGenshinImpact.GameTask.Common.TaskControl;
+ using static Vanara.PInvoke.User32;
+ using BetterGenshinImpact.GameTask.Common.Reward;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.Helpers;
+ 
+ namespace BetterGenshinImpact.GameTask.AutoDomain;
+ 
+@@ -41,6 +44,46 @@
+         SingleOriginal20ClaimSafety.Select(ReadClaimText(capture, SingleOriginal20ClaimSafety.HeaderRect(capture.Width, capture.Height)),
+             ReadClaimText(capture, SingleOriginal20ClaimSafety.OriginalRowRect(capture.Width, capture.Height)), capture.Width, capture.Height, observedAt);
+ 
++    internal static SingleOriginal20Proof? ReadSingleCondensedProof(ImageRegion capture,long at,IOcrService ocr)
++    {
++        ClaimTextBox[] Rows(Rect roi)
++        {
++            using var crop=capture.DeriveCrop(roi);
++            return ocr.OcrResult(crop.SrcMat).Regions.Select(r=>{
++                var b=r.Rect.BoundingRect();return new ClaimTextBox(r.Text,new Rect(b.X+roi.X,b.Y+roi.Y,b.Width,b.Height));
++            }).ToArray();
++        }
++        return SingleCondensedClaimSafety.Select(Rows(SingleOriginal20ClaimSafety.HeaderRect(capture.Width,capture.Height)),
++            Rows(SingleCondensedClaimSafety.RowsRect(capture.Width,capture.Height)),capture.Width,capture.Height,at);
++    }
++
++    public async Task<Dictionary<string,int>> StartSingleCondensedClaimOnly(System.Threading.CancellationToken ct)
++    {
++        if(!IsProtectedSingleCondensed() || _taskParam.AutoArtifactSalvage ||
++            !_taskParam.RewardRecognitionEnabled || string.IsNullOrEmpty(_taskParam.ArtifactRunId) ||
++            string.IsNullOrEmpty(_taskParam.ArtifactStepId))throw new ArgumentException("Claim-only requires the exact scoped one-condensed contract.");
++        _ct=ct;_rewardSummary.Clear();_verifiedRewardRoundCount=0;
++        // This entry does not switch teams, navigate, interact with the tree or run combat.
++        var before=await new CondensedRewardPromptSnapshotTask().Start(ct);
++        if(!before.Verified || before.CondensedResin is not >=1)
++        {
++            EmitCondensedPreSubmitAbort("claim_only_start_page_unverified");
++            throw new NormalEndException("Claim-only requires fresh complete reward-prompt and header balances.");
++        }
++        await GettingProtectedSingleOriginal20(condensed:true);
++        return new Dictionary<string,int>(_rewardSummary);
++    }
++
++    private void EmitCondensedPreSubmitAbort(string reason)
++    {
++        Logger.LogInformation("[AUTO_GAME_EVENT] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(new {
++            task="artifact-domain-pre-submit-aborted",status="pre_submit_aborted",runId=_taskParam.ArtifactRunId,
++            stepId=_taskParam.ArtifactStepId,resin="condensed",phase="pre_submit_validation",
++            stateNotSubmitted=true,claimSubmissionRequested=false,resourceOutcome="unknown",
++            observedAt=DateTimeOffset.UtcNow.ToString("O"),reason
++        }));
++    }
++
+     internal static bool HasProtectedLoadingBackground(ImageRegion capture)
+     {
+         // Retained loading frames have white, black, or neutral deep-gray flat backgrounds.
+@@ -84,10 +127,17 @@
+     private async Task<bool> GettingProtectedSingleOriginal20(bool condensed = false)
+     {
+         var prompt = await WaitForResinPrompt();
+-        if (prompt is not { } firstPrompt) throw new NormalEndException("受保护单次树脂未核验树脂弹窗，未提交且禁止回退通用领奖");
++        if (prompt is not { } firstPrompt)
++        {
++            if(condensed)EmitCondensedPreSubmitAbort("resource_prompt_unverified");
++            throw new NormalEndException("受保护单次树脂未核验树脂弹窗，未提交且禁止回退通用领奖");
++        }
+         using (firstPrompt.Capture)
+             if ((condensed ? firstPrompt.Status.CondensedResinCount < 1 : firstPrompt.Status.OriginalResinCount < 20))
++            {
++                if(condensed)EmitCondensedPreSubmitAbort("condensed_balance_unavailable");
+                 throw new NormalEndException("受保护单次树脂弹窗余额不足，未提交且禁止使用其他资源");
++            }
+         var submission = new SingleOriginal20Submission();
+         var timer = Stopwatch.StartNew();
+         SingleOriginal20Proof? previous = null;
+@@ -97,10 +147,7 @@
+             using var capture = CaptureToRectArea(forceNew: true);
+             var observedAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+             var current = condensed
+-                ? SingleCondensedClaimSafety.Select(
+-                    ReadClaimText(capture, SingleOriginal20ClaimSafety.HeaderRect(capture.Width, capture.Height)),
+-                    ReadClaimText(capture, SingleCondensedClaimSafety.RowsRect(capture.Width, capture.Height)),
+-                    capture.Width, capture.Height, observedAt)
++                ? ReadSingleCondensedProof(capture,observedAt,OcrFactory.Paddle)
+                 : ReadSingleOriginal20Proof(capture, observedAt);
+             if (timer.ElapsedMilliseconds >= 12000) break;
+             _ct.ThrowIfCancellationRequested();
+@@ -113,7 +160,13 @@
+             previous = current;
+             await Delay(250, _ct);
+         }
+-        if (!submission.Requested) throw new NormalEndException("受保护单次树脂第一行/独立使用按钮未获新鲜双帧证明，未提交且禁止通用确认或其他资源");
++        if (!submission.Requested)
++        {
++            if(condensed)EmitCondensedPreSubmitAbort("complete_condensed_row_and_button_pair_unverified");
++            throw new NormalEndException(condensed
++                ?"受保护单次浓缩完整资源行/独立使用按钮未获新鲜双帧证明，未提交且禁止通用确认或其他资源"
++                :"受保护单次树脂第一行/独立使用按钮未获新鲜双帧证明，未提交且禁止通用确认或其他资源");
++        }
+         await Delay(1000, _ct); // Read-only UI settling, never a claim-success condition.
+         // The new reward UI can return directly to the domain HUD. Never reopen the tree or resubmit.
+         // A normal return merely permits the caller's mandatory exact inventory/resin checks.
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/CondensedRewardPromptSnapshotTask.cs b/BetterGenshinImpact/GameTask/AutoDomain/CondensedRewardPromptSnapshotTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/AutoDomain/CondensedRewardPromptSnapshotTask.cs
+@@ -0,0 +1,63 @@
++using System;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.AutoDomain;
++
++public sealed record CondensedPromptFrame(long ObservedAt,int Width,int Height,SingleOriginal20Proof? ClaimProof,
++    int? OriginalResin,int? CondensedResin,string OriginalRaw,string CondensedRaw,Rect? OriginalIconRect,Rect? CondensedIconRect);
++public sealed record CondensedPromptSnapshot(string Scene,bool ReadOnly,bool Verified,bool MainUiRestored,
++    int? OriginalResin,int? CondensedResin,bool OriginalVerified,bool CondensedVerified,string? ObservedAt,
++    bool TreePromptVerified,bool CondensedRowVerified,string Reason,CondensedPromptFrame? First,CondensedPromptFrame? Second);
++
++public sealed class CondensedRewardPromptSnapshotTask
++{
++    public static string Serialize(CondensedPromptSnapshot result)=>JsonConvert.SerializeObject(result,
++        new JsonSerializerSettings {ContractResolver=new CamelCasePropertyNamesContractResolver()});
++    public async Task<CondensedPromptSnapshot> Start(CancellationToken ct)
++    {
++        CondensedPromptFrame? first=null,second=null;
++        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(TimeSpan.FromSeconds(8));
++        try
++        {
++            for(int i=0;i<4;i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                using var frame=Common.TaskControl.CaptureToRectArea(forceNew:true);
++                if(!SystemControl.IsGenshinImpactActiveByProcess())break;
++                second=ReadFrame(frame,OcrFactory.Paddle,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++                timeout.Token.ThrowIfCancellationRequested();
++                if(Pair(first,second,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))return Result(true,"complete_condensed_row_and_header_balance_pair");
++                first=second;await Task.Delay(250,timeout.Token);
++            }
++            return Result(false,"complete_reward_prompt_or_balances_unverified");
++        }
++        catch(OperationCanceledException) when(!ct.IsCancellationRequested){return Result(false,"observation_timeout");}
++        catch(OperationCanceledException){throw;}
++        catch(Exception ex){return Result(false,"observation_failed:"+ex.GetType().Name);}
++        CondensedPromptSnapshot Result(bool verified,string reason)=>new("reward-prompt",true,verified,false,
++            verified?second!.OriginalResin:null,verified?second!.CondensedResin:null,verified,verified,
++            verified?DateTimeOffset.FromUnixTimeMilliseconds(second!.ObservedAt).ToString("O"):null,
++            verified,verified,reason,first,second);
++    }
++    public static bool Pair(CondensedPromptFrame? first,CondensedPromptFrame? second,long now)=>
++        first is not null && second is not null && SingleOriginal20ClaimSafety.Matching(first.ClaimProof,second.ClaimProof,now) &&
++        first.OriginalResin is >=0 and <=200 && first.OriginalResin==second.OriginalResin &&
++        first.CondensedResin is >=1 and <=5 && first.CondensedResin==second.CondensedResin;
++    internal static CondensedPromptFrame ReadFrame(ImageRegion frame,IOcrService ocr,long at)
++    {
++        var proof=AutoDomainTask.ReadSingleCondensedProof(frame,at,ocr);
++        Rect Search(double left,double right)=>new((int)(frame.Width*left),0,(int)(frame.Width*(right-left)),frame.Height/8);
++        // The reward header also contains fragile resin and primogems. Their columns are excluded.
++        var original=ReadResinSnapshotTask.ReadCount(frame,"original_resin.png",true,ocr,Search(.70,.82));
++        var condensed=ReadResinSnapshotTask.ReadCount(frame,"condensed_resin.png",false,ocr,Search(.61,.70));
++        return new(at,frame.Width,frame.Height,proof,original.Value,condensed.Value,original.Raw,condensed.Raw,
++            original.IconRect,condensed.IconRect);
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/SingleCondensedClaimSafety.cs b/BetterGenshinImpact/GameTask/AutoDomain/SingleCondensedClaimSafety.cs
+--- a/BetterGenshinImpact/GameTask/AutoDomain/SingleCondensedClaimSafety.cs
++++ b/BetterGenshinImpact/GameTask/AutoDomain/SingleCondensedClaimSafety.cs
+@@ -16,13 +16,19 @@
+     public static Rect RowsRect(int width, int height) =>
+         new((int)(width * .25), (int)(height * .39), (int)(width * .5), (int)(height * .34));
+ 
++    public static bool FullLabel(string text)
++    {
++        var normalized=SingleOriginal20ClaimSafety.Normalize(text).Replace("，","").Replace(",","");
++        return normalized is "使用1个浓缩树脂" or "使用1个浓缩树脂获取3次产出";
++    }
++
+     public static SingleOriginal20Proof? Select(IEnumerable<ClaimTextBox> header,
+         IEnumerable<ClaimTextBox> rows, int width, int height, long observedAt)
+     {
+         if (width < 800 || width * 9 != height * 16 || observedAt < 0 ||
+             !SingleOriginal20ClaimSafety.PromptHeader(header)) return null;
+         var all = rows.ToArray();
+-        var labels = all.Where(t => SingleOriginal20ClaimSafety.Normalize(t.Text) == "使用1个浓缩树脂").ToArray();
++        var labels = all.Where(t => FullLabel(t.Text)).ToArray();
+         if (labels.Length != 1) return null;
+         var label = labels[0].Bounds;
+         var scale = width / 1920d;
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadResinSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadResinSnapshotTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadResinSnapshotTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadResinSnapshotTask.cs
+@@ -169,7 +169,7 @@
+     internal sealed record CountReading(int? Value, string Reason, string Raw,
+         double? IconScore, Rect? IconRect, Rect? CountRect);
+ 
+-    internal static CountReading ReadCount(ImageRegion capture, string asset, bool original, IOcrService ocr)
++    internal static CountReading ReadCount(ImageRegion capture, string asset, bool original, IOcrService ocr, Rect? iconSearchRoi = null)
+     {
+         // Use the actual normalized capture dimensions, not the raw game-window asset scale.
+         using var template = GameTaskManager.LoadAssetImage("AutoLeyLineOutcrop", asset,
+@@ -177,7 +177,7 @@
+         var recognition = RecognitionObject.TemplateMatch(template);
+         try
+         {
+-            recognition.RegionOfInterest = new Rect(capture.SrcMat.Width / 2, 0,
++            recognition.RegionOfInterest = iconSearchRoi ?? new Rect(capture.SrcMat.Width / 2, 0,
+                 capture.SrcMat.Width / 2, capture.SrcMat.Height / 8);
+             using var icon = capture.Find(recognition);
+             if (icon.IsEmpty()) return new(null, "icon_missing", "", null, null, null);
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimPrivateImageTests.cs
+@@ -0,0 +1,35 @@
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.AutoDomain;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CondensedClaimPrivateImageTests(ITestOutputHelper output)
++{
++    [Theory]
++    [Trait("Fixture","PrivateCondensedReward")]
++    [InlineData(0)]
++    [InlineData(1)]
++    public void RetainedSceneUsesProductionCondensedRowAndRestrictedHeaderReader(int index)
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_CONDENSED_REWARD_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Private manifest required; missing fixtures cannot pass.");
++        var fixtures=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture[]>(File.ReadAllText(path!))!;
++        Assert.Equal(2,fixtures.Length);var f=fixtures[index];
++        Assert.True(f.Original.HasValue);Assert.True(f.Condensed.HasValue);Assert.Equal(4,f.ClientRect.Length);
++        using var image=Cv2.ImRead(f.File);using var client=new Mat(image,new Rect(f.ClientRect[0],f.ClientRect[1],f.ClientRect[2],f.ClientRect[3]));
++        using var ocr=new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),PaddleOcrService.PaddleOcrModelType.V6);
++        foreach(var width in new[]{1536,1920})
++        {
++            using var full=new Mat();Cv2.Resize(client,full,new Size(width,width*9/16));using var capture=new ImageRegion(full.Clone(),0,0);
++            var frame=CondensedRewardPromptSnapshotTask.ReadFrame(capture,ocr,1000);
++            output.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(frame));
++            Assert.NotNull(frame.ClaimProof);Assert.Equal(f.Original,frame.OriginalResin);Assert.Equal(f.Condensed,frame.CondensedResin);
++            Assert.True(CondensedRewardPromptSnapshotTask.Pair(frame,frame with {ObservedAt=1300,ClaimProof=frame.ClaimProof! with {ObservedAt=1300}},1400));
++        }
++    }
++    private sealed class Fixture {public string File {get;set;}="";public int[] ClientRect {get;set;}=[];public int? Original {get;set;}public int? Condensed {get;set;}}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimRowFixTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimRowFixTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CondensedClaimRowFixTests.cs
+@@ -0,0 +1,31 @@
++using BetterGenshinImpact.GameTask.AutoDomain;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CondensedClaimRowFixTests
++{
++    [Theory]
++    [InlineData("使用1个浓缩树脂，获取3次产出",true)]
++    [InlineData("使用1个浓缩树脂,获取3次产出",true)]
++    [InlineData("使用1个浓缩树脂",true)]
++    [InlineData("使用50原石，获取3次产出",false)]
++    [InlineData("使用2个浓缩树脂，获取3次产出",false)]
++    [InlineData("使用1个浓缩树脂，获取3次产出使用原石",false)]
++    public void FullKnownResourceLabelIsRequired(string text,bool expected)=>Assert.Equal(expected,SingleCondensedClaimSafety.FullLabel(text));
++    [Fact]
++    public void OnlySecondCondensedRowButtonCanBeSubmittedOnce()
++    {
++        ClaimTextBox[] header=[new("石化古树",new()),new("请选择激活方式",new())];
++        ClaimTextBox[] rows=[new("使用20个原粹树脂",new(675,475,250,28)),new("使用",new(1230,475,50,28)),
++            new("使用1个浓缩树脂，获取3次产出",new(675,620,350,28)),new("使用",new(1230,620,50,28)),
++            new("使用50原石，获取3次产出",new(675,745,350,28)),new("使用",new(1230,745,50,28))];
++        var a=SingleCondensedClaimSafety.Select(header,rows,1920,1080,1000);
++        var b=SingleCondensedClaimSafety.Select(header,rows,1920,1080,1300);
++        Assert.NotNull(a);Assert.Equal(620,a.Button.Y);
++        var latch=new SingleOriginal20Submission();int clicks=0;
++        Assert.True(latch.Submit(a,b,1400,_=>clicks++));Assert.False(latch.Submit(a,b,1400,_=>clicks++));Assert.Equal(1,clicks);
++        Assert.Null(SingleCondensedClaimSafety.Select(header,[..rows,rows[3]],1920,1080,1300));
++        Assert.Null(SingleCondensedClaimSafety.Select(header,[..rows,rows[2]],1920,1080,1300));
++    }
++}

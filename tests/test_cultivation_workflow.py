@@ -45,6 +45,22 @@ class CultivationFakeHost(tw.FakeHost):
                 requiredScanIds=[], manualInventoryIds=[], status='unknown',
                 resinObservation={'originalResin': None, 'condensedResin': None,
                                   'verified': False, 'mainUiRestored': False})
+        if settings.get('resourceDiagnosticOnly'):
+            from tests.test_resource_coverage import coverage_fixture, START, FINISH
+            report.update(profile=None, inventory={}, plan=None, blockers=[], warnings=[], steps=[],
+                requiredScanIds=[], manualInventoryIds=[], status='success', startedAt=START, finishedAt=FINISH,
+                metadata={'diagnostic': 'resource-coverage-only'}, resourceCoverage=coverage_fixture())
+        if settings.get('talentPreviewOnly'):
+            from tests.talent_preview_fixture import packet,START,FINISH
+            target=json.loads(settings['targetConfigJson'])
+            report.update(profile=None,inventory={},plan=None,blockers=[],warnings=[],steps=[],requiredScanIds=[],manualInventoryIds=[],
+                status='success',startedAt=START,finishedAt=FINISH,metadata={'diagnostic':'talent-upgrade-preview-only'},
+                talentPreview=packet(target['characterName'],settings['talentPreviewType']))
+        if settings.get('weeklyInventoryOnly'):
+            from tests.weekly_inventory_fixture import packet,START,FINISH
+            report.update(profile=None,inventory={},plan=None,blockers=[],warnings=[],steps=[],requiredScanIds=[],manualInventoryIds=[],
+                status='success',startedAt=START,finishedAt=FINISH,metadata={'diagnostic':'weekly-conversion-inventory-only'},
+                weeklyInventory=packet())
         report.update(runId=run_id, target=json.loads(settings["targetConfigJson"]),
                       policy=json.loads(settings["policyJson"]))
         for index, step in enumerate(report["steps"], 1):
@@ -60,6 +76,12 @@ class CultivationFakeHost(tw.FakeHost):
             "completedSteps": len(report["steps"])}
         if settings.get('resinDiagnosticOnly'):
             event['status'] = 'unknown'
+        if settings.get('resourceDiagnosticOnly'):
+            event['status'] = report['status']
+        if settings.get('talentPreviewOnly'):
+            event['status'] = report['status']
+        if settings.get('weeklyInventoryOnly'):
+            event['status'] = report['status']
         lines = ["参数指定的一条龙配置：" + name]
         if self.mixed:
             lines.extend(["一条龙任务执行: 1/2",
@@ -109,11 +131,12 @@ class CultivationWorkflowTests(unittest.TestCase):
         return (self.report_fixture.report(mode) if mode == "scan"
                 else self.report_fixture.execution_report())
 
-    def run_flow(self, *, dry=False, mode="scan", profile="cultivation", task=None, host=None, resin_check=False, graphics_check=False):
+    def run_flow(self, *, dry=False, mode="scan", profile="cultivation", task=None, host=None, resin_check=False, resource_check=False, graphics_check=False,talent_preview=False,talent_type=None,weekly_inventory=False):
         args = argparse.Namespace(root=str(self.root), dry_run=dry, task=task, profile=profile,
             cultivation_mode=mode, timeout_minutes=1, no_delay=True, allow_repeat=False,
             keep_game=False, allow_existing_game=False, graphics_check=graphics_check,
-            cultivation_resin_check=resin_check)
+            cultivation_resin_check=resin_check, cultivation_resource_check=resource_check,
+            cultivation_talent_preview=talent_preview,talent_type=talent_type,cultivation_weekly_inventory=weekly_inventory)
         host = host or CultivationFakeHost(self.root, self.make_report)
         output = io.StringIO()
         with contextlib.redirect_stdout(output), patch.object(wf, "datetime", tw.FixedClock):
@@ -197,6 +220,177 @@ class CultivationWorkflowTests(unittest.TestCase):
                 self.assertFalse(host.launched)
                 self.assertEqual(result['outcome'], 'failed')
                 self.assertIn('只读探针', ' '.join(result['errors']))
+
+    def test_resource_probe_preview_is_single_scan_node_and_temporary_zero_budget(self):
+        self.config.update(executionEnabled=True, policy=copy.deepcopy(tc.POLICY))
+        wf.atomic_json(self.root / 'config/cultivation.json', self.config)
+        before = (self.root / 'config/cultivation.json').read_bytes()
+        code, result, host = self.run_flow(dry=True, resource_check=True)
+        self.assertEqual(code, 0, result)
+        self.assertFalse(host.launched)
+        self.assertEqual(result['expectedTasks'], ['培养材料'])
+        settings = wf.read_json(Path(result['resultPath']).parent / 'cultivation-group.json')['Projects'][0]['JsScriptSettingsObject']
+        policy = json.loads(settings['policyJson'])
+        self.assertTrue(settings['resourceDiagnosticOnly'])
+        self.assertEqual(policy['originalResinBudget'], 0)
+        self.assertEqual(policy['condensedResinBudget'], 0)
+        self.assertFalse(policy['allowDomain'])
+        self.assertEqual((self.root / 'config/cultivation.json').read_bytes(), before)
+        self.assertFalse((self.root / 'state/cultivation-authorization.json').exists())
+
+    def test_resource_probe_fake_success_is_reader_coverage_only_and_archives_raw_evidence(self):
+        self.source_package()
+        code, result, _ = self.run_flow(resource_check=True)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['outcome'], 'completed')
+        self.assertTrue(result['cultivation']['readOnly'])
+        self.assertFalse(result['cultivation']['targetReached'])
+        report = wf.read_json(Path(result['resultPath']).parent / 'cultivation-report.json')
+        self.assertEqual(report['metadata']['diagnostic'], 'resource-coverage-only')
+        self.assertEqual(report['resourceCoverage']['inventory']['202']['count'], 125000)
+        self.assertEqual(report['inventory'], {})
+        self.assertEqual(result['resinEvents'], [])
+
+    def test_resource_probe_rejects_execute_mixed_probe_graphics_or_other_nodes(self):
+        for options in ({'mode': 'execute'}, {'resin_check': True}, {'graphics_check': True}, {'profile': 'core'}, {'task': '领取邮件'}):
+            code, result, host = self.run_flow(dry=True, resource_check=True, **options)
+            self.assertNotEqual(code, 0)
+            self.assertFalse(host.launched)
+
+    def test_resource_probe_partial_unknown_is_archived_without_upgrading_coverage(self):
+        def missing_mineral(report):
+            packet = report['resourceCoverage']
+            packet['inventory']['104012'] = {'name': '精锻用良矿', 'count': None, 'status': 'unknown'}
+            packet['allVerified'] = False
+            report['status'] = 'unknown'
+        self.source_package()
+        host = CultivationFakeHost(self.root, self.make_report, report_change=missing_mineral)
+        code, result, _ = self.run_flow(resource_check=True, host=host)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result['outcome'], 'unknown')
+        self.assertTrue(result['cultivation']['reportVerified'])
+        report = wf.read_json(Path(result['resultPath']).parent / 'cultivation-report.json')
+        self.assertIsNone(report['resourceCoverage']['inventory']['104012']['count'])
+        self.assertFalse(report['resourceCoverage']['allVerified'])
+        self.assertEqual(report['inventory'], {})
+
+    def test_talent_preview_dry_run_freezes_local_replacement_target_and_zero_runtime_policy(self):
+        self.config['target']['characterName']='芭芭拉';self.config.update(executionEnabled=True,policy=copy.deepcopy(tc.POLICY))
+        wf.atomic_json(self.root/'config/cultivation.json',self.config);before=(self.root/'config/cultivation.json').read_bytes()
+        code,result,host=self.run_flow(dry=True,talent_preview=True,talent_type='elemental-burst',task='培养材料')
+        self.assertEqual(code,0,result);self.assertFalse(host.launched)
+        group=wf.read_json(Path(result['resultPath']).parent/'cultivation-group.json');settings=group['Projects'][0]['JsScriptSettingsObject']
+        self.assertTrue(settings['talentPreviewOnly']);self.assertEqual(settings['talentPreviewType'],'元素爆发')
+        self.assertEqual(json.loads(settings['targetConfigJson'])['characterName'],'芭芭拉')
+        policy=json.loads(settings['policyJson']);self.assertEqual(policy['originalResinBudget'],0);self.assertEqual(policy['condensedResinBudget'],0)
+        self.assertFalse(policy['allowDomain']);self.assertFalse(policy['allowCrafting']);self.assertEqual(policy['maxMinutes'],3)
+        self.assertEqual((self.root/'config/cultivation.json').read_bytes(),before)
+        self.assertFalse((self.root/'state/cultivation-authorization.json').exists())
+
+    def test_weekly_inventory_dry_run_freezes_zero_policy_single_node_and_keeps_local_config(self):
+        self.config.update(executionEnabled=True,policy=copy.deepcopy(tc.POLICY))
+        wf.atomic_json(self.root/'config/cultivation.json',self.config);before=(self.root/'config/cultivation.json').read_bytes()
+        code,result,host=self.run_flow(dry=True,weekly_inventory=True,task='培养材料')
+        self.assertEqual(code,0,result);self.assertFalse(host.launched);self.assertEqual(result['expectedTasks'],['培养材料'])
+        settings=wf.read_json(Path(result['resultPath']).parent/'cultivation-group.json')['Projects'][0]['JsScriptSettingsObject']
+        self.assertTrue(settings['weeklyInventoryOnly']);self.assertEqual(settings['mode'],'scan')
+        policy=json.loads(settings['policyJson']);self.assertEqual(policy['maxMinutes'],3)
+        self.assertEqual(policy['originalResinBudget'],0);self.assertEqual(policy['condensedResinBudget'],0)
+        for flag in ('allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'):self.assertFalse(policy[flag])
+        self.assertEqual((self.root/'config/cultivation.json').read_bytes(),before)
+        self.assertFalse((self.root/'state/cultivation-authorization.json').exists())
+
+    def test_weekly_inventory_cli_flag_is_explicitly_parsed_as_a_readonly_scan_request(self):
+        with patch.object(wf,'execute',return_value=0) as execute:
+            self.assertEqual(wf.main(['--root',str(self.root),'run','--profile','cultivation','--cultivation-weekly-inventory','--dry-run']),0)
+        args=execute.call_args.args[0];self.assertTrue(args.cultivation_weekly_inventory);self.assertEqual(args.cultivation_mode,'scan')
+        self.assertTrue(args.dry_run);self.assertFalse(args.cultivation_resource_check);self.assertFalse(args.cultivation_talent_preview)
+
+    def test_weekly_inventory_fake_success_archives_full_raw_and_zero_upgrades_without_generic_inventory(self):
+        self.source_package();code,result,_=self.run_flow(weekly_inventory=True)
+        self.assertEqual(code,0,result);self.assertTrue(result['cultivation']['weeklyInventoryVerified'])
+        self.assertEqual(result['cultivation']['completedUpgrades'],0);self.assertFalse(result['cultivation']['targetReached'])
+        report=wf.read_json(Path(result['resultPath']).parent/'cultivation-report.json')
+        self.assertEqual(report['weeklyInventory']['inventory']['113021']['name'],'异梦溶媒')
+        self.assertTrue(report['weeklyInventory']['nativeObservation']['observations']['113060']['second']['stack']['selectionEvidence']['sides'])
+        self.assertEqual(report['inventory'],{});self.assertEqual(report['steps'],[]);self.assertEqual(result['resinEvents'],[])
+
+    def test_weekly_inventory_rejects_every_diagnostic_execute_graphics_artifact_route_and_other_node(self):
+        for options in ({'mode':'execute'},{'resin_check':True},{'resource_check':True},{'talent_preview':True},{'graphics_check':True},
+                        {'profile':'core'},{'task':'领取邮件'},{'profile':'artifact-farming'},{'profile':'material-route'},
+                        {'profile':'material-route-session'},{'profile':'material-recovery'},{'profile':'party-preparation'},
+                        {'profile':'combat-rehearsal'},{'talent_type':'elemental-skill'}):
+            with self.subTest(options=options):
+                code,result,host=self.run_flow(dry=True,weekly_inventory=True,**options)
+                self.assertNotEqual(code,0,result);self.assertFalse(host.launched)
+
+    def test_weekly_unknown_keeps_all_native_raw_and_null_inventory_in_private_archive(self):
+        self.source_package()
+        def unknown(report):
+            from tests.weekly_inventory_fixture import make_unknown
+            report['status']='unknown';make_unknown(report['weeklyInventory'])
+            report['weeklyInventory']['nativeObservation']['observations']['113060']['second']['iconScore']=.739
+        host=CultivationFakeHost(self.root,self.make_report,report_change=unknown)
+        code,result,_=self.run_flow(weekly_inventory=True,host=host)
+        self.assertNotEqual(code,0,result);self.assertTrue(result['cultivation']['reportVerified'])
+        self.assertFalse(result['cultivation']['weeklyInventoryVerified'])
+        report=wf.read_json(Path(result['resultPath']).parent/'cultivation-report.json')
+        self.assertEqual(report['weeklyInventory']['nativeObservation']['observations']['113060']['second']['iconScore'],.739)
+        self.assertTrue(all(r['count'] is None for r in report['weeklyInventory']['inventory'].values()))
+
+    def test_weekly_report_cannot_hide_under_normal_scan_or_satisfy_a_different_requested_diagnostic(self):
+        self.source_package()
+        def relabel(report):report['metadata']['diagnostic']='resource-coverage-only'
+        code,result,_=self.run_flow(weekly_inventory=True,host=CultivationFakeHost(self.root,self.make_report,report_change=relabel))
+        self.assertNotEqual(code,0,result);self.assertEqual(result['tasks'][0]['status'],'unknown')
+        fixture=tc.CultivationTests();fixture.setUp()
+        from tests.weekly_inventory_fixture import packet,START,FINISH
+        report=fixture.report('scan');report.update(profile=None,inventory={},plan=None,steps=[],requiredScanIds=[],manualInventoryIds=[],
+            metadata={'diagnostic':'weekly-conversion-inventory-only'},weeklyInventory=packet(),startedAt=START,finishedAt=FINISH)
+        result=fixture.verify(report)  # No requested weekly diagnostic binding.
+        self.assertEqual(result['status'],'unknown')
+
+    def test_talent_preview_fake_success_is_exact_next_cost_and_zero_upgrades_with_private_raw_archive(self):
+        self.source_package();code,result,_=self.run_flow(talent_preview=True,task='培养材料')
+        self.assertEqual(code,0,result);self.assertTrue(result['cultivation']['talentPreviewVerified'])
+        self.assertEqual(result['cultivation']['completedUpgrades'],0);self.assertFalse(result['cultivation']['targetReached'])
+        report=wf.read_json(Path(result['resultPath']).parent/'cultivation-report.json')
+        self.assertTrue(report['talentPreview']['nativeObservation']['evidence']['rawFrames'])
+        self.assertEqual(report['talentPreview']['costs']['materials'][0]['required'],3)
+        self.assertEqual(report['inventory'],{});self.assertEqual(result['resinEvents'],[])
+
+    def test_talent_preview_execute_mixed_other_node_or_graphics_is_rejected_before_launch(self):
+        for options in ({'mode':'execute'},{'resin_check':True},{'resource_check':True},{'graphics_check':True},{'profile':'core'},{'task':'领取邮件'}):
+            code,result,host=self.run_flow(dry=True,talent_preview=True,**options)
+            self.assertNotEqual(code,0,result);self.assertFalse(host.launched)
+        code,result,host=self.run_flow(dry=True,talent_type='elemental-skill')
+        self.assertNotEqual(code,0,result);self.assertFalse(host.launched)
+
+    def test_talent_preview_partial_unknown_preserves_native_raw_without_nonzero_upgrade_assertion(self):
+        self.source_package()
+        def unknown(report):
+            report['status']='unknown';report['talentPreview'].update(costs=None,evidenceVerified=False)
+            report['talentPreview']['nativeObservation']['evidence']['preview']['coinScore']=.52
+        host=CultivationFakeHost(self.root,self.make_report,report_change=unknown)
+        code,result,_=self.run_flow(talent_preview=True,host=host)
+        self.assertNotEqual(code,0,result);self.assertTrue(result['cultivation']['reportVerified'])
+        self.assertFalse(result['cultivation']['talentPreviewVerified'])
+        report=wf.read_json(Path(result['resultPath']).parent/'cultivation-report.json');self.assertIsNone(report['talentPreview']['costs'])
+        self.assertTrue(report['talentPreview']['nativeObservation']['evidence']['rawFrames'])
+
+    def test_relabelled_mizu_preview_cannot_satisfy_replacement_target_or_wrong_selected_talent(self):
+        for mismatch in ('old-character','other-talent'):
+            with self.subTest(mismatch=mismatch):
+                # Each host uses its own fake checkout; no actual account data is touched.
+                self.config['target']['characterName']='芭芭拉';wf.atomic_json(self.root/'config/cultivation.json',self.config)
+                if not (self.root/'bgi-scripts/AutoGameCultivation').exists():self.source_package()
+                def foreign(report):
+                    raw=report['talentPreview']['nativeObservation']
+                    if mismatch=='old-character':raw['characterName']='梦见月瑞希'
+                    else:report['talentPreview']['selectedTalentType']='元素爆发'
+                host=CultivationFakeHost(self.root,self.make_report,report_change=foreign)
+                code,result,_=self.run_flow(talent_preview=True,host=host)
+                self.assertNotEqual(code,0,result);self.assertEqual(result['tasks'][0]['status'],'unknown')
 
     def test_execution_and_normal_profiles_keep_final_reward_check_without_mutating_template(self):
         self.config.update(executionEnabled=True, policy=copy.deepcopy(tc.POLICY))

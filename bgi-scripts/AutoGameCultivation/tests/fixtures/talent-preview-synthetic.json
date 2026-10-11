@@ -1,0 +1,1760 @@
+{
+  "schemaVersion": 1,
+  "task": "talent-upgrade-inspection",
+  "status": "success",
+  "readOnly": true,
+  "characterName": "芭芭拉",
+  "talentType": "元素战技",
+  "talentName": "合成测试天赋",
+  "currentBaseLevel": 1,
+  "nextBaseLevel": 2,
+  "materials": [
+    {
+      "name": "「自由」的教导",
+      "owned": 32,
+      "required": 3
+    }
+  ],
+  "mora": {
+    "owned": 123456,
+    "required": 12500
+  },
+  "evidenceVerified": true,
+  "mainUiRestored": true,
+  "confirmationSubmitted": false,
+  "reason": "synthetic-fixture-only",
+  "observedAt": "2026-10-11T16:00:03+00:00",
+  "evidence": {
+    "characterIdentity": [
+      {
+        "observedAt": 1791734400100,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      },
+      {
+        "observedAt": 1791734400300,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      },
+      {
+        "observedAt": 1791734400500,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      }
+    ],
+    "detailIdentityCarryover": {
+      "observedAt": 1791734401100,
+      "width": 1920,
+      "height": 1080,
+      "page": true,
+      "type": "元素战技",
+      "title": "合成测试天赋",
+      "displayLevel": 1,
+      "baseLevel": 1,
+      "typeRegion": {
+        "x": 242,
+        "y": 13,
+        "width": 98,
+        "height": 36
+      },
+      "typeRows": [
+        {
+          "text": "元素战技",
+          "bounds": {
+            "x": 250,
+            "y": 20,
+            "width": 80,
+            "height": 22
+          }
+        }
+      ],
+      "titleRegion": {
+        "x": 20,
+        "y": 120,
+        "width": 540,
+        "height": 52
+      },
+      "titleRows": [
+        {
+          "text": "合成测试天赋",
+          "bounds": {
+            "x": 30,
+            "y": 130,
+            "width": 220,
+            "height": 30
+          }
+        }
+      ],
+      "levelRegion": {
+        "x": 240,
+        "y": 160,
+        "width": 100,
+        "height": 52
+      },
+      "levelRaw": "等级1",
+      "levelRows": [
+        {
+          "text": "等级1",
+          "bounds": {
+            "x": 250,
+            "y": 175,
+            "width": 60,
+            "height": 20
+          }
+        }
+      ],
+      "colorSampleRegion": {
+        "x": 230,
+        "y": 150,
+        "width": 120,
+        "height": 72
+      },
+      "glyphRegion": {
+        "x": 250,
+        "y": 175,
+        "width": 60,
+        "height": 20
+      },
+      "glyphColor": "Neutral",
+      "brightPixels": 120,
+      "neutralPixels": 120,
+      "cyanPixels": 0,
+      "darkConflicts": 0,
+      "bonusRegion": {
+        "x": 35,
+        "y": 285,
+        "width": 146,
+        "height": 30
+      },
+      "bonusRaw": "",
+      "hasFixedPlusThree": false
+    },
+    "preview": {
+      "observedAt": 1791734403000,
+      "width": 1920,
+      "height": 1080,
+      "page": true,
+      "current": 1,
+      "next": 2,
+      "markerRegion": {
+        "x": 420,
+        "y": 235,
+        "width": 1100,
+        "height": 750
+      },
+      "rows": [
+        {
+          "text": "属性变更",
+          "bounds": {
+            "x": 500,
+            "y": 250,
+            "width": 100,
+            "height": 30
+          }
+        },
+        {
+          "text": "所需材料",
+          "bounds": {
+            "x": 500,
+            "y": 580,
+            "width": 100,
+            "height": 30
+          }
+        },
+        {
+          "text": "取消",
+          "bounds": {
+            "x": 650,
+            "y": 940,
+            "width": 100,
+            "height": 30
+          }
+        },
+        {
+          "text": "确认",
+          "bounds": {
+            "x": 1100,
+            "y": 940,
+            "width": 100,
+            "height": 30
+          }
+        }
+      ],
+      "currentLevelRegion": {
+        "x": 760,
+        "y": 245,
+        "width": 160,
+        "height": 65
+      },
+      "nextLevelRegion": {
+        "x": 1000,
+        "y": 245,
+        "width": 170,
+        "height": 65
+      },
+      "currentLevelRaw": "等级1",
+      "nextLevelRaw": "等级2",
+      "currentLevelRows": [
+        {
+          "text": "等级1",
+          "bounds": {
+            "x": 780,
+            "y": 255,
+            "width": 100,
+            "height": 30
+          }
+        }
+      ],
+      "nextLevelRows": [
+        {
+          "text": "等级2",
+          "bounds": {
+            "x": 1020,
+            "y": 255,
+            "width": 100,
+            "height": 30
+          }
+        }
+      ],
+      "materials": [
+        {
+          "name": "「自由」的教导",
+          "iconScore": 0.93,
+          "card": {
+            "x": 740,
+            "y": 600,
+            "width": 116,
+            "height": 146
+          },
+          "iconRegion": {
+            "x": 740,
+            "y": 600,
+            "width": 116,
+            "height": 112
+          },
+          "quantity": {
+            "observedAt": 1791734403000,
+            "width": 1920,
+            "height": 1080,
+            "bounds": {
+              "x": 754,
+              "y": 710,
+              "width": 90,
+              "height": 35
+            },
+            "raw": "32/3",
+            "detectorRaw": "32/3",
+            "owned": 32,
+            "required": 3,
+            "complete": true,
+            "prefix": "",
+            "slashPixelVerified": false,
+            "ocrRows": [
+              {
+                "text": "32/3",
+                "bounds": {
+                  "x": 762,
+                  "y": 717,
+                  "width": 74,
+                  "height": 21
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "coinRegion": {
+        "x": 853,
+        "y": 799,
+        "width": 37,
+        "height": 37
+      },
+      "coinName": "摩拉",
+      "coinScore": 0.91,
+      "mora": {
+        "observedAt": 1791734403000,
+        "width": 1920,
+        "height": 1080,
+        "bounds": {
+          "x": 903,
+          "y": 797,
+          "width": 275,
+          "height": 55
+        },
+        "raw": "123456/12500",
+        "detectorRaw": "123456/12500",
+        "owned": 123456,
+        "required": 12500,
+        "complete": true,
+        "prefix": "",
+        "slashPixelVerified": false,
+        "ocrRows": [
+          {
+            "text": "123456/12500",
+            "bounds": {
+              "x": 911,
+              "y": 804,
+              "width": 259,
+              "height": 41
+            }
+          }
+        ]
+      }
+    },
+    "materialTooltips": [
+      [
+        {
+          "observedAt": 1791734402100,
+          "width": 1920,
+          "height": 1080,
+          "page": true,
+          "name": "「自由」的教导",
+          "kind": "角色天赋素材",
+          "rawName": "[自由]的教导",
+          "alternateRawName": "",
+          "alternateNameScale": 4,
+          "alternateNameRows": [],
+          "alternateNamePreprocessing": "gray_threshold_210_inverse_cubic_4x",
+          "nameRegion": {
+            "x": 730,
+            "y": 168,
+            "width": 440,
+            "height": 67
+          },
+          "nameRows": [
+            {
+              "text": "[自由]的教导",
+              "bounds": {
+                "x": 740,
+                "y": 180,
+                "width": 250,
+                "height": 35
+              }
+            }
+          ],
+          "kindRegion": {
+            "x": 730,
+            "y": 230,
+            "width": 440,
+            "height": 65
+          },
+          "kindRows": [
+            {
+              "text": "角色天赋素材",
+              "bounds": {
+                "x": 740,
+                "y": 240,
+                "width": 260,
+                "height": 30
+              }
+            }
+          ],
+          "sourceRegion": {
+            "x": 730,
+            "y": 690,
+            "width": 460,
+            "height": 65
+          },
+          "sourceRows": [
+            {
+              "text": "来源",
+              "bounds": {
+                "x": 740,
+                "y": 700,
+                "width": 90,
+                "height": 30
+              }
+            }
+          ],
+          "footerLabelRegion": {
+            "x": 725,
+            "y": 890,
+            "width": 470,
+            "height": 65
+          },
+          "footerLabelRows": [
+            {
+              "text": "培养需求32/99",
+              "bounds": {
+                "x": 893,
+                "y": 897,
+                "width": 279,
+                "height": 51
+              }
+            }
+          ],
+          "quantity": {
+            "observedAt": 1791734402100,
+            "width": 1920,
+            "height": 1080,
+            "bounds": {
+              "x": 885,
+              "y": 890,
+              "width": 295,
+              "height": 65
+            },
+            "raw": "32/99",
+            "detectorRaw": "32/99",
+            "owned": 32,
+            "required": 99,
+            "complete": true,
+            "prefix": "培养需求",
+            "slashPixelVerified": false,
+            "ocrRows": [
+              {
+                "text": "培养需求32/99",
+                "bounds": {
+                  "x": 893,
+                  "y": 897,
+                  "width": 279,
+                  "height": 51
+                }
+              }
+            ]
+          }
+        },
+        {
+          "observedAt": 1791734402400,
+          "width": 1920,
+          "height": 1080,
+          "page": true,
+          "name": "「自由」的教导",
+          "kind": "角色天赋素材",
+          "rawName": "[自由]的教导",
+          "alternateRawName": "",
+          "alternateNameScale": 4,
+          "alternateNameRows": [],
+          "alternateNamePreprocessing": "gray_threshold_210_inverse_cubic_4x",
+          "nameRegion": {
+            "x": 730,
+            "y": 168,
+            "width": 440,
+            "height": 67
+          },
+          "nameRows": [
+            {
+              "text": "[自由]的教导",
+              "bounds": {
+                "x": 740,
+                "y": 180,
+                "width": 250,
+                "height": 35
+              }
+            }
+          ],
+          "kindRegion": {
+            "x": 730,
+            "y": 230,
+            "width": 440,
+            "height": 65
+          },
+          "kindRows": [
+            {
+              "text": "角色天赋素材",
+              "bounds": {
+                "x": 740,
+                "y": 240,
+                "width": 260,
+                "height": 30
+              }
+            }
+          ],
+          "sourceRegion": {
+            "x": 730,
+            "y": 690,
+            "width": 460,
+            "height": 65
+          },
+          "sourceRows": [
+            {
+              "text": "来源",
+              "bounds": {
+                "x": 740,
+                "y": 700,
+                "width": 90,
+                "height": 30
+              }
+            }
+          ],
+          "footerLabelRegion": {
+            "x": 725,
+            "y": 890,
+            "width": 470,
+            "height": 65
+          },
+          "footerLabelRows": [
+            {
+              "text": "培养需求32/99",
+              "bounds": {
+                "x": 893,
+                "y": 897,
+                "width": 279,
+                "height": 51
+              }
+            }
+          ],
+          "quantity": {
+            "observedAt": 1791734402400,
+            "width": 1920,
+            "height": 1080,
+            "bounds": {
+              "x": 885,
+              "y": 890,
+              "width": 295,
+              "height": 65
+            },
+            "raw": "32/99",
+            "detectorRaw": "32/99",
+            "owned": 32,
+            "required": 99,
+            "complete": true,
+            "prefix": "培养需求",
+            "slashPixelVerified": false,
+            "ocrRows": [
+              {
+                "text": "培养需求32/99",
+                "bounds": {
+                  "x": 893,
+                  "y": 897,
+                  "width": 279,
+                  "height": 51
+                }
+              }
+            ]
+          }
+        }
+      ]
+    ],
+    "rawFrames": [
+      {
+        "observedAt": 1791734400100,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      },
+      {
+        "observedAt": 1791734400300,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      },
+      {
+        "observedAt": 1791734400500,
+        "width": 1920,
+        "height": 1080,
+        "overview": true,
+        "name": "芭芭拉",
+        "nameRegion": {
+          "x": 1466,
+          "y": 131,
+          "width": 244,
+          "height": 38
+        },
+        "nameRows": [
+          {
+            "text": "芭芭拉",
+            "bounds": {
+              "x": 1475,
+              "y": 137,
+              "width": 220,
+              "height": 25
+            }
+          }
+        ]
+      },
+      {
+        "observedAt": 1791734400800,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "type": "元素战技",
+        "title": "合成测试天赋",
+        "displayLevel": 1,
+        "baseLevel": 1,
+        "typeRegion": {
+          "x": 242,
+          "y": 13,
+          "width": 98,
+          "height": 36
+        },
+        "typeRows": [
+          {
+            "text": "元素战技",
+            "bounds": {
+              "x": 250,
+              "y": 20,
+              "width": 80,
+              "height": 22
+            }
+          }
+        ],
+        "titleRegion": {
+          "x": 20,
+          "y": 120,
+          "width": 540,
+          "height": 52
+        },
+        "titleRows": [
+          {
+            "text": "合成测试天赋",
+            "bounds": {
+              "x": 30,
+              "y": 130,
+              "width": 220,
+              "height": 30
+            }
+          }
+        ],
+        "levelRegion": {
+          "x": 240,
+          "y": 160,
+          "width": 100,
+          "height": 52
+        },
+        "levelRaw": "等级1",
+        "levelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 250,
+              "y": 175,
+              "width": 60,
+              "height": 20
+            }
+          }
+        ],
+        "colorSampleRegion": {
+          "x": 230,
+          "y": 150,
+          "width": 120,
+          "height": 72
+        },
+        "glyphRegion": {
+          "x": 250,
+          "y": 175,
+          "width": 60,
+          "height": 20
+        },
+        "glyphColor": "Neutral",
+        "brightPixels": 120,
+        "neutralPixels": 120,
+        "cyanPixels": 0,
+        "darkConflicts": 0,
+        "bonusRegion": {
+          "x": 35,
+          "y": 285,
+          "width": 146,
+          "height": 30
+        },
+        "bonusRaw": "",
+        "hasFixedPlusThree": false
+      },
+      {
+        "observedAt": 1791734401100,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "type": "元素战技",
+        "title": "合成测试天赋",
+        "displayLevel": 1,
+        "baseLevel": 1,
+        "typeRegion": {
+          "x": 242,
+          "y": 13,
+          "width": 98,
+          "height": 36
+        },
+        "typeRows": [
+          {
+            "text": "元素战技",
+            "bounds": {
+              "x": 250,
+              "y": 20,
+              "width": 80,
+              "height": 22
+            }
+          }
+        ],
+        "titleRegion": {
+          "x": 20,
+          "y": 120,
+          "width": 540,
+          "height": 52
+        },
+        "titleRows": [
+          {
+            "text": "合成测试天赋",
+            "bounds": {
+              "x": 30,
+              "y": 130,
+              "width": 220,
+              "height": 30
+            }
+          }
+        ],
+        "levelRegion": {
+          "x": 240,
+          "y": 160,
+          "width": 100,
+          "height": 52
+        },
+        "levelRaw": "等级1",
+        "levelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 250,
+              "y": 175,
+              "width": 60,
+              "height": 20
+            }
+          }
+        ],
+        "colorSampleRegion": {
+          "x": 230,
+          "y": 150,
+          "width": 120,
+          "height": 72
+        },
+        "glyphRegion": {
+          "x": 250,
+          "y": 175,
+          "width": 60,
+          "height": 20
+        },
+        "glyphColor": "Neutral",
+        "brightPixels": 120,
+        "neutralPixels": 120,
+        "cyanPixels": 0,
+        "darkConflicts": 0,
+        "bonusRegion": {
+          "x": 35,
+          "y": 285,
+          "width": 146,
+          "height": 30
+        },
+        "bonusRaw": "",
+        "hasFixedPlusThree": false
+      },
+      {
+        "observedAt": 1791734401400,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "current": 1,
+        "next": 2,
+        "markerRegion": {
+          "x": 420,
+          "y": 235,
+          "width": 1100,
+          "height": 750
+        },
+        "rows": [
+          {
+            "text": "属性变更",
+            "bounds": {
+              "x": 500,
+              "y": 250,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "所需材料",
+            "bounds": {
+              "x": 500,
+              "y": 580,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "取消",
+            "bounds": {
+              "x": 650,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "确认",
+            "bounds": {
+              "x": 1100,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "currentLevelRegion": {
+          "x": 760,
+          "y": 245,
+          "width": 160,
+          "height": 65
+        },
+        "nextLevelRegion": {
+          "x": 1000,
+          "y": 245,
+          "width": 170,
+          "height": 65
+        },
+        "currentLevelRaw": "等级1",
+        "nextLevelRaw": "等级2",
+        "currentLevelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 780,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "nextLevelRows": [
+          {
+            "text": "等级2",
+            "bounds": {
+              "x": 1020,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "materials": [
+          {
+            "name": "「自由」的教导",
+            "iconScore": 0.93,
+            "card": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 146
+            },
+            "iconRegion": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 112
+            },
+            "quantity": {
+              "observedAt": 1791734401400,
+              "width": 1920,
+              "height": 1080,
+              "bounds": {
+                "x": 754,
+                "y": 710,
+                "width": 90,
+                "height": 35
+              },
+              "raw": "32/3",
+              "detectorRaw": "32/3",
+              "owned": 32,
+              "required": 3,
+              "complete": true,
+              "prefix": "",
+              "slashPixelVerified": false,
+              "ocrRows": [
+                {
+                  "text": "32/3",
+                  "bounds": {
+                    "x": 762,
+                    "y": 717,
+                    "width": 74,
+                    "height": 21
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "coinRegion": {
+          "x": 853,
+          "y": 799,
+          "width": 37,
+          "height": 37
+        },
+        "coinName": "摩拉",
+        "coinScore": 0.91,
+        "mora": {
+          "observedAt": 1791734401400,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 903,
+            "y": 797,
+            "width": 275,
+            "height": 55
+          },
+          "raw": "123456/12500",
+          "detectorRaw": "123456/12500",
+          "owned": 123456,
+          "required": 12500,
+          "complete": true,
+          "prefix": "",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "123456/12500",
+              "bounds": {
+                "x": 911,
+                "y": 804,
+                "width": 259,
+                "height": 41
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734401700,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "current": 1,
+        "next": 2,
+        "markerRegion": {
+          "x": 420,
+          "y": 235,
+          "width": 1100,
+          "height": 750
+        },
+        "rows": [
+          {
+            "text": "属性变更",
+            "bounds": {
+              "x": 500,
+              "y": 250,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "所需材料",
+            "bounds": {
+              "x": 500,
+              "y": 580,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "取消",
+            "bounds": {
+              "x": 650,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "确认",
+            "bounds": {
+              "x": 1100,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "currentLevelRegion": {
+          "x": 760,
+          "y": 245,
+          "width": 160,
+          "height": 65
+        },
+        "nextLevelRegion": {
+          "x": 1000,
+          "y": 245,
+          "width": 170,
+          "height": 65
+        },
+        "currentLevelRaw": "等级1",
+        "nextLevelRaw": "等级2",
+        "currentLevelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 780,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "nextLevelRows": [
+          {
+            "text": "等级2",
+            "bounds": {
+              "x": 1020,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "materials": [
+          {
+            "name": "「自由」的教导",
+            "iconScore": 0.93,
+            "card": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 146
+            },
+            "iconRegion": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 112
+            },
+            "quantity": {
+              "observedAt": 1791734401700,
+              "width": 1920,
+              "height": 1080,
+              "bounds": {
+                "x": 754,
+                "y": 710,
+                "width": 90,
+                "height": 35
+              },
+              "raw": "32/3",
+              "detectorRaw": "32/3",
+              "owned": 32,
+              "required": 3,
+              "complete": true,
+              "prefix": "",
+              "slashPixelVerified": false,
+              "ocrRows": [
+                {
+                  "text": "32/3",
+                  "bounds": {
+                    "x": 762,
+                    "y": 717,
+                    "width": 74,
+                    "height": 21
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "coinRegion": {
+          "x": 853,
+          "y": 799,
+          "width": 37,
+          "height": 37
+        },
+        "coinName": "摩拉",
+        "coinScore": 0.91,
+        "mora": {
+          "observedAt": 1791734401700,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 903,
+            "y": 797,
+            "width": 275,
+            "height": 55
+          },
+          "raw": "123456/12500",
+          "detectorRaw": "123456/12500",
+          "owned": 123456,
+          "required": 12500,
+          "complete": true,
+          "prefix": "",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "123456/12500",
+              "bounds": {
+                "x": 911,
+                "y": 804,
+                "width": 259,
+                "height": 41
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734402100,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "name": "「自由」的教导",
+        "kind": "角色天赋素材",
+        "rawName": "[自由]的教导",
+        "alternateRawName": "",
+        "alternateNameScale": 4,
+        "alternateNameRows": [],
+        "alternateNamePreprocessing": "gray_threshold_210_inverse_cubic_4x",
+        "nameRegion": {
+          "x": 730,
+          "y": 168,
+          "width": 440,
+          "height": 67
+        },
+        "nameRows": [
+          {
+            "text": "[自由]的教导",
+            "bounds": {
+              "x": 740,
+              "y": 180,
+              "width": 250,
+              "height": 35
+            }
+          }
+        ],
+        "kindRegion": {
+          "x": 730,
+          "y": 230,
+          "width": 440,
+          "height": 65
+        },
+        "kindRows": [
+          {
+            "text": "角色天赋素材",
+            "bounds": {
+              "x": 740,
+              "y": 240,
+              "width": 260,
+              "height": 30
+            }
+          }
+        ],
+        "sourceRegion": {
+          "x": 730,
+          "y": 690,
+          "width": 460,
+          "height": 65
+        },
+        "sourceRows": [
+          {
+            "text": "来源",
+            "bounds": {
+              "x": 740,
+              "y": 700,
+              "width": 90,
+              "height": 30
+            }
+          }
+        ],
+        "footerLabelRegion": {
+          "x": 725,
+          "y": 890,
+          "width": 470,
+          "height": 65
+        },
+        "footerLabelRows": [
+          {
+            "text": "培养需求32/99",
+            "bounds": {
+              "x": 893,
+              "y": 897,
+              "width": 279,
+              "height": 51
+            }
+          }
+        ],
+        "quantity": {
+          "observedAt": 1791734402100,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 885,
+            "y": 890,
+            "width": 295,
+            "height": 65
+          },
+          "raw": "32/99",
+          "detectorRaw": "32/99",
+          "owned": 32,
+          "required": 99,
+          "complete": true,
+          "prefix": "培养需求",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "培养需求32/99",
+              "bounds": {
+                "x": 893,
+                "y": 897,
+                "width": 279,
+                "height": 51
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734402400,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "name": "「自由」的教导",
+        "kind": "角色天赋素材",
+        "rawName": "[自由]的教导",
+        "alternateRawName": "",
+        "alternateNameScale": 4,
+        "alternateNameRows": [],
+        "alternateNamePreprocessing": "gray_threshold_210_inverse_cubic_4x",
+        "nameRegion": {
+          "x": 730,
+          "y": 168,
+          "width": 440,
+          "height": 67
+        },
+        "nameRows": [
+          {
+            "text": "[自由]的教导",
+            "bounds": {
+              "x": 740,
+              "y": 180,
+              "width": 250,
+              "height": 35
+            }
+          }
+        ],
+        "kindRegion": {
+          "x": 730,
+          "y": 230,
+          "width": 440,
+          "height": 65
+        },
+        "kindRows": [
+          {
+            "text": "角色天赋素材",
+            "bounds": {
+              "x": 740,
+              "y": 240,
+              "width": 260,
+              "height": 30
+            }
+          }
+        ],
+        "sourceRegion": {
+          "x": 730,
+          "y": 690,
+          "width": 460,
+          "height": 65
+        },
+        "sourceRows": [
+          {
+            "text": "来源",
+            "bounds": {
+              "x": 740,
+              "y": 700,
+              "width": 90,
+              "height": 30
+            }
+          }
+        ],
+        "footerLabelRegion": {
+          "x": 725,
+          "y": 890,
+          "width": 470,
+          "height": 65
+        },
+        "footerLabelRows": [
+          {
+            "text": "培养需求32/99",
+            "bounds": {
+              "x": 893,
+              "y": 897,
+              "width": 279,
+              "height": 51
+            }
+          }
+        ],
+        "quantity": {
+          "observedAt": 1791734402400,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 885,
+            "y": 890,
+            "width": 295,
+            "height": 65
+          },
+          "raw": "32/99",
+          "detectorRaw": "32/99",
+          "owned": 32,
+          "required": 99,
+          "complete": true,
+          "prefix": "培养需求",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "培养需求32/99",
+              "bounds": {
+                "x": 893,
+                "y": 897,
+                "width": 279,
+                "height": 51
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734402700,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "current": 1,
+        "next": 2,
+        "markerRegion": {
+          "x": 420,
+          "y": 235,
+          "width": 1100,
+          "height": 750
+        },
+        "rows": [
+          {
+            "text": "属性变更",
+            "bounds": {
+              "x": 500,
+              "y": 250,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "所需材料",
+            "bounds": {
+              "x": 500,
+              "y": 580,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "取消",
+            "bounds": {
+              "x": 650,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "确认",
+            "bounds": {
+              "x": 1100,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "currentLevelRegion": {
+          "x": 760,
+          "y": 245,
+          "width": 160,
+          "height": 65
+        },
+        "nextLevelRegion": {
+          "x": 1000,
+          "y": 245,
+          "width": 170,
+          "height": 65
+        },
+        "currentLevelRaw": "等级1",
+        "nextLevelRaw": "等级2",
+        "currentLevelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 780,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "nextLevelRows": [
+          {
+            "text": "等级2",
+            "bounds": {
+              "x": 1020,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "materials": [
+          {
+            "name": "「自由」的教导",
+            "iconScore": 0.93,
+            "card": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 146
+            },
+            "iconRegion": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 112
+            },
+            "quantity": {
+              "observedAt": 1791734402700,
+              "width": 1920,
+              "height": 1080,
+              "bounds": {
+                "x": 754,
+                "y": 710,
+                "width": 90,
+                "height": 35
+              },
+              "raw": "32/3",
+              "detectorRaw": "32/3",
+              "owned": 32,
+              "required": 3,
+              "complete": true,
+              "prefix": "",
+              "slashPixelVerified": false,
+              "ocrRows": [
+                {
+                  "text": "32/3",
+                  "bounds": {
+                    "x": 762,
+                    "y": 717,
+                    "width": 74,
+                    "height": 21
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "coinRegion": {
+          "x": 853,
+          "y": 799,
+          "width": 37,
+          "height": 37
+        },
+        "coinName": "摩拉",
+        "coinScore": 0.91,
+        "mora": {
+          "observedAt": 1791734402700,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 903,
+            "y": 797,
+            "width": 275,
+            "height": 55
+          },
+          "raw": "123456/12500",
+          "detectorRaw": "123456/12500",
+          "owned": 123456,
+          "required": 12500,
+          "complete": true,
+          "prefix": "",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "123456/12500",
+              "bounds": {
+                "x": 911,
+                "y": 804,
+                "width": 259,
+                "height": 41
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734403000,
+        "width": 1920,
+        "height": 1080,
+        "page": true,
+        "current": 1,
+        "next": 2,
+        "markerRegion": {
+          "x": 420,
+          "y": 235,
+          "width": 1100,
+          "height": 750
+        },
+        "rows": [
+          {
+            "text": "属性变更",
+            "bounds": {
+              "x": 500,
+              "y": 250,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "所需材料",
+            "bounds": {
+              "x": 500,
+              "y": 580,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "取消",
+            "bounds": {
+              "x": 650,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          },
+          {
+            "text": "确认",
+            "bounds": {
+              "x": 1100,
+              "y": 940,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "currentLevelRegion": {
+          "x": 760,
+          "y": 245,
+          "width": 160,
+          "height": 65
+        },
+        "nextLevelRegion": {
+          "x": 1000,
+          "y": 245,
+          "width": 170,
+          "height": 65
+        },
+        "currentLevelRaw": "等级1",
+        "nextLevelRaw": "等级2",
+        "currentLevelRows": [
+          {
+            "text": "等级1",
+            "bounds": {
+              "x": 780,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "nextLevelRows": [
+          {
+            "text": "等级2",
+            "bounds": {
+              "x": 1020,
+              "y": 255,
+              "width": 100,
+              "height": 30
+            }
+          }
+        ],
+        "materials": [
+          {
+            "name": "「自由」的教导",
+            "iconScore": 0.93,
+            "card": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 146
+            },
+            "iconRegion": {
+              "x": 740,
+              "y": 600,
+              "width": 116,
+              "height": 112
+            },
+            "quantity": {
+              "observedAt": 1791734403000,
+              "width": 1920,
+              "height": 1080,
+              "bounds": {
+                "x": 754,
+                "y": 710,
+                "width": 90,
+                "height": 35
+              },
+              "raw": "32/3",
+              "detectorRaw": "32/3",
+              "owned": 32,
+              "required": 3,
+              "complete": true,
+              "prefix": "",
+              "slashPixelVerified": false,
+              "ocrRows": [
+                {
+                  "text": "32/3",
+                  "bounds": {
+                    "x": 762,
+                    "y": 717,
+                    "width": 74,
+                    "height": 21
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "coinRegion": {
+          "x": 853,
+          "y": 799,
+          "width": 37,
+          "height": 37
+        },
+        "coinName": "摩拉",
+        "coinScore": 0.91,
+        "mora": {
+          "observedAt": 1791734403000,
+          "width": 1920,
+          "height": 1080,
+          "bounds": {
+            "x": 903,
+            "y": 797,
+            "width": 275,
+            "height": 55
+          },
+          "raw": "123456/12500",
+          "detectorRaw": "123456/12500",
+          "owned": 123456,
+          "required": 12500,
+          "complete": true,
+          "prefix": "",
+          "slashPixelVerified": false,
+          "ocrRows": [
+            {
+              "text": "123456/12500",
+              "bounds": {
+                "x": 911,
+                "y": 804,
+                "width": 259,
+                "height": 41
+              }
+            }
+          ]
+        }
+      },
+      {
+        "observedAt": 1791734403400,
+        "width": 1920,
+        "height": 1080,
+        "phase": "world_restore",
+        "focused": true,
+        "worldVerified": true
+      },
+      {
+        "observedAt": 1791734403700,
+        "width": 1920,
+        "height": 1080,
+        "phase": "world_restore",
+        "focused": true,
+        "worldVerified": true
+      }
+    ],
+    "characterSelectionAfterIdentity": false,
+    "tooltipRequirementUsedAsUpgradeCost": false
+  }
+}

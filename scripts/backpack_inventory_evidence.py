@@ -45,14 +45,17 @@ def _time(value):
     return parsed.timestamp() * 1000
 
 
-def verify_backpack_inventory(rows, *, materials, started_at, finished_at):
+def verify_backpack_inventory(rows, *, materials, started_at, finished_at, category='weaponAscension'):
     """Recompute each exact named stack from its independent raw captures."""
     for identifier, row in rows.items():
         if not isinstance(row, dict) or row.get('source') != SOURCE:
             continue
         if row.get('status') == 'unknown' and row.get('count') is None:
             continue
-        if (not re.fullmatch(r'114\d+', identifier) or row.get('status') != 'exact' or row.get('verified') is not True
+        experience = {'104011': '精锻用杂矿', '104012': '精锻用良矿', '104013': '精锻用魔矿'}
+        identity_valid = (identifier in experience and row.get('name') == experience[identifier]) if category == 'weaponExperience' else (
+            category == 'weaponAscension' and re.fullmatch(r'114\d+', identifier))
+        if (not identity_valid or row.get('status') != 'exact' or row.get('verified') is not True
                 or row.get('name') != materials.get(identifier, {}).get('name')):
             raise ValueError('backpack evidence material/source/status mismatch')
         evidence = row.get('evidence', {})

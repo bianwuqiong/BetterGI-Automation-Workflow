@@ -24,11 +24,16 @@ function frameCount(frame,name,selection) {
 
 export function verifyBackpackInventory(result,request) {
   const inventory={};
+  const experience={104011:'精锻用杂矿',104012:'精锻用良矿',104013:'精锻用魔矿'};
+  const category=request.category??'weaponAscension';
   for(const material of request.materials??[]) {
     const unknown=reason=>({name:material.materialName,count:null,status:'unknown',reason});
     const pair=result?.observations?.[material.materialId], selection=pair?.selection;
-    if(!/^114\d+$/.test(String(material.materialId)) || !normalizeGuideText(material.materialName)
+    const identityOk=category==='weaponExperience'?experience[material.materialId]===material.materialName:
+      category==='weaponAscension'&&/^114\d+$/.test(String(material.materialId));
+    if(!identityOk || !normalizeGuideText(material.materialName)
       || result?.readOnly!==true || result.source!=='backpack_selected_stack'
+      ||category==='weaponExperience'&&(result.category!==category||result.cleanupCompleted!==true)
       || result.mainUiRestored!==true || !selection || !rectValid(selection.itemRect)
       || !Number.isFinite(selection.clickedAt) || !Number.isFinite(selection.x)
       || !Number.isFinite(selection.y) || selection.x<selection.itemRect.x

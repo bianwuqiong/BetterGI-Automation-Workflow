@@ -216,9 +216,9 @@ class PreparationWorkflowTests(unittest.TestCase):
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
         self.ledger_path.write_bytes(b'opaque original ledger must never be read or changed by preparation')
 
-    def run_preparation(self, dry=False, native_status='completed', existing=False):
-        args = argparse.Namespace(root=str(self.root), dry_run=dry, task=None, profile=material.PREPARATION_MODE,
-            timeout_minutes=0, no_delay=True, allow_repeat=False, keep_game=False, allow_existing_game=False,
+    def run_preparation(self, dry=False, native_status='completed', existing=False, task=None, keep_game=False):
+        args = argparse.Namespace(root=str(self.root), dry_run=dry, task=task, profile=material.PREPARATION_MODE,
+            timeout_minutes=0, no_delay=True, allow_repeat=False, keep_game=keep_game, allow_existing_game=existing and task is not None,
             graphics_check=False, preparation_config='config/party-preparation.json')
         stream = io.StringIO()
         host = PreparationFakeHost(self.root, existing=existing)
@@ -250,6 +250,18 @@ class PreparationWorkflowTests(unittest.TestCase):
         generated = wf.read_json(result['plannedConfig'])
         self.assertTrue(generated['SkipFinalRewardCheck'])
         self.assertEqual(sum(generated['TaskEnabledList'].values()), 1)
+
+    def test_explicit_free_preparation_task_allows_keep_game_without_expanding_route_selection(self):
+        before = self.ledger_path.read_bytes()
+        code, result, host = self.run_preparation(dry=True, task=material.PREPARATION_TASK_NAME, keep_game=True)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result['expectedTasks'], [material.PREPARATION_TASK_NAME])
+        self.assertEqual(wf.read_json(result['plannedConfig'])['CompletionAction'], '无')
+        self.assertFalse(host.launched)
+        self.assertEqual(self.ledger_path.read_bytes(), before)
+        code, result, _ = self.run_preparation(dry=True, task='刀镡路线', keep_game=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result['outcome'], 'failed')
 
     def test_fake_live_launches_once_without_ledger_or_base_config_mutation(self):
         before = self.ledger_path.read_bytes()

@@ -13,6 +13,8 @@ config/material-route-validation.json
 config/material-recovery.json
 config/party-preparation.json
 config/cultivation-full.json
+config/artifact*.json
+!config/artifact*.example.json
 logs/
 state/
 manual-graphics.json

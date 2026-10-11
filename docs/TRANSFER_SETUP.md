@@ -8,18 +8,41 @@
 
 Windows 10/11 x64、Python 3.10+、Node.js 22、.NET 8 SDK；录屏另需本机 FFmpeg 与 ffprobe。初始化第三方子模块和模型依赖时遵循 BetterGI 基线仓库说明。
 
+Python依赖统一由根目录 `requirements-runtime.txt` 定义；开发入口 `requirements-dev.txt` 引用该文件，不维护第二份版本约束。Pillow用于显式源码阶段审查的真实PNG/JPEG完整性解码，缺解码器时审查拒绝。这里使用Pillow 12.3系列约束（`>=12.3.0,<13`）；[官方Python支持表](https://pillow.readthedocs.io/en/stable/installation/python-support.html)涵盖Python3.10和CI的3.12。[PyPI版本文件](https://pypi.org/project/pillow/12.3.0/)提供对应发行包。本机bundled 12.3.0已可用，其他电脑应在配置给宿主的同一Python环境安装：
+
+```powershell
+python -m pip install -r requirements-runtime.txt
+# 开发/CI环境包含运行时依赖：
+python -m pip install -r requirements-dev.txt
+```
+
+JPEG/PNG格式、截断、完整原始窗口与资源小裁图拒绝测试不依赖私人native10快照，在CI始终运行。固定native10 DLL/控制流集成测试另需私人冻结审查目录，缺目录时明确skip，不能把该skip称为实机图像验收。
+
 在本仓库根目录执行：
 
 ```powershell
 git clone --recurse-submodules --branch automation-baseline-2026-10-08 --single-branch https://github.com/bianwuqiong/better-genshin-impact.git better-genshin-impact
 git -C better-genshin-impact rev-parse HEAD
 # 应为 d8c0aa238a949d7d74bfe5087f3a48e39771575a
-git -C better-genshin-impact apply --check ../patches/cultivation-engine.patch
-git -C better-genshin-impact apply ../patches/cultivation-engine.patch
+$sequence = Get-Content docs/SOURCE_PATCH_SEQUENCE_2026-10-11.json -Raw -Encoding UTF8 | ConvertFrom-Json
+if ((git -C better-genshin-impact rev-parse HEAD).Trim() -ne $sequence.sourceBaseCommit) { throw 'Unexpected source baseline' }
+if (git -C better-genshin-impact status --porcelain) { throw 'Preserve existing changes and use a clean source checkout for first application' }
+foreach ($entry in ($sequence.patches | Sort-Object order)) {
+    $text = [System.IO.File]::ReadAllText((Resolve-Path $entry.path)).Replace("`r`n", "`n")
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $actual = ([BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text)))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+    if ($actual -ne $entry.sha256) { throw ('Patch hash mismatch: ' + $entry.path) }
+    git -C better-genshin-impact apply --check ('../' + $entry.path)
+    if ($LASTEXITCODE -ne 0) { throw ('Patch check failed; preserve this checkout: ' + $entry.path) }
+    git -C better-genshin-impact apply ('../' + $entry.path)
+    if ($LASTEXITCODE -ne 0) { throw ('Patch application failed; preserve this checkout: ' + $entry.path) }
+}
 dotnet build better-genshin-impact/BetterGenshinImpact.sln -c Release
 ```
 
 补丁从固定基线到当前修改生成，包含新增源码和 C# 回归测试，不是依次叠加旧补丁。已应用过旧补丁的工作树应保留备份，再另建干净基线应用本补丁。不要在未知改动上强制 reset 或覆盖。
+
+上述序列包括原始完整培养补丁以及后续独立修复。当前顺序和 SHA-256 以 [SOURCE_PATCH_SEQUENCE](SOURCE_PATCH_SEQUENCE_2026-10-11.json) 为准，所有条目依序单次应用后才构建。原始迁移清单继续描述下载包，不重写为新源码。检查失败时已应用部分保留，不能直接再次从第一份补丁叠加；先核对状态或另建干净目录。
 
 本机迁移另外发现启动时序问题，已生成独立 `patches/local-startup-fix-2026-10-11.patch`。仅在上述完整迁移补丁之后应用一次，先做正向检查；已应用时反向检查应通过。详见 [本机启动修复与验证边界](LOCAL_STARTUP_FIX_2026-10-11.md)，原始完整补丁保持不变。
 

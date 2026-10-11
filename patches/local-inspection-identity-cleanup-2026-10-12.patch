@@ -1,0 +1,423 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -103,6 +103,7 @@
+ 第十三层后本机新授权运行已分别完成实时开盾/补盾、受保护浓缩领奖及限额浓缩合成的独立余额和实际目标圣遗物奖励验收。历史失败/unknown不回写；只记录验收范围，不公开实际账户余额、掉落数量、运行标识或截图。
+ 
+ - 第十四层增加仅用于观测的天赋升级预览入口，复用角色导航，再核验完整官方角色名三帧、详情类型/完整标题/基础等级两帧及预览等级、具名材料tooltip和摩拉。提供尺寸、OCR字框/数字边缘、斜杠分离整数、等级字形颜色/加成及恢复世界的原始标量，供上层独立核验。未知字段为null；小币模型及稀字OCR/完整数量失败保持未知，不降低阈值。只有已核实页面的导航/材料tooltip/取消输入，未接入最终确认或升级消费。压缩静态回放存在失败，不等于物理新鲜截图通过；单角色实时预览仍待单独验收。
++- 第十五层仅扩宽只读预览的角色姓名区域，并在原生及外层保留完整字框四边至少2px、三次独立全名要求，不修改一般GetCharacter读取或校正截边OCR框。清理每个已核实页面需双帧且只允许一次Esc；过渡和未知页面不反复按键，完整派蒙菜单八个按钮及布局获双帧证明后才允许一次back。原始失败阶段/原因与清理原因分别返回，不能被清理失败覆盖。菜单识别不读取账号头部、昵称、UID或生日作为条件，私人图片不进入源码。未增加升级确认或周本消费功能。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -50,6 +50,7 @@
+ /// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
+ public static class TalentUpgradePreviewEvidence
+ {
++    public static readonly Rect InspectionNameReference=new(1460,124,264,52);
+     public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
+     public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
+     public static void ValidateRequest(string name,string type)
+@@ -67,8 +68,19 @@
+     }
+     public static bool Fresh(long first,long second,long now)=>first>=0 && second>first && second-first<=5000 &&
+         now>=second && now-second<=1500;
++    public static bool CharacterFrame(UpgradePreviewCharacter frame,string official)
++    {
++        if(!frame.Overview||frame.Width<800||frame.Width*9!=frame.Height*16||Normalize(frame.Name)!=Normalize(official)||frame.NameRows.Length!=1)return false;
++        var reference=InspectionNameReference;double scale=frame.Width/1920d;
++        var expected=new Rect((int)Math.Round(reference.X*scale),(int)Math.Round(reference.Y*scale),
++            (int)Math.Round(reference.Width*scale),(int)Math.Round(reference.Height*scale));
++        if(frame.NameRegion!=expected)return false;
++        var row=frame.NameRows[0];var box=frame.NameRegion;var bounds=row.Bounds;double margin=2*frame.Width/1920d;
++        return Normalize(row.Text)==Normalize(official)&&bounds.Width>0&&bounds.Height>0&&
++            bounds.Left-box.Left>=margin&&box.Right-bounds.Right>=margin&&bounds.Top-box.Top>=margin&&box.Bottom-bounds.Bottom>=margin;
++    }
+     public static bool CharacterTriple(UpgradePreviewCharacter[] frames,string official,long now)=>frames.Length==3 &&
+-        frames.All(f=>f.Overview&&Normalize(f.Name)==Normalize(official)) && Fresh(frames[0].ObservedAt,frames[1].ObservedAt,frames[1].ObservedAt) &&
++        frames.All(f=>CharacterFrame(f,official)) && Fresh(frames[0].ObservedAt,frames[1].ObservedAt,frames[1].ObservedAt) &&
+         Fresh(frames[1].ObservedAt,frames[2].ObservedAt,now) && frames[2].ObservedAt-frames[0].ObservedAt<=5000;
+     public static bool DetailPair(UpgradePreviewDetail a,UpgradePreviewDetail b,string type,long now)=>
+         a.Page&&b.Page&&a.Type==type&&b.Type==type&&a.Title.Length>0&&a.Title==b.Title&&
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -29,6 +29,7 @@
+     private CancellationToken token;
+     private bool opened;
+     private UpgradePreviewDetail? selectedDetail;
++    private string inspectionPhase="entry";
+     private static long Now()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+     private ImageRegion Capture()
+     {
+@@ -40,6 +41,13 @@
+     private static bool Overview(ImageRegion frame)
+     {using var found=frame.Find(CharacterDevelopmentAssets.Get(frame.Width,frame.Height).MenuRo);return found.IsExist();}
+     private static bool World(ImageRegion frame)=>ReadBackpackInventoryTask.World(frame)&&!Bv.IsInPromptDialog(frame)&&!Bv.IsInAnyClosableUi(frame);
++    private static UpgradePreviewCharacter Character(ImageRegion frame)
++    {
++        var reference=TalentUpgradePreviewEvidence.InspectionNameReference;
++        var rows=TalentUpgradePreviewReader.Rows(frame,reference,OcrFactory.Paddle);
++        return new(Now(),Overview(frame),string.Concat(rows.Select(r=>r.Text)).Trim()){
++            Width=frame.Width,Height=frame.Height,NameRegion=TalentUpgradePreviewReader.Scale(reference,frame.Width),NameRows=rows};
++    }
+     private async Task Delay(int ms=250)=>await Task.Delay(ms,token);
+     private UpgradePreviewDetail Detail()
+     {using var frame=Capture();var read=TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now());frames.Add(read);return read;}
+@@ -61,7 +69,7 @@
+         token.ThrowIfCancellationRequested();using var frame=Capture();
+         if(text=="天赋")
+         {
+-            if(!Overview(frame)||TalentUpgradePreviewEvidence.Normalize(CharacterSelectionHelper.ReadSelectedName(frame,frame.Width/1920d))!=official)
++            if(!TalentUpgradePreviewEvidence.CharacterFrame(Character(frame),official))
+                 throw new InvalidOperationException("fresh_selected_character_before_navigation_unverified");
+         }
+         else if(text=="升级")
+@@ -82,7 +90,9 @@
+     }
+     private async Task OpenTalent()
+     {
++        inspectionPhase="talent_tab_navigation";
+         await ClickKnownText("天赋",new(0,80,370,900));
++        inspectionPhase="talent_entry_pair";
+         Point[] Read(){using var frame=Capture();
+             if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("talent_list_page_unverified");
+             var rows=TalentUpgradePreviewReader.Rows(frame,new(1536,0,384,900),OcrFactory.Paddle)
+@@ -93,6 +103,7 @@
+         if(first.Length!=3||second.Length!=3||first.Zip(second).Any(p=>Math.Abs(p.First.Y-p.Second.Y)>6))
+             throw new InvalidOperationException("three_combat_talent_entries_pair_unverified");
+         int index=type switch{"普通攻击"=>0,"元素战技"=>1,_=>2};
++        inspectionPhase="talent_entry_click";
+         using var frame=Capture();if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("fresh_talent_list_before_click_unverified");
+         frame.ClickTo(second[index].X,second[index].Y);await Delay(500);
+     }
+@@ -121,34 +132,45 @@
+         await Delay(400);
+         return[first,second];
+     }
+-    private async Task<bool> Restore()
+-    {
+-        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));long? previousWorldAt=null;
+-        for(int i=0;i<12;i++)
+-        {
++    private async Task<(bool Restored,string Reason)> Restore()
++    {
++        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));var policy=new InspectionCleanupPolicy();
++        var timer=System.Diagnostics.Stopwatch.StartNew();
++        for(int i=0;i<32&&timer.ElapsedMilliseconds<10000;i++)
++        {
++            timeout.Token.ThrowIfCancellationRequested();
+             using var frame=Common.TaskControl.CaptureToRectArea(forceNew:true);
+             var at=Now();var focused=SystemControl.IsGenshinImpactActiveByProcess();var world=focused&&World(frame);
+-            frames.Add(new{phase="world_restore",observedAt=at,width=frame.Width,height=frame.Height,focused,worldVerified=world});
+-            if(!focused)return false;
+-            if(world)
+-            {
+-                if(previousWorldAt.HasValue&&TalentUpgradePreviewEvidence.Fresh(previousWorldAt.Value,at,at))return true;
+-                previousWorldAt=at;
+-            }
+-            else
+-            {
+-                previousWorldAt=null;
+-                if(!opened || Bv.IsInRevivePrompt(frame)||Bv.IsInDomain(frame))return false;
+-                var rows=TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle);
+-                var preview=TalentUpgradePreviewReader.PreviewPage(rows);
+-                var detail=TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now()).Page;
+-                var tooltip=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now()).Page;
+-                if(!Overview(frame)&&!preview&&!detail&&!tooltip)return false;
++            var blocked=!focused||Bv.IsInRevivePrompt(frame)||Bv.IsInDomain(frame);
++            string scene=world?"world":"unknown";
++            InspectionMenuFrame? menu=null;
++            if(!world&&focused&&!blocked&&opened)
++            {
++                // Only menu-grid labels are captured; private account header is outside this crop.
++                var menuRows=TalentUpgradePreviewReader.Rows(frame,InspectionPaimonMenuEvidence.ReferenceRegion,OcrFactory.Paddle);
++                menu=new(at,frame.Width,frame.Height,InspectionPaimonMenuEvidence.AccountFreeAnchors(menuRows));
++                if(!Bv.IsInPromptDialog(frame)&&InspectionPaimonMenuEvidence.Verified(menu))scene="paimon_menu";
++                else if(Overview(frame))scene="overview";
++                else
++                {
++                    var rows=TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle);
++                    if(TalentUpgradePreviewReader.PreviewPage(rows))scene="preview";
++                    else if(TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now()).Page)scene="detail";
++                    else if(TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now()).Page)scene="tooltip";
++                }
++            }
++            var action=policy.Observe(scene,at,timer.ElapsedMilliseconds,focused,blocked);
++            frames.Add(new{phase="world_restore",observedAt=at,width=frame.Width,height=frame.Height,focused,worldVerified=world,
++                scene,action=action.ToString(),menu});
++            if(action==InspectionCleanupAction.Restored)return(true,"world_restored");
++            if(action==InspectionCleanupAction.Blocked)return(false,focused?"cleanup_blocked_or_deadline":"cleanup_focus_lost");
++            if(action==InspectionCleanupAction.Escape)
++            {
+                 timeout.Token.ThrowIfCancellationRequested();Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
+             }
+             await Task.Delay(250,timeout.Token);
+         }
+-        return false;
++        return(false,"world_restore_deadline");
+     }
+     public async Task<string> Start(string characterName,string talentType,CancellationToken ct)
+     {
+@@ -156,7 +178,7 @@
+         var target=CharacterSelectionHelper.CreateTarget(characterName);
+         if(target.SkipDisplayNameConfirmation)throw new ArgumentException("Preview requires a complete stable official character display name.");
+         official=target.Name;type=talentType;
+-        bool restored=false,verified=false;string reason="unverified";
++        bool restored=false,verified=false;string primaryReason="unverified",cleanupReason="cleanup_not_started";
+         UpgradePreviewDetail? detailReceipt=null;UpgradePreviewFrame? previewReceipt=null;
+         UpgradePreviewCharacter[] names=[];var tooltips=new List<UpgradePreviewTooltip[]>();
+         var saved=new ConcurrentDictionary<string,ITaskTrigger>(GameTaskManager.TriggerDictionary??new());
+@@ -166,39 +188,43 @@
+             TaskTriggerDispatcher.Instance().ClearTriggers();Simulation.ReleaseAllKey();
+             for(int i=0;i<2;i++){using var initial=Capture();if(!World(initial))throw new InvalidOperationException("fresh_world_pair_required");await Delay();}
+             opened=true;
++            inspectionPhase="select_character";
+             await new CharacterDevelopmentStateMachineTask([official],CharacterDevelopmentCategory.Attribute|CharacterDevelopmentCategory.Weapon,true).Start(token);
++            inspectionPhase="character_identity";
+             var nameList=new List<UpgradePreviewCharacter>();
+             for(int i=0;i<3;i++)
+             {
+-                using var frame=Capture();var read=new UpgradePreviewCharacter(Now(),Overview(frame),
+-                    CharacterSelectionHelper.ReadSelectedName(frame,frame.Width/1920d)){
+-                        Width=frame.Width,Height=frame.Height,NameRegion=TalentUpgradePreviewReader.Scale(new(1466,131,244,38),frame.Width),
+-                        NameRows=TalentUpgradePreviewReader.Rows(frame,new(1466,131,244,38),OcrFactory.Paddle)};
++                using var frame=Capture();var read=Character(frame);
+                 nameList.Add(read);frames.Add(read);await Delay(200);
+             }
+             names=nameList.ToArray();if(!TalentUpgradePreviewEvidence.CharacterTriple(names,official,Now()))throw new InvalidOperationException("full_official_character_name_triple_unverified");
+-            await OpenTalent();var detail=await DetailPair();detailReceipt=detail.Second;selectedDetail=detailReceipt;
++            await OpenTalent();inspectionPhase="detail_read";var detail=await DetailPair();detailReceipt=detail.Second;selectedDetail=detailReceipt;
++            inspectionPhase="preview_navigation";
+             await ClickKnownText("升级",new(0,975,560,100));
++            inspectionPhase="preview_read";
+             using var recognizer=new ItemRecognizer();var preview=await PreviewPair(recognizer,detailReceipt.BaseLevel!.Value);previewReceipt=preview.Second;
+             foreach(var material in previewReceipt.Materials)
+             {
+                 var fresh=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
+                 if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,fresh.Second))throw new InvalidOperationException("preview_costs_changed");
++                inspectionPhase="material_tooltip";
+                 tooltips.Add(await Tooltip(fresh.Second.Materials.Single(m=>m.Name==material.Name)));
+             }
++            inspectionPhase="final_preview_read";
+             var final=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
+             if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,final.Second))throw new InvalidOperationException("final_preview_costs_changed");
+-            previewReceipt=final.Second;verified=true;reason="verified_read_only_preview";
+-        }
+-        catch(Exception ex){reason=ex is OperationCanceledException?"observation_timeout_or_cancelled":ex.Message;verified=false;}
++            previewReceipt=final.Second;verified=true;primaryReason="verified_read_only_preview";
++        }
++        catch(Exception ex){primaryReason=ex is OperationCanceledException?"observation_timeout_or_cancelled":ex.Message;verified=false;}
+         finally
+         {
+-            try{restored=await Restore();}catch{restored=false;}
++            try{var cleanup=await Restore();restored=cleanup.Restored;cleanupReason=cleanup.Reason;}
++            catch(Exception ex){restored=false;cleanupReason=ex is OperationCanceledException?"world_restore_deadline":"cleanup_failed:"+ex.GetType().Name;}
+             Simulation.ReleaseAllKey();TaskTriggerDispatcher.Instance().ClearTriggers();GameTaskManager.TriggerDictionary=saved;
+             TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t=>t.Priority).ToList());
+         }
+         ct.ThrowIfCancellationRequested();verified&=restored;
+-        logger.LogInformation("只读天赋升级预览：verified={Verified} restored={Restored} confirmationSubmitted=False reason={Reason}",verified,restored,reason);
++        logger.LogInformation("只读天赋升级预览：verified={Verified} restored={Restored} confirmationSubmitted=False phase={Phase} primaryReason={Primary} cleanupReason={Cleanup}",verified,restored,inspectionPhase,primaryReason,cleanupReason);
+         var reportFolder=Global.Absolute("log\\talent-upgrade-inspection");
+         var reportPath=System.IO.Path.Combine(reportFolder,DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".json");
+         var payload=JsonConvert.SerializeObject(new{
+@@ -208,7 +234,8 @@
+             currentBaseLevel=verified?previewReceipt?.Current:null,nextBaseLevel=verified?previewReceipt?.Next:null,
+             materials=verified?previewReceipt?.Materials.Select(m=>new{name=m.Name,owned=m.Quantity.Owned,required=m.Quantity.Required}).ToArray():null,
+             mora=verified?new{owned=previewReceipt?.Mora.Owned,required=previewReceipt?.Mora.Required}:null,
+-            evidenceVerified=verified,mainUiRestored=restored,confirmationSubmitted=false,reason=restored?reason:"world_restore_unverified",
++            evidenceVerified=verified,mainUiRestored=restored,confirmationSubmitted=false,primaryReason,cleanupReason,phase=inspectionPhase,
++            reason=primaryReason!="verified_read_only_preview"?primaryReason:restored?primaryReason:cleanupReason,
+             observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
+             evidence=new{characterIdentity=names,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionCleanupPolicy.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionCleanupPolicy.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionCleanupPolicy.cs
+@@ -0,0 +1,57 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++public sealed record InspectionMenuFrame(long ObservedAt,int Width,int Height,UpgradePreviewRow[] Anchors);
++public static class InspectionPaimonMenuEvidence
++{
++    public static readonly Rect ReferenceRegion=new(110,345,655,590); // Excludes account header/UID/birthday.
++    private static readonly (string Name,int X,int Y)[] Anchors=[("队伍配置",350,455),("好友",508,455),("成就",665,455),
++        ("角色",508,596),("背包",195,737),("任务",350,737),("地图",508,737),("冒险之证",195,878)];
++    public static UpgradePreviewRow[] AccountFreeAnchors(IEnumerable<UpgradePreviewRow> rows)=>rows
++        .Where(r=>Anchors.Any(a=>a.Name==TalentUpgradePreviewEvidence.Normalize(r.Text))).ToArray();
++    public static bool Verified(InspectionMenuFrame frame)
++    {
++        if(frame.Width<800||frame.Width*9!=frame.Height*16||frame.ObservedAt<0)return false;
++        double s=frame.Width/1920d;
++        foreach(var anchor in Anchors)
++        {
++            var matches=frame.Anchors.Where(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)==anchor.Name).ToArray();
++            if(matches.Length!=1)return false;
++            var box=matches[0].Bounds;
++            if(box.Width<10*s||box.Height<10*s||box.Height>55*s||
++                Math.Abs(box.X+box.Width/2d-anchor.X*s)>45*s||Math.Abs(box.Y+box.Height/2d-anchor.Y*s)>38*s)return false;
++        }
++        return true;
++    }
++}
++public enum InspectionCleanupAction { Wait,Escape,Restored,Blocked }
++/// <summary>At most one Escape per recognized layer; transition/unknown pages never trigger input.</summary>
++public sealed class InspectionCleanupPolicy
++{
++    private readonly HashSet<string> escaped=[];
++    private string candidate="";private long? candidateAt;private long? worldAt;private long? lastEscapeAt;
++    public InspectionCleanupAction Observe(string scene,long at,long elapsedMs,bool focused,bool blocked)
++    {
++        if(!focused||blocked||elapsedMs<0||elapsedMs>=10000)return InspectionCleanupAction.Blocked;
++        if(scene=="world")
++        {
++            candidate="";candidateAt=null;
++            if(worldAt.HasValue&&TalentUpgradePreviewEvidence.Fresh(worldAt.Value,at,at))return InspectionCleanupAction.Restored;
++            worldAt=at;return InspectionCleanupAction.Wait;
++        }
++        worldAt=null;
++        if(scene is not("overview" or "detail" or "preview" or "tooltip" or "paimon_menu"))
++        {candidate="";candidateAt=null;return InspectionCleanupAction.Wait;}
++        if(candidate!=scene||!candidateAt.HasValue)
++        {candidate=scene;candidateAt=at;return InspectionCleanupAction.Wait;}
++        if(!TalentUpgradePreviewEvidence.Fresh(candidateAt.Value,at,at))
++        {candidateAt=at;return InspectionCleanupAction.Wait;}
++        if(escaped.Contains(scene)||lastEscapeAt.HasValue&&elapsedMs-lastEscapeAt.Value<1000)return InspectionCleanupAction.Wait;
++        escaped.Add(scene);lastEscapeAt=elapsedMs;candidate="";candidateAt=null;
++        return InspectionCleanupAction.Escape;
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+@@ -18,7 +18,9 @@
+     }
+     [Fact] public void CharacterMustHaveThreeIndependentFullNamesOnOverview()
+     {
+-        UpgradePreviewCharacter[] f=[new(100,true,"目标角色"),new(400,true,"目标角色"),new(700,true,"目标角色")];
++        UpgradePreviewCharacter Name(long at)=>new(at,true,"目标角色"){Width=1920,Height=1080,
++            NameRegion=TalentUpgradePreviewEvidence.InspectionNameReference,NameRows=[new("目标角色",new(1470,132,100,30))]};
++        UpgradePreviewCharacter[] f=[Name(100),Name(400),Name(700)];
+         Assert.True(TalentUpgradePreviewEvidence.CharacterTriple(f,"目标角色",700));
+         Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f[0],f[1],f[1]],"目标角色",700));
+         Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f[0],f[1],f[2] with{Name="目标"}],"目标角色",700));
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionIdentityCleanupTests.cs
+@@ -0,0 +1,73 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class InspectionIdentityCleanupTests
++{
++    private static UpgradePreviewCharacter Frame(Rect row)=>new(100,true,"目标角色"){
++        Width=1920,Height=1080,NameRegion=TalentUpgradePreviewEvidence.InspectionNameReference,NameRows=[new("目标角色",row)]};
++    [Fact] public void WiderInspectionRegionProvidesNaturalMarginsWithoutCorrectingObservedBounds()
++    {
++        var raw=Frame(new(1465,132,160,34));
++        Assert.True(TalentUpgradePreviewEvidence.CharacterFrame(raw,"目标角色"));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(raw with{NameRegion=new(1466,131,244,38)},"目标角色"));
++        Assert.Equal(new Rect(1465,132,160,34),raw.NameRows[0].Bounds);
++    }
++    [Theory] [InlineData(1461,132,160,34)] [InlineData(1465,125,160,34)]
++    [InlineData(1465,132,258,34)] [InlineData(1465,132,160,43)]
++    public void AnyCropEdgeBelowTwoPixelsRemainsUnknown(int x,int y,int w,int h)=>
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(Frame(new(x,y,w,h)),"目标角色"));
++    [Fact] public void NameStillNeedsThreeIndependentExactFramesAndTheOverviewMarker()
++    {
++        var f=Frame(new(1465,132,160,34));
++        Assert.True(TalentUpgradePreviewEvidence.CharacterTriple([f,f with{ObservedAt=400},f with{ObservedAt=700}],"目标角色",700));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f,f with{ObservedAt=400},f with{ObservedAt=400}],"目标角色",700));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(f with{Overview=false},"目标角色"));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(f with{NameRows=[new("目标",f.NameRows[0].Bounds)]},"目标角色"));
++    }
++    [Fact] public void OneCharacterEscapeThenTransitionCannotOpenPaimonByRepeatedEscape()
++    {
++        var p=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("overview",100,0,true,false));
++        Assert.Equal(InspectionCleanupAction.Escape,p.Observe("overview",400,300,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("overview",800,700,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("overview",1600,1500,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("unknown",1900,1800,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("world",2200,2100,true,false));
++        Assert.Equal(InspectionCleanupAction.Restored,p.Observe("world",2500,2400,true,false));
++    }
++    [Fact] public void ExactPaimonMenuAllowsOneVerifiedBackAndNeverASecond()
++    {
++        var p=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("paimon_menu",100,0,true,false));
++        Assert.Equal(InspectionCleanupAction.Escape,p.Observe("paimon_menu",400,300,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("paimon_menu",1700,1600,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("paimon_menu",2000,1900,true,false));
++    }
++    [Theory] [InlineData("unknown",true,false)] [InlineData("overview",false,false)] [InlineData("overview",true,true)]
++    public void UnknownOrBlockedSceneNeverProducesInput(string scene,bool focused,bool blocked)
++    {
++        var p=new InspectionCleanupPolicy();
++        Assert.NotEqual(InspectionCleanupAction.Escape,p.Observe(scene,100,0,focused,blocked));
++        Assert.NotEqual(InspectionCleanupAction.Escape,p.Observe(scene,400,300,focused,blocked));
++    }
++    [Fact] public void LayerChangesRequireNewIndependentPairAndOneSecondSettling()
++    {
++        var p=new InspectionCleanupPolicy();p.Observe("preview",100,0,true,false);
++        Assert.Equal(InspectionCleanupAction.Escape,p.Observe("preview",400,300,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("detail",700,600,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,p.Observe("detail",1000,900,true,false));
++        Assert.Equal(InspectionCleanupAction.Escape,p.Observe("detail",1600,1500,true,false));
++        Assert.Equal(InspectionCleanupAction.Blocked,p.Observe("world",11000,10000,true,false));
++    }
++    [Fact] public void MenuProofRequiresEveryUniqueFullLabelAtItsActualGridPosition()
++    {
++        UpgradePreviewRow[] rows=[new("队伍配置",new(310,440,80,30)),new("好友",new(490,440,36,30)),new("成就",new(647,440,36,30)),
++            new("角色",new(490,581,36,30)),new("背包",new(177,722,36,30)),new("任务",new(332,722,36,30)),new("地图",new(490,722,36,30)),new("冒险之证",new(155,863,80,30))];
++        var f=new InspectionMenuFrame(100,1920,1080,rows);Assert.True(InspectionPaimonMenuEvidence.Verified(f));
++        Assert.False(InspectionPaimonMenuEvidence.Verified(f with{Anchors=rows[..7]}));
++        Assert.False(InspectionPaimonMenuEvidence.Verified(f with{Anchors=[..rows,rows[0]]}));
++        Assert.False(InspectionPaimonMenuEvidence.Verified(f with{Anchors=[rows[0] with{Bounds=new(1200,440,80,30)},..rows[1..]]}));
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionPaimonPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionPaimonPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionPaimonPrivateImageTests.cs
+@@ -0,0 +1,28 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class InspectionPaimonPrivateImageTests
++{
++    [Fact] [Trait("Fixture","PrivateInspectionCleanup")]
++    public void ActualMenuOnlyUsesAccountFreeGridLabelsAndIsNotLivePairProof()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_INSPECTION_CLEANUP_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Explicit private manifest required.");
++        var f=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        using var image=Cv2.ImRead(f.File);var c=f.ClientRect;
++        using var client=new Mat(image,new Rect(c[0],c[1],c[2],c[3]));
++        foreach(int width in new[]{1536,1920})
++        {
++            using var resized=new Mat();Cv2.Resize(client,resized,new Size(width,width*9/16));using var frame=new ImageRegion(resized.Clone(),0,0);
++            var rows=TalentUpgradePreviewReader.Rows(frame,InspectionPaimonMenuEvidence.ReferenceRegion,OcrFactory.Paddle);
++            var markers=InspectionPaimonMenuEvidence.AccountFreeAnchors(rows);
++            Assert.True(InspectionPaimonMenuEvidence.Verified(new(0,width,width*9/16,markers)),"Static complete menu grid must be proved before one back is allowed.");
++            Assert.DoesNotContain(markers,r=>r.Text.Contains("UID")||r.Text.Contains("生日"));
++        }
++    }
++    private sealed class Fixture{public string File{get;set;}="";public int[] ClientRect{get;set;}=[];}
++}

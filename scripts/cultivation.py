@@ -621,7 +621,7 @@ def _crafting_evidence(step: dict, plugin: Path, policy: dict, ids: set[str], de
         raise ValueError("unobserved Mora cost cannot be verified")
 
 
-def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target, run_directory, *, expected_policy=None) -> dict:
+def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target, run_directory, *, expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False) -> dict:
     """Validate the actual plugin report without writing or declaring target completion."""
     unknown = {"status": "unknown", "reason": "cultivation report unverified", "cultivation": None, "report": None}
     try:
@@ -721,9 +721,63 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
         materials_spent = {}
         steps = raw["steps"]
         verified_step_ids = []
+        resource_diagnostic = _object(raw.get('metadata', {}), 'metadata').get('diagnostic') == 'resource-coverage-only'
+        talent_diagnostic = _object(raw.get('metadata',{}),'metadata').get('diagnostic') == 'talent-upgrade-preview-only'
+        weekly_diagnostic = _object(raw.get('metadata',{}),'metadata').get('diagnostic') == 'weekly-conversion-inventory-only'
+        if type(expected_weekly_inventory) is not bool or expected_weekly_inventory is not weekly_diagnostic:
+            raise ValueError('weekly four-inventory diagnostic differs from exact current-run request')
+        if ('weeklyInventory' in raw) is not weekly_diagnostic:
+            raise ValueError('weekly inventory payload must belong to its isolated diagnostic')
+        if weekly_diagnostic:
+            if (mode!='scan' or profile is not None or plan is not None or inventory or steps or required_scan_ids or manual_ids
+                    or expected_talent_type is not None or validated_policy['originalResinBudget']!=0
+                    or validated_policy['condensedResinBudget']!=0 or validated_policy['maxMinutes']>3
+                    or any(validated_policy[key] for key in ('allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'))):
+                raise ValueError('weekly four-inventory diagnostic requires isolated scan, zero budget and <=3 minutes')
+            if __package__:
+                from .weekly_inventory import verify_weekly_inventory
+            else:
+                from weekly_inventory import verify_weekly_inventory
+            weekly_verified=verify_weekly_inventory(raw.get('weeklyInventory'),raw.get('startedAt'),raw.get('finishedAt'))
+            if claimed=='success' and not weekly_verified:
+                raise ValueError('weekly diagnostic success contradicts unknown native evidence')
+            if claimed=='success':
+                status,reason='success','verified four named weekly inventory stacks; no conversion or upgrade submitted'
+        if expected_talent_type is not None and not talent_diagnostic:
+            raise ValueError('requested single-talent preview report is not the isolated diagnostic')
+        if talent_diagnostic:
+            if (expected_talent_type not in ('普通攻击','元素战技','元素爆发') or mode!='scan' or profile is not None or plan is not None
+                    or inventory or steps or required_scan_ids or manual_ids or validated_policy['originalResinBudget']!=0
+                    or validated_policy['condensedResinBudget']!=0
+                    or any(validated_policy[key] for key in ('allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'))):
+                raise ValueError('single-talent preview requires exact requested type/isolated read-only zero budget')
+            if __package__:
+                from .talent_preview import verify_talent_preview
+            else:
+                from talent_preview import verify_talent_preview
+            preview_verified=verify_talent_preview(raw.get('talentPreview'),target['characterName'],expected_talent_type,
+                raw.get('startedAt'),raw.get('finishedAt'))
+            if claimed=='success' and not preview_verified:
+                raise ValueError('talent preview success contradicts unknown raw evidence')
+            if claimed=='success':
+                status,reason='success','verified read-only single-talent next-level costs; no upgrade submitted'
+        if resource_diagnostic:
+            if (mode != 'scan' or profile is not None or plan is not None or inventory or steps or required_scan_ids or manual_ids
+                    or validated_policy['originalResinBudget'] != 0 or validated_policy['condensedResinBudget'] != 0
+                    or any(validated_policy[key] for key in ('allowDomain', 'allowBoss', 'allowCrafting'))):
+                raise ValueError('resource coverage diagnostic must be isolated read-only/zero-budget')
+            if __package__:
+                from .resource_coverage import verify_resource_coverage
+            else:
+                from resource_coverage import verify_resource_coverage
+            coverage_verified = verify_resource_coverage(raw.get('resourceCoverage'), raw.get('startedAt'), raw.get('finishedAt'))
+            if claimed == 'success' and not coverage_verified:
+                raise ValueError('resource coverage success contradicts unknown resource evidence')
+            if claimed == 'success':
+                status, reason = 'success', 'verified read-only Mora/weapon-ore coverage; full upgrade budget not asserted'
         if mode == "scan" and steps:
             raise ValueError("read-only scan contains execution steps")
-        if claimed == "success" or mode == "execute" and steps:
+        if not resource_diagnostic and not talent_diagnostic and not weekly_diagnostic and (claimed == "success" or mode == "execute" and steps):
             if profile is None or plan is None:
                 raise ValueError("scan success or execution steps require profile and plan evidence")
             if mode == "scan":
@@ -854,6 +908,10 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
             "verifiedStepIds": verified_step_ids,
             "unverifiedStepIds": [step.get("stepId") for step in steps if step.get("stepId") not in verified_step_ids],
             "materialsSpent": materials_spent, "steps": clean_report["steps"]}
+        if talent_diagnostic:
+            cultivation.update(talentPreviewType=expected_talent_type,talentPreviewVerified=preview_verified,completedUpgrades=0)
+        if weekly_diagnostic:
+            cultivation.update(weeklyInventoryVerified=weekly_verified,completedUpgrades=0)
         return {"status": status, "reason": reason, "cultivation": cultivation, "report": clean_report}
     except (ValueError, TypeError, KeyError, OSError, json.JSONDecodeError) as error:
         return {**unknown, "reason": f"cultivation report verification failed: {error}"}

@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -972,6 +972,93 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(host.launched)
         self.assertEqual(result['adoptedGamePid'], 555)
         self.assertEqual(Path(result['adoptedGameExe']), self.root / 'game.exe')
+
+    def test_exact_existing_game_can_continue_pending_graphics_lease_after_full_readback(self):
+        class AdoptedHost(FakeHost):
+            def processes(self, names):
+                return [555] if 'GenshinImpact' in names else []
+
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.cfg.update(gameGraphicsProfile='config/fake-graphics.json', gameDisplaySettings=display,
+                        graceAfterGameClosedSec=0)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        snapshot_path = self.root / 'logs/runs/original/manual-graphics.json'
+        wf.atomic_json(snapshot_path, {'originalManualGraphics': 'retained'})
+        snapshot_before = snapshot_path.read_bytes()
+        lease = {'schemaVersion': 1, 'runId': 'original', 'state': 'pendingGameExit',
+                 'snapshotPath': 'logs/runs/original/manual-graphics.json', 'gamePids': [555]}
+        wf.atomic_json(wf._graphics_lease_path(self.root), lease)
+        with (patch.object(wf, 'verify_genshin_automation_graphics', return_value={'allMatched': True}) as verify,
+              patch.object(wf, 'observed_game_client_size', return_value={'width': 1920, 'height': 1080}) as client,
+              patch.object(wf, 'begin_graphics_lease', side_effect=AssertionError('must preserve original snapshot')),
+              patch.object(wf, 'restore_genshin_graphics_settings', side_effect=AssertionError('cannot restore running game'))):
+            _, result = self.run_flow(host=AdoptedHost(self.root), task='领取邮件', keep_game=True, allow_existing_game=True)
+        self.assertEqual(result['adoptedGamePid'], 555)
+        verify.assert_called_once()
+        client.assert_called_once_with(555)
+        self.assertEqual(result['graphicsVerification']['state'], 'passed')
+        self.assertEqual(wf.read_json(wf._graphics_lease_path(self.root))['runId'], 'original')
+        self.assertEqual(snapshot_path.read_bytes(), snapshot_before)
+
+    def test_pending_graphics_lease_cannot_continue_wrong_session_or_wrong_client_size(self):
+        class AdoptedHost(FakeHost):
+            def processes(self, names):
+                return [555] if 'GenshinImpact' in names else []
+
+        self.cfg.update(gameGraphicsProfile='config/fake-graphics.json',
+                        gameDisplaySettings={'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0})
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        wf.atomic_json(self.root / 'logs/runs/original/manual-graphics.json', {'original': 'retained'})
+        for prior_pid in (556, 555):
+            lease = {'schemaVersion': 1, 'runId': 'original', 'state': 'pendingGameExit',
+                'snapshotPath': 'logs/runs/original/manual-graphics.json', 'gamePids': [prior_pid]}
+            wf.atomic_json(wf._graphics_lease_path(self.root), lease)
+            host = AdoptedHost(self.root)
+            with (patch.object(wf, 'verify_genshin_automation_graphics', return_value={'allMatched': True}),
+                  patch.object(wf, 'observed_game_client_size', return_value={'width': 2560, 'height': 1440}),
+                  patch.object(wf, 'restore_genshin_graphics_settings', side_effect=AssertionError('cannot restore running game'))):
+                code, _ = self.run_flow(host=host, task='领取邮件', keep_game=True, allow_existing_game=True)
+            self.assertEqual(code, 6)
+            self.assertFalse(host.launched)
+            self.assertEqual(wf.read_json(wf._graphics_lease_path(self.root)), lease)
+
+    def test_physical_client_size_query_restores_thread_dpi_context_even_when_enumeration_fails(self):
+        for enumeration_ok in (True, False):
+            user32 = MagicMock()
+            context = [123]
+            calls = []
+
+            def set_dpi(value):
+                value = getattr(value, 'value', value)
+                calls.append(value)
+                previous, context[0] = context[0], value
+                return previous
+
+            def get_owner(hwnd, pointer):
+                pointer._obj.value = 555
+                return 1
+
+            def get_rectangle(hwnd, pointer):
+                pointer._obj.right = 1920 if context[0] == wf.ctypes.c_void_p(-4).value else 1536
+                pointer._obj.bottom = 1080 if context[0] == wf.ctypes.c_void_p(-4).value else 864
+                return True
+
+            user32.SetThreadDpiAwarenessContext.side_effect = set_dpi
+            user32.GetWindowThreadProcessId.side_effect = get_owner
+            user32.GetClientRect.side_effect = get_rectangle
+            user32.IsWindowVisible.return_value = True
+            user32.IsIconic.return_value = False
+            user32.EnumWindows.side_effect = lambda callback, _: bool(callback(123, 0)) if enumeration_ok else False
+            callback_factory = getattr(wf.ctypes, 'WINFUNCTYPE', wf.ctypes.CFUNCTYPE)
+            with (patch.object(wf.ctypes, 'WinDLL', return_value=user32, create=True),
+                  patch.object(wf.ctypes, 'WINFUNCTYPE', callback_factory, create=True), patch.object(wf.os, 'name', 'nt')):
+                if enumeration_ok:
+                    self.assertEqual(wf.observed_game_client_size(555), {'width': 1920, 'height': 1080})
+                else:
+                    with self.assertRaises(wf.WorkflowError):
+                        wf.observed_game_client_size(555)
+            self.assertEqual(calls, [wf.ctypes.c_void_p(-4).value, 123])
+            self.assertEqual(context[0], 123)
 
     def test_existing_game_override_rejects_multiple_processes(self):
         class MultipleGamesHost(FakeHost):

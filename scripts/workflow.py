@@ -280,6 +280,60 @@ def recover_pending_graphics_lease(root, game_pids):
                 snapshotPath=str(snapshot_path))
 
 
+def inherit_pending_graphics_lease(root, adopted_pid):
+    """Keep the original manual snapshot for the exact still-running game session."""
+    lease = read_json(_graphics_lease_path(root))
+    if (lease.get('schemaVersion') != GRAPHICS_LEASE_SCHEMA_VERSION
+            or lease.get('state') != 'pendingGameExit'
+            or lease.get('gamePids') != [adopted_pid]):
+        raise WorkflowError('旧画质租约未证明属于当前唯一游戏进程；未延后恢复。', 6)
+    snapshot_path = _lease_snapshot_path(root, lease)
+    if not snapshot_path.is_file() or not isinstance(read_json(snapshot_path), dict):
+        raise WorkflowError('原手动画质快照缺失；不能接续此游戏会话。', 6)
+    return lease
+
+
+def observed_game_client_size(pid):
+    """Read one visible game client rectangle; never move or resize its window."""
+    if os.name != 'nt':
+        raise WorkflowError('现有游戏客户区核验仅支持Windows。')
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.SetThreadDpiAwarenessContext.argtypes = [wintypes.HANDLE]
+    user32.SetThreadDpiAwarenessContext.restype = wintypes.HANDLE
+    sizes = []
+
+    def inspect(hwnd, _):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd):
+            rectangle = wintypes.RECT()
+            if user32.GetClientRect(hwnd, ctypes.byref(rectangle)):
+                width, height = rectangle.right - rectangle.left, rectangle.bottom - rectangle.top
+                if width > 0 and height > 0:
+                    sizes.append({'width': width, 'height': height})
+        return True
+
+    # GetClientRect is DPI-virtualized for an unaware Python caller. Change only
+    # this querying thread, then restore its exact previous context even on error.
+    previous_dpi = user32.SetThreadDpiAwarenessContext(ctypes.c_void_p(-4))
+    if not previous_dpi:
+        raise WorkflowError('无法建立线程物理像素查询上下文；未接续。', 6)
+    try:
+        if not user32.EnumWindows(callback_type(inspect), 0) or len(sizes) != 1:
+            raise WorkflowError('现有游戏没有唯一可见、非最小化的客户区；未接续。', 6)
+    finally:
+        if not user32.SetThreadDpiAwarenessContext(previous_dpi):
+            raise WorkflowError('查询后的线程DPI上下文未恢复；未接续。', 6)
+    return sizes[0]
+
+
 def begin_graphics_lease(root, directory, run_id):
     """Journal the manual profile before any automation graphics write occurs."""
     snapshot = snapshot_genshin_graphics_settings()
@@ -1407,6 +1461,7 @@ def task_selection(template, task=None, profile='configured'):
             'extras': {'领取邮件', '自动地脉花', '领取尘歌壶奖励'},
             'cultivation': {'领取邮件', '培养材料', '领取每日奖励'},
             'combat-rehearsal': {'战斗演练'},
+            'artifact-farming': {'圣遗物刷取'},
             'material-route': {'刀镡路线'},
             'material-route-session': {'刀镡路线'},
             'material-recovery': {'材料安全恢复'},
@@ -1670,7 +1725,7 @@ def check_resource_policy(global_config, names):
 
 
 def verify_cultivation_analysis(analysis, exe, run_id, mode, target, directory,
-                               *, execution_outcome='running', expected_policy=None):
+                               *, execution_outcome='running', expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False):
     """A log event is a pointer, not proof; validate its private report separately."""
     if target is None or not analysis.get('cultivation'):
         return analysis
@@ -1678,7 +1733,7 @@ def verify_cultivation_analysis(analysis, exe, run_id, mode, target, directory,
     try:
         verified = verify_cultivation_report(
             analysis['cultivation'], exe.parent, run_id, mode, target, directory,
-            expected_policy=expected_policy)
+            expected_policy=expected_policy, expected_talent_type=expected_talent_type, expected_weekly_inventory=expected_weekly_inventory)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         analysis.setdefault('warnings', []).append('培养报告尚未核验：' + str(exc))
         return analysis
@@ -1793,6 +1848,34 @@ def verify_existing_game(host, names, expected_path, expected_pid=None):
     return pid
 
 
+def fresh_artifact_day_review_identity(root, config, host, settings, *, profile_path,
+                                       quality_level, display_settings, adopted_pid=None):
+    """Only an explicit cross-day stage needs a new platform read before assignment."""
+    stage_path = Path(root) / 'state/artifact-window-stages' / (config['policy']['scopeId'] + '.json')
+    if not stage_path.is_file():
+        return None, None
+    stage = read_json(stage_path)
+    if not isinstance(stage, dict):
+        raise WorkflowError('跨日圣遗物stage不是有效对象；未登记新消费。', 6)
+    if stage.get('gameDayTransition') is None:
+        return None, None
+    if (not profile_path or not isinstance(display_settings, dict)
+            or display_settings.get('width') != 1920 or display_settings.get('height') != 1080):
+        raise WorkflowError('跨日圣遗物门禁要求明确画质profile及1920×1080当前显示配置；未登记新消费。', 6)
+    game_path = resolved(root, settings['gameExe']).resolve()
+    pid = verify_existing_game(host, settings['gameProcessNames'], game_path, expected_pid=adopted_pid)
+    if pid is None:
+        raise WorkflowError('跨日圣遗物门禁未找到当前唯一游戏进程；未登记新消费。', 6)
+    physical = observed_game_client_size(pid)
+    if physical != {'width': 1920, 'height': 1080}:
+        raise WorkflowError('跨日圣遗物门禁当前物理客户区不是1920×1080；未登记新消费。', 6)
+    graphics = verify_genshin_automation_graphics(profile_path=resolved(root, profile_path),
+        quality_level=quality_level, display_settings=display_settings)
+    if graphics.get('allMatched') is not True:
+        raise WorkflowError('跨日圣遗物门禁当前完整画质注册表不匹配；未登记新消费。', 6)
+    return {'pid': pid, 'exe': str(game_path), 'physicalClient': physical}, graphics
+
+
 def slow_stage_reason(performance, limits):
     stage = performance.get('currentStage')
     if not stage:
@@ -1855,9 +1938,17 @@ def execute(args, host=None):
     cultivation_group = None
     cultivation_mode = getattr(args, 'cultivation_mode', 'scan')
     cultivation_resin_check = bool(getattr(args, 'cultivation_resin_check', False))
+    cultivation_resource_check = bool(getattr(args, 'cultivation_resource_check', False))
+    cultivation_talent_preview = bool(getattr(args, 'cultivation_talent_preview', False))
+    cultivation_weekly_inventory = bool(getattr(args, 'cultivation_weekly_inventory', False))
+    talent_type = getattr(args, 'talent_type', None) or 'elemental-skill'
     cultivation_scan = False
     combat_rehearsal = False
     rehearsal_group = None
+    artifact_farming = False
+    artifact_config = None
+    artifact_group = None
+    artifact_lease = None
     material_route = False
     route_session = False
     material_recovery = False
@@ -1873,8 +1964,16 @@ def execute(args, host=None):
             publish(root, directory, result, current=not args.dry_run)
             try:
                 cfg = read_json(root / 'config/settings.json')
+                if cultivation_weekly_inventory and (cultivation_mode != 'scan' or graphics_check_only or cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview):
+                    raise WorkflowError('周本四库存只读诊断仅允许独立scan，不能与execute、其他诊断或画质验收组合。')
                 if cultivation_resin_check and (cultivation_mode != 'scan' or graphics_check_only):
                     raise WorkflowError('树脂只读探针不能与 execute 或画质验收组合。')
+                if cultivation_resource_check and (cultivation_mode != 'scan' or graphics_check_only or cultivation_resin_check):
+                    raise WorkflowError('资源覆盖只读探针只允许单独scan，不能与execute、树脂探针或画质验收组合。')
+                if cultivation_talent_preview and (cultivation_mode != 'scan' or graphics_check_only or cultivation_resin_check or cultivation_resource_check):
+                    raise WorkflowError('单天赋升级预览仅允许独立scan，不能与execute、资源/树脂探针或画质验收组合。')
+                if getattr(args,'talent_type',None) and not cultivation_talent_preview:
+                    raise WorkflowError('--talent-type 仅用于 --cultivation-talent-preview。')
                 if graphics_check_only and args.task:
                     raise WorkflowError('启动画质验收不能与单节点任务同时运行。')
                 execution_mode = getattr(args, 'execution_mode', None) or cfg.get('executionMode', 'foreground')
@@ -2036,12 +2135,22 @@ def execute(args, host=None):
                 base_path = exe.parent / 'User/OneDragon' / (base_name + '.json')
                 template = read_json(base_path)
                 profile = getattr(args, 'profile', None) or cfg.get('defaultProfile', 'configured')
+                artifact_farming = profile == 'artifact-farming' or args.task == '圣遗物刷取'
+                if artifact_farming:
+                    if args.task not in (None, '圣遗物刷取') or graphics_check_only or cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory:
+                        raise WorkflowError('圣遗物流程必须独立运行。')
+                    if offset_hours != 8 or reset_hour != 4:
+                        raise WorkflowError('圣遗物流程只支持UTC+8每日04:00游戏日。')
+                    from artifact_farming import inject_artifact_task, load_artifact_config
+                    artifact_config = load_artifact_config(resolved(root, getattr(args, 'artifact_config', None) or 'config/artifact-farming.json'))
+                    template = inject_artifact_task(template)
+                    result['mode'] = 'dry-run' if args.dry_run else 'artifact-farming'
                 route_session = profile == 'material-route-session'
                 material_recovery = profile == 'material-recovery'
                 party_preparation = profile == 'party-preparation'
                 material_route = profile in {'material-route', 'material-route-session', 'material-recovery', 'party-preparation'}
                 if material_route:
-                    if args.task or graphics_check_only or cultivation_resin_check:
+                    if (args.task and not (party_preparation and args.task == '队伍免费恢复')) or graphics_check_only or cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory:
                         raise WorkflowError('刀镡路线必须单独使用material-route档。')
                     if offset_hours != 8 or reset_hour != 4:
                         raise WorkflowError('刀镡路线只支持UTC+8每日04:00游戏日。')
@@ -2054,7 +2163,7 @@ def execute(args, host=None):
                     result['mode'] = 'dry-run' if args.dry_run else profile
                 combat_rehearsal = profile == 'combat-rehearsal'
                 if combat_rehearsal:
-                    if args.task or graphics_check_only or cultivation_resin_check:
+                    if args.task or graphics_check_only or cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory:
                         raise WorkflowError('战斗演练必须单独使用 combat-rehearsal 档，不能与其他节点或扫描/画质探针组合。')
                     from combat_rehearsal import inject_combat_rehearsal_task
                     template = inject_combat_rehearsal_task(template)
@@ -2063,15 +2172,33 @@ def execute(args, host=None):
                     if args.task not in (None, '培养材料') or not (profile == 'cultivation' or args.task == '培养材料'):
                         raise WorkflowError('树脂只读探针只允许 cultivation 扫描档或培养材料单节点，不能与 execute/画质验收/其他任务组合。')
                     result['cultivationResinCheck'] = True
+                if cultivation_resource_check:
+                    if args.task not in (None, '培养材料') or not (profile == 'cultivation' or args.task == '培养材料'):
+                        raise WorkflowError('资源覆盖只读探针仅允许培养scan档或培养材料单节点。')
+                    result['cultivationResourceCheck'] = True
+                if cultivation_weekly_inventory:
+                    if args.task not in (None,'培养材料') or not (profile=='cultivation' or args.task=='培养材料'):
+                        raise WorkflowError('周本四库存只读诊断仅允许培养scan档或培养材料单节点。')
+                    result['cultivationWeeklyInventory'] = True
+                if cultivation_talent_preview:
+                    if args.task not in (None,'培养材料') or not (profile=='cultivation' or args.task=='培养材料'):
+                        raise WorkflowError('单天赋升级预览仅允许培养scan档或培养材料单节点。')
+                    if talent_type not in ('normal-attack','elemental-skill','elemental-burst'):
+                        raise WorkflowError('天赋类型只允许 normal-attack、elemental-skill、elemental-burst。')
+                    result['cultivationTalentPreview'] = True
+                    result['cultivationTalentType'] = talent_type
                 if profile == 'cultivation' or args.task == '培养材料':
                     from cultivation import inject_cultivation_task, load_cultivation_config
                     cultivation_config = load_cultivation_config(
                         root / 'config/cultivation.json', cultivation_mode)
+                    if cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory:
+                        cultivation_config = {'target': cultivation_config['target'], 'executionEnabled': False,
+                            'policy': {'originalResinBudget': 0, 'condensedResinBudget': 0, **({'maxMinutes':3} if cultivation_talent_preview or cultivation_weekly_inventory else {})}}
                     template = inject_cultivation_task(template)
                 selected, names = task_selection(template, args.task, profile)
                 cultivation_scan = cultivation_config is not None and cultivation_mode == 'scan'
                 if cultivation_scan:
-                    selected = [key for key in (template['TaskOrder'] if cultivation_resin_check else selected)
+                    selected = [key for key in (template['TaskOrder'] if cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory else selected)
                                 if template['TaskDefinitions'][key] == '培养材料']
                     names = ['培养材料']
                     result['mode'] = 'cultivation-scan' if not args.dry_run else 'dry-run'
@@ -2079,7 +2206,7 @@ def execute(args, host=None):
                     result['cultivationMode'] = cultivation_mode
                 requested_profile_tasks = list(names)
                 result['requestedProfileTasks'] = requested_profile_tasks
-                if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route and not args.allow_repeat
+                if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route and not artifact_farming and not args.allow_repeat
                         and cfg.get('resumeVerifiedTasks', True)):
                     verified = prior_verified_tasks(root, result['gameDate'], names)
                     # Every cultivation attempt needs a new game snapshot, even after a scan.
@@ -2108,11 +2235,6 @@ def execute(args, host=None):
                         raise WorkflowError('需要管理员权限；请使用现有计划任务或 daily.bat。', 2)
                     if not exe.is_file() or not resolved(root, cfg['gameExe']).is_file():
                         raise WorkflowError('BetterGI 或游戏路径不存在。')
-                    if (graphics_isolation_enabled or _graphics_lease_path(root).is_file()):
-                        recovery = recover_pending_graphics_lease(
-                            root, host.processes(cfg['gameProcessNames']))
-                        if recovery.get('restored'):
-                            result['graphicsIsolation']['previousRunRecovery'] = recovery
                     allow_existing_game = bool(getattr(args, 'allow_existing_game', False))
                     if execution_mode == 'childSession':
                         if allow_existing_game:
@@ -2134,6 +2256,37 @@ def execute(args, host=None):
                         if adopted_game_pid is not None:
                             result.update(adoptedGamePid=adopted_game_pid,
                                           adoptedGameExe=str(adopted_game_path))
+                    if (graphics_isolation_enabled or _graphics_lease_path(root).is_file()):
+                        if adopted_game_pid is not None and _graphics_lease_path(root).is_file():
+                            old_lease = read_json(_graphics_lease_path(root))
+                            if old_lease.get('state') in {'active', 'pendingGameExit'}:
+                                inherited_lease = inherit_pending_graphics_lease(root, adopted_game_pid)
+                                if display_settings is None or not (graphics_profile or graphics_quality is not None):
+                                    raise WorkflowError('接续旧画质租约须明确配置并核验画质和客户区。', 6)
+                                inherited_graphics = verify_genshin_automation_graphics(
+                                    profile_path=resolved(root, graphics_profile) if graphics_profile else None,
+                                    quality_level=graphics_quality, display_settings=display_settings)
+                                size = observed_game_client_size(adopted_game_pid)
+                                size_matched = size == {key: display_settings[key] for key in ('width', 'height')}
+                                result['graphicsVerification'].update(required=True, state='checkingInherited',
+                                    runtimeRegistry=inherited_graphics, observedWindow=size, windowSizeMatched=size_matched)
+                                if (not inherited_graphics.get('allMatched')
+                                        or not size_matched):
+                                    result['graphicsVerification']['state'] = 'failed'
+                                    raise WorkflowError('现有游戏画质或实际客户区未匹配自动化配置；未启动。', 6)
+                                graphics_lease = inherited_lease
+                                result['graphicsIsolation'].update(state='inheritedPendingGameExit',
+                                    originalRunId=inherited_lease['runId'], snapshotPath=inherited_lease['snapshotPath'])
+                                result['graphicsVerification'].update(required=True, state='passed',
+                                    runtimeRegistry=inherited_graphics, observedWindow=size, windowSizeMatched=True)
+                                graphics_verification_required = True
+                            else:
+                                recovery = recover_pending_graphics_lease(root, existing_game)
+                                result['graphicsIsolation']['previousRunRecovery'] = recovery
+                        else:
+                            recovery = recover_pending_graphics_lease(root, existing_game)
+                            if recovery.get('restored'):
+                                result['graphicsIsolation']['previousRunRecovery'] = recovery
 
                     guard_names = cfg.get('networkGuardProcessNames', [])
                     if guard_names:
@@ -2220,7 +2373,28 @@ def execute(args, host=None):
                     raise WorkflowError('保持游戏打开仅用于单节点诊断。')
                 generated = make_config(template, selected, generated_name, patch,
                                         '无' if keep_game else '关闭游戏和软件',
-                                        skip_final_reward_check=cultivation_scan or combat_rehearsal or material_route)
+                                        skip_final_reward_check=cultivation_scan or combat_rehearsal or material_route or artifact_farming)
+                if artifact_farming:
+                    from artifact_farming import build_artifact_group, constrain_artifact_authorization
+                    result['artifactLaunchAttempted'] = False
+                    if not args.dry_run:
+                        current_identity, current_graphics = fresh_artifact_day_review_identity(
+                            root, artifact_config, host, cfg, profile_path=graphics_profile,
+                            quality_level=graphics_quality, display_settings=display_settings,
+                            adopted_pid=adopted_game_pid)
+                        if current_identity is not None:
+                            result['artifactDayReviewAdmission'] = {'currentGameIdentity': current_identity,
+                                'graphicsVerification': current_graphics, 'observedAt': utc_now()}
+                        artifact_config, artifact_lease = constrain_artifact_authorization(
+                            root, artifact_config, run_id, result['gameDate'], assign=True,
+                            **({'current_game_identity': current_identity} if current_identity is not None else {}))
+                        result['artifactAuthorization'] = artifact_lease
+                    artifact_group = build_artifact_group(run_id, artifact_config, result['gameDate'],
+                        read_json(global_path), dry_run=args.dry_run, bettergi_dir=exe.parent, authorization=artifact_lease)
+                    generated['TaskDefinitions'] = {key: artifact_group['Name'] if value == '圣遗物刷取' else value
+                        for key, value in generated['TaskDefinitions'].items()}
+                    atomic_json(directory / 'artifact-farming-group.json', artifact_group)
+                    result['artifactTarget'] = artifact_config['target']
                 if material_route:
                     from material_route import build_route_group, constrain_route_day, verify_route_file, prepare_material_route_plugin, build_route_session_group, constrain_route_session_day, build_route_recovery_group, build_party_preparation_group
                     if party_preparation:
@@ -2278,6 +2452,13 @@ def execute(args, host=None):
                         run_id, cultivation_config, cultivation_mode, read_json(global_path))
                     if cultivation_resin_check:
                         cultivation_group['Projects'][0]['JsScriptSettingsObject']['resinDiagnosticOnly'] = True
+                    if cultivation_resource_check:
+                        cultivation_group['Projects'][0]['JsScriptSettingsObject']['resourceDiagnosticOnly'] = True
+                    if cultivation_weekly_inventory:
+                        cultivation_group['Projects'][0]['JsScriptSettingsObject']['weeklyInventoryOnly'] = True
+                    if cultivation_talent_preview:
+                        cultivation_group['Projects'][0]['JsScriptSettingsObject'].update(talentPreviewOnly=True,
+                            talentPreviewType={'normal-attack':'普通攻击','elemental-skill':'元素战技','elemental-burst':'元素爆发'}[talent_type])
                     generated['TaskDefinitions'] = {
                         key: cultivation_group['Name'] if value == '培养材料' else value
                         for key, value in generated['TaskDefinitions'].items()}
@@ -2289,7 +2470,7 @@ def execute(args, host=None):
                 persistent_warnings = list(result['warnings'])
 
                 if args.dry_run:
-                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route:
+                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route and not artifact_farming:
                         hoyolab_summary = execute_hoyolab_checkin(root, dry_run=True)
                         result['hoyolabCheckin'] = hoyolab_summary
                         if hoyolab_summary.get('warning'):
@@ -2297,10 +2478,10 @@ def execute(args, host=None):
                     result.update(outcome='planned', executionOutcome='not_started')
                     code = 0
                 else:
-                    if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route
+                    if (not args.task and not graphics_check_only and not combat_rehearsal and not material_route and not artifact_farming
                             and cfg.get('checkpointOnly', True)):
                         raise WorkflowError('当前处于检查点阶段：请指定单项任务，完成实机验收后再启用整条龙。')
-                    previous = (None if graphics_check_only or cultivation_config is not None or combat_rehearsal or material_route
+                    previous = (None if graphics_check_only or cultivation_config is not None or combat_rehearsal or material_route or artifact_farming
                                 else prior_success(root, result['gameDate'], names))
                     if previous and not args.allow_repeat:
                         raise WorkflowError('同一游戏日已有成功记录 ' + previous + '，本次未重复运行。', 6)
@@ -2351,7 +2532,7 @@ def execute(args, host=None):
                         if not prelaunch_graphics.get('allMatched'):
                             raise WorkflowError(
                                 '自动化画质或窗口配置写入后校验失败；未启动游戏。')
-                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route:
+                    if not graphics_check_only and not cultivation_scan and not combat_rehearsal and not material_route and not artifact_farming:
                         hoyolab_summary = execute_hoyolab_checkin(root, dry_run=False)
                         result['hoyolabCheckin'] = hoyolab_summary
                         if hoyolab_summary.get('warning'):
@@ -2371,6 +2552,12 @@ def execute(args, host=None):
                         group_path = exe.parent / 'User/ScriptGroup' / (rehearsal_group['Name'] + '.json')
                         atomic_json(group_path, rehearsal_group)
                         result['runtimeCombatRehearsalGroup'] = str(group_path)
+                    if artifact_group is not None:
+                        from artifact_farming import verify_artifact_plugin
+                        result['artifactPlugin'] = verify_artifact_plugin(root / 'bgi-scripts/AutoGameArtifactFarm', exe.parent)
+                        group_path = exe.parent / 'User/ScriptGroup' / (artifact_group['Name'] + '.json')
+                        atomic_json(group_path, artifact_group)
+                        result['runtimeArtifactGroup'] = str(group_path)
                     if route_group is not None:
                         from material_route import prepare_material_route_plugin, verify_route_file, assign_route_day, assign_route_session_day
                         result['materialRoutePlugin'] = prepare_material_route_plugin(
@@ -2392,6 +2579,8 @@ def execute(args, host=None):
                     offsets = log_offsets(logs)
                     atomic_json(directory / 'log-offsets.json', offsets)
                     result['executionOutcome'] = 'starting'
+                    if artifact_lease is not None:
+                        result['artifactLaunchAttempted'] = True
                     if result.get('cultivationAuthorization'):
                         # A crash after this point requires a durable plugin checkpoint;
                         # absence of that evidence never refunds the authorization.
@@ -2596,6 +2785,9 @@ def execute(args, host=None):
                             break
                         analysis = analyze_log(text, names, execution_outcome='running', config_name=generated_name,
                                                run_id=run_id, cultivation_mode=cultivation_mode)
+                        if artifact_group is not None:
+                            from artifact_farming import verify_artifact_analysis
+                            analysis = verify_artifact_analysis(text, exe.parent, run_id, artifact_group, generated_name, 'running')
                         if rehearsal_group is not None:
                             from combat_rehearsal import verify_combat_rehearsal_analysis
                             analysis = verify_combat_rehearsal_analysis(
@@ -2609,13 +2801,19 @@ def execute(args, host=None):
                             cultivation_config['target'] if cultivation_config else None, directory,
                             execution_outcome='running', expected_policy=(
                                 json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
-                                if cultivation_group else None))
+                                if cultivation_group else None),expected_talent_type=(
+                                cultivation_group['Projects'][0]['JsScriptSettingsObject'].get('talentPreviewType')
+                                if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory)
                         performance = analyze_performance(text, names, now_elapsed_sec=elapsed)
                         result['performance'] = performance
                         result.update(tasks=analysis.get('tasks', []), rewards=analysis.get('rewards', {}),
                                       resinEvents=analysis.get('resinEvents', []), gameProcessSeen=game_seen)
                         if analysis.get('cultivation'):
                             result['cultivation'] = analysis['cultivation']
+                        if analysis.get('artifactFarming'):
+                            result['artifactFarming'] = analysis['artifactFarming']
+                        if analysis.get('artifactFarmingReport'):
+                            atomic_json(directory / 'artifact-farming-report.json', analysis['artifactFarmingReport'])
                         if analysis.get('materialRoute'):
                             result['materialRoute'] = analysis['materialRoute']
                         if analysis.get('materialRouteReport'):
@@ -2772,6 +2970,11 @@ def execute(args, host=None):
                     (directory / 'bettergi.log').write_text(text, encoding='utf-8')
                     analysis = analyze_log(text, names, execution_outcome=termination, config_name=generated_name,
                                            run_id=run_id, cultivation_mode=cultivation_mode)
+                    if artifact_group is not None:
+                        from artifact_farming import verify_artifact_analysis
+                        analysis = verify_artifact_analysis(text, exe.parent, run_id, artifact_group, generated_name, termination)
+                        if analysis.get('artifactFarmingReport'):
+                            atomic_json(directory / 'artifact-farming-report.json', analysis.pop('artifactFarmingReport'))
                     if rehearsal_group is not None:
                         from combat_rehearsal import verify_combat_rehearsal_analysis
                         analysis = verify_combat_rehearsal_analysis(
@@ -2793,7 +2996,9 @@ def execute(args, host=None):
                         cultivation_config['target'] if cultivation_config else None, directory,
                         execution_outcome=termination, expected_policy=(
                             json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
-                            if cultivation_group else None))
+                            if cultivation_group else None),expected_talent_type=(
+                            cultivation_group['Projects'][0]['JsScriptSettingsObject'].get('talentPreviewType')
+                            if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory)
                     result['performance'] = analyze_performance(text, names, now_elapsed_sec=time.monotonic() - start)
                     saved_errors = result['errors']
                     result.update({k: v for k, v in analysis.items() if k != 'schemaVersion'})
@@ -2884,6 +3089,15 @@ def execute(args, host=None):
                         result['gameStillRunning'] = None
                         result['warnings'].append('无法核实游戏进程是否仍在运行。')
             finally:
+                if artifact_lease is not None:
+                    try:
+                        from artifact_farming import finalize_artifact_checkpoint
+                        result['artifactAuthorization'] = finalize_artifact_checkpoint(root, artifact_lease,
+                            result.get('artifactFarming', {}), launch_attempted=result.get('artifactLaunchAttempted', False))
+                    except Exception as ledger_error:
+                        result['errors'].append('保存圣遗物检查点失败：' + str(ledger_error))
+                        result['outcome'] = 'unknown'
+                        code = 1
                 if route_lease is not None:
                     try:
                         from material_route import finalize_route_day, finalize_route_session_day
@@ -2979,7 +3193,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     run = commands.add_parser('run')
     run.add_argument('--task')
-    run.add_argument('--profile', choices=['core', 'extras', 'configured', 'cultivation', 'combat-rehearsal', 'material-route', 'material-route-session', 'material-recovery', 'party-preparation'])
+    run.add_argument('--profile', choices=['core', 'extras', 'configured', 'cultivation', 'combat-rehearsal', 'artifact-farming', 'material-route', 'material-route-session', 'material-recovery', 'party-preparation'])
+    run.add_argument('--artifact-config', default='config/artifact-farming.json', help='本机圣遗物目标、单次/批次预算与验证模式')
     run.add_argument('--preparation-config', default='config/party-preparation.json', help='固定神像零道具队伍恢复参数，仅party-preparation档读取')
     run.add_argument('--route-config', default='config/material-route.json', help='本机固定刀镡路线配置，仅material-route档读取')
     run.add_argument('--route-session-config', default='config/material-route-session.json', help='本机两段固定路线配置，仅material-route-session档读取')
@@ -2988,6 +3203,14 @@ def main(argv=None):
                      help='培养档默认只读取游戏；执行还需本机配置开启和材料类别验收')
     run.add_argument('--cultivation-resin-check', action='store_true',
                      help='培养扫描档仅检查树脂读取并导出 unknown 诊断报告，不扫描材料或执行日常')
+    run.add_argument('--cultivation-resource-check', action='store_true',
+                     help='单培养scan节点只读摩拉及三种武器经验矿覆盖，不执行日常、合成或升级')
+    run.add_argument('--cultivation-weekly-inventory', action='store_true',
+                     help='单培养scan节点只读残火灯烛、丝织之羽、否定裁断、异梦溶媒库存；不转换或消费')
+    run.add_argument('--cultivation-talent-preview', action='store_true',
+                     help='单培养scan节点只读当前目标的一项天赋下一等级成本，禁止确认升级')
+    run.add_argument('--talent-type', choices=['normal-attack','elemental-skill','elemental-burst'],
+                     help='只读天赋预览类型，默认 elemental-skill；仅与 --cultivation-talent-preview 使用')
     run.add_argument('--dry-run', action='store_true')
     run.add_argument('--no-delay', action='store_true')
     run.add_argument('--allow-repeat', action='store_true')

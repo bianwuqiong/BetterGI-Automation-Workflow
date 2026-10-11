@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$IncludeTalentPlanning, [switch]$IncludeCultivation)
+param([switch]$IncludeTalentPlanning, [switch]$IncludeCultivation, [switch]$IncludeArtifactFarming)
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
@@ -11,6 +11,9 @@ if ($IncludeTalentPlanning) {
 if ($IncludeCultivation) {
     $items += @('cultivation', 'party-preparation')
 }
+if ($IncludeArtifactFarming) {
+    $items += 'artifact-farming'
+}
 
 foreach ($name in $items) {
     $source = Join-Path $Config ($name + '.example.json')
@@ -18,7 +21,19 @@ foreach ($name in $items) {
     if (Test-Path -LiteralPath $target) {
         Write-Host ('Keep existing ' + $target)
     } else {
-        Copy-Item -LiteralPath $source -Destination $target
+        if ($name -eq 'artifact-farming') {
+            $artifactConfig = Get-Content -LiteralPath $source -Raw -Encoding UTF8 | ConvertFrom-Json
+            $artifactConfig.executionEnabled = $false
+            $artifactConfig.policy.scopeId = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
+            $artifactConfig.policy.originalResinBudget = 0
+            $artifactConfig.policy.condensedResinBudget = 0
+            $artifactConfig.policy.maxCrafts = 0
+            $artifactConfig.policy.domainValidated = $false
+            $artifactConfig.policy.craftingValidated = $false
+            $artifactConfig | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $target -Encoding UTF8
+        } else {
+            Copy-Item -LiteralPath $source -Destination $target
+        }
         Write-Host ('Created ' + $target)
     }
 }

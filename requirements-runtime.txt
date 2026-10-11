@@ -1,0 +1,2 @@
+# Real PNG/JPEG attachment integrity checks used by explicit source-phase review.
+Pillow>=12.3.0,<13

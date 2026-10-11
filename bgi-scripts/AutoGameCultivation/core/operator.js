@@ -2,9 +2,13 @@
 import { collectCraftingMaterialIds } from '../upstream/core/crafting.js';
 import { verifyWeaponGuideSession } from './weapon-guide.js';
 import { verifyBackpackInventory } from './backpack-evidence.js';
+import { readResourceCoverage } from './resource-coverage.js';
+import { readTalentPreview } from './talent-preview.js';
+import { readWeeklyInventory } from './weekly-inventory.js';
 import {parseInputs,readProfile,makeRequirements,scanGroups,normalizeCounts,buildPlan,candidateDomains,candidateBosses,candidateCrafting,createDomainParam,createBossParam,verifiedGain,verifiedCraft,gameWeekday,normalizeResinSnapshot,observedBudgetBlocker} from './safe.js';
 
 const cloneInventory=inventory=>JSON.parse(JSON.stringify(inventory));
+const enabled=value=>value===true||value==='true'||value==='True';
 const iso=at=>new Date(at).toISOString();
 const gameDay=at=>Math.floor((at+4*3600000)/86400000); // UTC+8 04:00 reset.
 const dailyOriginalReadPolicy=policy=>policy.dailyMode && policy.domainResin==='original'
@@ -39,7 +43,7 @@ export async function runCultivation(settings,api,data) {
   const report={schemaVersion:1,runId:input.runId,mode:input.mode,target:input.target,
     startedAt:new Date(started).toISOString(),profile:null,inventory:{},plan:null,blockers:[],warnings:[],steps:[],
     requiredScanIds:[],manualInventoryIds:[],inventoryReadDiagnostics:[],
-    status:'unknown',readOnly:input.mode==='scan',
+    status:'unknown',readOnly:input.mode==='scan',targetReached:false,
     metadata:{calculationScope:'角色/武器突破和天赋；不包括角色/武器等级升级经验与摩拉',
       sourceCommit:'3f1e938a6dcd5a34642dad03a91488db8d2da40c',inventoryZeroRequiresExplicitRecognition:true,
       capabilities:{profile:true,inventory:true,domain:'需要显式预算和本机验收/有界初验',boss:'需要显式预算和本机验收/有界初验；默认关闭',routes:'disabled:未安装/验收',weekly:'disabled:尚无安全适配',leyLine:'manual:未接入',upgrade:'manual:不自动升级',crafting:'需要显式允许和本机验收；计划仍仅是建议'}},
@@ -52,7 +56,32 @@ export async function runCultivation(settings,api,data) {
   if(await api.writeText(entryCheckpointPath,entryCheckpoint)!==true || api.readText(entryCheckpointPath)!==entryCheckpoint)
     throw new Error('初始unknown记录写入失败，未调用角色/库存/树脂或资源接口');
   try {
-    if(settings.resinDiagnosticOnly===true || settings.resinDiagnosticOnly==='true' || settings.resinDiagnosticOnly==='True') {
+    if([settings.weeklyInventoryOnly,settings.talentPreviewOnly,settings.resourceDiagnosticOnly,settings.resinDiagnosticOnly].filter(enabled).length>1)throw Error('只读诊断模式互斥，未调用游戏接口');
+    if(enabled(settings.weeklyInventoryOnly)) {
+      if(input.mode!=='scan'||input.policy.originalResinBudget!==0||input.policy.condensedResinBudget!==0||input.policy.maxMinutes>3
+          ||['allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'].some(key=>input.policy[key]))throw Error('周本四库存仅允许独立scan、零预算、最多3分钟、禁止所有执行');
+      report.metadata.diagnostic='weekly-conversion-inventory-only';
+      report.metadata.calculationScope='只读三种周本材料与异梦溶媒具名库存；不计算转换配方、费用或执行升级';
+      report.weeklyInventory=await readWeeklyInventory(api,started,started+input.policy.maxMinutes*60000);
+      report.status=report.weeklyInventory.allVerified?'success':'unknown';
+      report.blockers.push({code:'weekly_inventory_only',message:'只读取四项真实库存；不执行转换或消费，不宣称培养完成'});
+    } else if(enabled(settings.talentPreviewOnly)) {
+      if(input.mode!=='scan'||input.policy.originalResinBudget!==0||input.policy.condensedResinBudget!==0
+          ||['allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'].some(key=>input.policy[key]))throw Error('天赋预览仅允许scan、零预算、禁止所有执行');
+      report.metadata.diagnostic='talent-upgrade-preview-only';
+      report.metadata.calculationScope='当前目标单项天赋的下一基础等级所需材料与摩拉，只读预览';
+      report.talentPreview=await readTalentPreview(api,input.target.characterName,settings.talentPreviewType||'元素战技',started,started+input.policy.maxMinutes*60000);
+      report.status=report.talentPreview.evidenceVerified?'success':'unknown';
+      report.blockers.push({code:'talent_preview_only',message:'只核验下一等级预览，不确认升级、消费资源或宣称培养目标完成'});
+    } else if(settings.resourceDiagnosticOnly===true || settings.resourceDiagnosticOnly==='true' || settings.resourceDiagnosticOnly==='True') {
+      if(input.mode!=='scan'||settings.resinDiagnosticOnly===true||settings.resinDiagnosticOnly==='true'
+          ||settings.resinDiagnosticOnly==='True'||input.policy.originalResinBudget!==0||input.policy.condensedResinBudget!==0
+          ||input.policy.allowDomain||input.policy.allowBoss||input.policy.allowCrafting)throw Error('资源覆盖诊断仅允许单独scan、零预算、禁用所有资源执行');
+      report.metadata.diagnostic='resource-coverage-only';
+      report.resourceCoverage=await readResourceCoverage(api,started,started+input.policy.maxMinutes*60000);
+      report.status=report.resourceCoverage.allVerified?'success':'unknown';
+      report.blockers.push({code:'resource_coverage_only',message:'只核验摩拉与三种武器矿，不表示角色材料扫描、完整升级成本或实际升级完成'});
+    } else if(settings.resinDiagnosticOnly===true || settings.resinDiagnosticOnly==='true' || settings.resinDiagnosticOnly==='True') {
       if(input.mode!=='scan') throw new Error('树脂只读探针不能以执行模式运行');
       report.metadata.diagnostic='resin-only';
       report.resinObservation=await api.readResinSnapshot();

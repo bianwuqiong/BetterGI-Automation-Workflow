@@ -13,6 +13,8 @@
 
 培养扩展需在固定源码基线上应用当前完整[执行引擎补丁](patches/cultivation-engine.patch)再编译，详见[构建步骤](docs/TRANSFER_SETUP.md)。补丁包含新增源码及C#回归测试；它替代旧培养补丁，不应重复叠加。源码基线＋本仓库补丁共同提供最新修改版源码。实机诊断截图、账号记录、运行授权与库存不在公开包中。
 
+新增独立周本四库存只读入口 `--cultivation-weekly-inventory`：固定读取三种周本材料和异梦溶媒，JS/Python均重新核验原始具名、模型、数量和恢复双帧，任一不足保持unknown/null。临时零预算且不执行转换或消费；普通材料扫描保持原义。使用与证据边界见[培养脚本说明](bgi-scripts/AutoGameCultivation/README.md#独立周本四库存只读诊断)，离线测试不代表实机验收。
+
 本轮继续开发的启动修复、库存读取优化、游戏日边界、选路与派遣证据修复见[开发验收记录](docs/LOCAL_TRANSFER_VALIDATION_2026-10-11.md)。原始校验清单描述下载包快照；后续修改用独立补丁和验收记录追踪，不能把离线测试通过当作完整实机通过。
 
 ## 与 BetterGI 的关系
@@ -53,6 +55,7 @@ python scripts/audit_public_tree.py --tracked
 
 - Windows 10/11 x64；
 - Python 3.10 或更高版本；
+- 安装 `requirements-runtime.txt` 中的 Pillow（真实PNG/JPEG附件完整性核验）；
 - .NET 8 SDK（自行构建修改版 BetterGI 时）；
 - 原神简体中文界面；
 - 16:9 分辨率。BetterGI 上游推荐 `1920x1080` 窗口化、默认亮度，并要求关闭 HDR/滤镜。
@@ -64,6 +67,7 @@ python scripts/audit_public_tree.py --tracked
    ```powershell
    git clone https://github.com/bianwuqiong/BetterGI-Automation-Workflow.git
    cd BetterGI-Automation-Workflow
+   python -m pip install -r requirements-runtime.txt
    ```
 
 2. 获取带完整 GPL 源码的 BetterGI 修改分支：
@@ -71,12 +75,24 @@ python scripts/audit_public_tree.py --tracked
    ```powershell
    git clone --recurse-submodules --branch automation-baseline-2026-10-08 --single-branch `
      https://github.com/bianwuqiong/better-genshin-impact.git better-genshin-impact
-   git -C better-genshin-impact apply --check ../patches/cultivation-engine.patch
-   git -C better-genshin-impact apply ../patches/cultivation-engine.patch
+   $sequence = Get-Content docs/SOURCE_PATCH_SEQUENCE_2026-10-11.json -Raw -Encoding UTF8 | ConvertFrom-Json
+   if ((git -C better-genshin-impact rev-parse HEAD).Trim() -ne $sequence.sourceBaseCommit) { throw 'Unexpected source baseline' }
+   if (git -C better-genshin-impact status --porcelain) { throw 'Keep the existing changes; use a clean source checkout for first application' }
+   foreach ($entry in ($sequence.patches | Sort-Object order)) {
+       $text = [System.IO.File]::ReadAllText((Resolve-Path $entry.path)).Replace("`r`n", "`n")
+       $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+       $sha = [System.Security.Cryptography.SHA256]::Create()
+       try { $actual = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+       if ($actual -ne $entry.sha256) { throw ('Patch hash mismatch: ' + $entry.path) }
+       git -C better-genshin-impact apply --check ('../' + $entry.path)
+       if ($LASTEXITCODE -ne 0) { throw ('Patch check failed; preserve this checkout: ' + $entry.path) }
+       git -C better-genshin-impact apply ('../' + $entry.path)
+       if ($LASTEXITCODE -ne 0) { throw ('Patch application failed; preserve this checkout: ' + $entry.path) }
+   }
    dotnet build better-genshin-impact\BetterGenshinImpact.sln -c Release
    ```
 
-   固定基线的源码标签为 [`automation-baseline-2026-10-08`](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-baseline-2026-10-08)，提交 `d8c0aa238a949d7d74bfe5087f3a48e39771575a`。使用前应核对对应提交并阅读 `MODIFICATIONS.md`。
+   固定基线的源码标签为 [`automation-baseline-2026-10-08`](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-baseline-2026-10-08)，提交 `d8c0aa238a949d7d74bfe5087f3a48e39771575a`。按序列应用所有补丁一次，再编译；只应用原始培养补丁不能得到当前版本。已有修改不会被重置，失败或重复应用时保留目录并核对状态。使用前阅读 `MODIFICATIONS.md`。
 
 3. 初始化不会进入 Git 的本地配置：
 
@@ -95,6 +111,7 @@ python scripts/audit_public_tree.py --tracked
 运行离线测试：
 
 ```powershell
+python -m pip install -r requirements-dev.txt
 python -B -m unittest discover -s tests -v
 ```
 
