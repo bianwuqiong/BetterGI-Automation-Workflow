@@ -7,7 +7,11 @@
 
 一个面向 Windows 的原神日常自动化编排与核验项目。BetterGI 继续负责画面识别、路径、战斗和模拟输入；本项目负责一次运行的任务选择、互斥、时间预算、资源/VPN 保护、画质切换、日志隔离以及完成证据。
 
-当前固定为 **2026-10-08 基线**（包含 0.2.2 之后的改动），见[基线说明](docs/BASELINE_2026-10-08.md)。核心日常已完成实机全流程闭环验证（支持 Windows RDP 桌面分身后台免打扰与前台录屏双入口）；启动前支持联动 HoYoLAB 官方网页签到；邮件领取、浓缩合成、秘境结算与委托派遣均已支持精准机器事件核验；仓库不提供 BetterGI 或原神二进制文件。
+已保留 **2026-10-08 稳定基线**（包含 0.2.2 之后的改动），见[基线说明](docs/BASELINE_2026-10-08.md)。核心日常已完成实机全流程闭环验证（支持 Windows RDP 桌面分身后台免打扰与前台录屏双入口）；启动前支持联动 HoYoLAB 官方网页签到；邮件领取、浓缩合成、秘境结算与委托派遣均已支持精准机器事件核验；仓库不提供 BetterGI 或原神二进制文件。
+
+**2026-10-11 开发迁移快照已更新。** 最新瑞希培养流程已在开发机完成每日奖励与自然树脂清理，三个正常成功批次共37分48秒，尚未达到约20分钟目标。包含武器背包库存双帧读取、指南隐藏条目回退、单20原粹安全领奖与深灰加载修复，以及120秒以内的同run真实库存读数复用。默认配置仍只读；刀镡连续战斗、派遣重置及自动升级尚未验收。新电脑从[交接记录](docs/DEVELOPMENT_HANDOFF_2026-10-11.md)、[迁移步骤](docs/TRANSFER_SETUP.md)和[校验清单](docs/TRANSFER_MANIFEST_2026-10-11.json)继续。历史基线保持可用，不能把旧日常速度当作当前培养流程速度。
+
+培养扩展需在固定源码基线上应用当前完整[执行引擎补丁](patches/cultivation-engine.patch)再编译，详见[构建步骤](docs/TRANSFER_SETUP.md)。补丁包含新增源码及C#回归测试；它替代旧培养补丁，不应重复叠加。源码基线＋本仓库补丁共同提供最新修改版源码。实机诊断截图、账号记录、运行授权与库存不在公开包中。
 
 ## 与 BetterGI 的关系
 
@@ -35,7 +39,7 @@ BetterGI 使用 GNU GPL v3，允许修改和再发布，但需要保留声明、
 - BetterGI 安装目录、构建产物和模型文件；
 - `logs/`、`state/`、截图、进程转储和远程控制记录；
 - 本机路径、账号/UID、注册表完整导出、培养目标和库存；
-- `.env`、密钥、令牌、支付信息和二进制文件。
+- `.env`、密钥、令牌、私人支付信息和二进制文件；原有公开赞助渠道和经哈希审核的赞助图片保留。
 
 每次公开提交前运行：
 
@@ -65,6 +69,8 @@ python scripts/audit_public_tree.py --tracked
    ```powershell
    git clone --recurse-submodules --branch automation-baseline-2026-10-08 --single-branch `
      https://github.com/bianwuqiong/better-genshin-impact.git better-genshin-impact
+   git -C better-genshin-impact apply --check ../patches/cultivation-engine.patch
+   git -C better-genshin-impact apply ../patches/cultivation-engine.patch
    dotnet build better-genshin-impact\BetterGenshinImpact.sln -c Release
    ```
 
@@ -73,7 +79,7 @@ python scripts/audit_public_tree.py --tracked
 3. 初始化不会进入 Git 的本地配置：
 
    ```powershell
-   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/initialize_config.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/initialize_config.ps1 -IncludeCultivation
    ```
 
 4. 编辑 `config/settings.json`，填写 `bettergiExe`、`bettergiLogDir` 和 `gameExe`。可选 VPN 保护与前台进程清理默认关闭，避免在其他电脑上结束未知程序。
@@ -96,7 +102,7 @@ python -B -m unittest discover -s tests -v
 powershell -NoProfile -File scripts/run_task.ps1 -Task '合成树脂' -DryRun
 ```
 
-保持 `checkpointOnly=true`，逐项实机验证：
+保持 `checkpointOnly=false`，培养示例的 `executionEnabled=false`、零预算和独立账本限制真实消费。先做只读扫描，再逐项实机验证：
 
 ```powershell
 powershell -NoProfile -File scripts/run_task.ps1 -Task '合成树脂'
@@ -140,7 +146,11 @@ AI 不是正常流程依赖。失败、部分完成或证据不足时，优先�
 
 BetterGI Automation Workflow is a Windows orchestration and evidence layer for Genshin Impact daily tasks. BetterGI remains responsible for computer vision, navigation, combat, and simulated input; this repository adds per-run configuration, locking, budgets, resource guards, graphics-profile leasing, log isolation, and completion verification.
 
-The current version is the **2026-10-08 baseline**, including changes after 0.2.2; see [baseline notes](docs/BASELINE_2026-10-08.md). Continuous full `core` execution has been validated end-to-end under Windows RDP Child Session (non-intrusive background mode) and foreground recording mode, with preflight HoYoLAB web check-in integration and structured machine event verification. No BetterGI or game binaries are distributed here.
+The **2026-10-08 stable baseline** is retained, including changes after 0.2.2; see [baseline notes](docs/BASELINE_2026-10-08.md). Continuous full `core` execution has been validated end-to-end under Windows RDP Child Session (non-intrusive background mode) and foreground recording mode, with preflight HoYoLAB web check-in integration and structured machine event verification. No BetterGI or game binaries are distributed here.
+
+The **2026-10-11 development transfer** includes current inventory evidence, hidden-guide fallback, single-20 resin claims, gray-loading recovery, and bounded same-run inventory reuse. Daily rewards and natural-resin cleanup passed locally; three normal batches took 37m48, above the 20-minute target. Continuous handguard combat, dispatch reset, and automatic upgrades remain unverified. Start with the [handoff](docs/DEVELOPMENT_HANDOFF_2026-10-11.md), [setup](docs/TRANSFER_SETUP.md), and [manifest](docs/TRANSFER_MANIFEST_2026-10-11.json). Configuration defaults to read-only with zero spending budgets.
+
+Apply the [engine patch](patches/cultivation-engine.patch) to the retained source baseline and rebuild for this extension. It adds live resin observation, material crafting, party-deployment checks, HUD name verification, and disabled-by-default Zhongli hold-cast verification and single-round no-claim rehearsal. Only the avatar model uses CPU; read-only scans can skip final reward inspection while normal daily runs retain it. Private diagnostic screenshots and account records are excluded.
 
 ### Relationship to BetterGI
 
@@ -150,10 +160,10 @@ BetterGI is licensed under GNU GPL v3. Modified source may be redistributed when
 
 ### Quick start
 
-1. Clone this repository and the pinned `automation-workflow` branch of the modified BetterGI fork.
-2. Build BetterGI with the .NET 8 SDK.
+1. Clone this repository and the pinned `automation-baseline-2026-10-08` tag of the modified BetterGI fork.
+2. Apply the current complete engine patch to the clean baseline, then build with the .NET 8 SDK.
 3. Run `scripts/initialize_config.ps1` and fill the local configuration. Artifact-only goals do not require the talent calendar or book inventory; add `-IncludeTalentPlanning` when configuring talent upgrades.
-4. Keep `checkpointOnly=true` while validating each live task.
+4. Keep `checkpointOnly=false`, with cultivation execution disabled and spending budgets zero for read-only acceptance.
 5. Run the unit tests and a dry preview before any live task.
 6. Enable the full `core` only after every checkpoint succeeds on the target machine.
 

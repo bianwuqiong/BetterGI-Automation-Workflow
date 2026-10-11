@@ -435,7 +435,63 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['graphicsVerification']['state'], 'failed')
         self.assertEqual(result['graphicsVerification']['observedWindow'],
                          {'width': 2560, 'height': 1440})
-        self.assertIn('执行日常任务前停止', ' '.join(result['errors']))
+        self.assertIn('已停止本次自动化并保留诊断证据', ' '.join(result['errors']))
+
+    def test_runtime_graphics_change_is_guarded_only_while_game_is_alive(self):
+        display = {'width': 1920, 'height': 1080, 'windowed': True, 'monitor': 0}
+        self.cfg.update(checkpointOnly=False, resumeVerifiedTasks=False,
+                        gameDisplaySettings=display, verifyAutomationGraphicsAfterStart=True,
+                        restoreManualGraphicsAfterRun=False)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        for closes_game, finishes_flow in ((True, False), (False, False), (False, True)):
+            with self.subTest(closes_game=closes_game, finishes_flow=finishes_flow):
+                class ClosingHost(FakeHost):
+                    sleep_count = 0
+                    game_alive = True
+
+                    def processes(self, names):
+                        if self.launched and 'GenshinImpact' in names:
+                            return [888] if self.game_alive else []
+                        return []
+
+                    def launch(self, exe, name):
+                        host = self
+                        class FinishingProcess(FakeProcess):
+                            def poll(self):
+                                if host.sleep_count >= 3:
+                                    self.returncode = 0
+                                return self.returncode
+                        super().launch(exe, name)
+                        self.process = FinishingProcess(stuck=True)
+                        path = exe.parent / 'log/new.log'
+                        self.graphics_log = exe.parent / 'log' / ('graphics-' + uuid4().hex + '.log')
+                        self.graphics_log.write_text(path.read_text(encoding='utf-8').replace('一条龙和配置组任务结束\n', '') +
+                            '遮罩窗口已启动，游戏大小1920x1080，素材缩放1.00\n', encoding='utf-8')
+                        return self.process
+
+                    def advance(self, _):
+                        self.sleep_count += 1
+                        if finishes_flow and self.sleep_count == 1:
+                            with self.graphics_log.open('a', encoding='utf-8') as log:
+                                log.write('一条龙和配置组任务结束\n')
+                        if closes_game or (finishes_flow and self.sleep_count >= 2):
+                            self.game_alive = False
+
+                host = ClosingHost(self.root)
+                with (patch.object(wf, 'ensure_genshin_display_settings', return_value={}),
+                      patch.object(wf, 'verify_genshin_automation_graphics',
+                          side_effect=lambda **_: {'allMatched': host.sleep_count == 0}) as verify,
+                      patch.object(wf.time, 'monotonic', side_effect=lambda: host.sleep_count * 6.0),
+                      patch.object(wf.time, 'sleep', side_effect=host.advance)):
+                    _, result = self.run_flow(host=host)
+                if closes_game or finishes_flow:
+                    self.assertEqual(result['executionOutcome'], 'exited')
+                    self.assertEqual(result['graphicsVerification']['state'], 'passed')
+                    self.assertEqual(verify.call_count, 2)  # preflight and one live-game check
+                else:
+                    self.assertEqual(result['executionOutcome'], 'graphics_verification_failed')
+                    self.assertEqual(result['graphicsVerification']['state'], 'failed')
+                    self.assertEqual(verify.call_count, 3)
 
     def test_graphics_check_exits_successfully_without_running_daily_tasks(self):
         outer = self

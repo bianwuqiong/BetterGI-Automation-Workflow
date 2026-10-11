@@ -23,7 +23,8 @@ ALLOWED_MEDIA = {
         'cedd7f4846be2fc5402419d27eaeb90caf5d2e1e120d1dabe900e7a43322513a',
 }
 ALLOWED_SPONSOR_TEXT = {
-    '.gitignore', '.github/FUNDING.yml', 'CHANGELOG.md', 'README.md', 'SUPPORT.md'
+    '.gitignore', '.github/FUNDING.yml', 'CHANGELOG.md', 'README.md', 'SUPPORT.md',
+    'docs/TRANSFER_MANIFEST_2026-10-11.json'
 }
 PATTERNS = {
     'Windows user-profile path': re.compile(r'(?i)[A-Z]:\\Users\\[^\\\s"\']+'),
@@ -56,8 +57,11 @@ def main() -> int:
     findings: list[str] = []
     for path in files(args.tracked):
         relative = path.relative_to(ROOT).as_posix()
-        if (relative == 'scripts/audit_public_tree.py'
-                or relative.startswith(('tests/.artifacts/', 'logs/', 'state/'))):
+        if relative.startswith(('tests/.artifacts/', 'logs/', 'state/', 'backups/', '.codex-remote-attachments/')):
+            if args.tracked:
+                findings.append(f'{relative}: private runtime directory tracked')
+            continue
+        if relative == 'scripts/audit_public_tree.py':
             continue
         if path.suffix.lower() in BLOCKED_SUFFIXES:
             expected = ALLOWED_MEDIA.get(relative)

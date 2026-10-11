@@ -1,0 +1,5 @@
+{
+  "expectedTeam": ["桑多涅", "奥黛塔", "八重神子", "钟离"],
+  "allowStatueRevival": true,
+  "timeoutSeconds": 120
+}

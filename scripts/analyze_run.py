@@ -12,6 +12,7 @@ step.  Its result has this stable, JSON-serialisable shape::
       "resinEvents": [{"type", "count", "line"}],
       "warnings": [str],
       "flowEnded": bool,
+      "cultivation": None | {"claimedStatus", "mode", "readOnly", "reportRelativePath", ...},
     }
 
 Legacy BetterGI text is accepted only as narrow negative evidence, plus the
@@ -30,13 +31,22 @@ then can it establish a task status.  This distinguishes checked machine
 events from old, intent-only log prose.  A future runner should emit the event
 only after it has performed the relevant inventory/UI verification.
 
-Task-to-log attribution relies on ``一条龙任务执行: i/n`` markers.  The
-denominator must equal ``len(expected_tasks)``.  More than one complete or
+Builtin task attribution relies on ``一条龙任务执行: i/n`` markers. Normally the
+denominator counts builtins excluding the JS task ``培养材料``. Legacy mixed
+cultivation runs used the total including that group while keeping builtin
+ordinals. That alternate denominator requires one exact run/configuration,
+one 1/1 group, and its matching scoped cultivation event. More than one complete or
 started matching run, or markers with different denominators, is mixed input:
 task statuses remain unknown and rewards/resin events are omitted rather than
 cross-charged to an arbitrary run. ``config_name`` rejects a segment only when
 an exact BetterGI ``参数指定的一条龙配置：NAME`` or
 ``启用一条龙配置：NAME`` record names a different configuration.
+
+Cultivation events require the caller's ``run_id`` and ``cultivation_mode``
+scope. They remain unknown until the runner independently validates the saved
+report. All plugin evidence is retained in ``cultivation`` with
+``claimedStatus`` and ``reportVerified: false``; scan success is never proof of
+material farming.
 
 The module uses only the Python standard library and never calls an AI service.
 """
@@ -53,6 +63,8 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 _MARKER_RE = re.compile(r"一条龙任务执行\s*:\s*(\d+)\s*/\s*(\d+)")
+_GROUP_MARKER_RE = re.compile(r"配置组任务执行\s*:\s*(\d+)\s*/\s*(\d+)")
+_CULTIVATION_TASK = "培养材料"
 _EVENT_PREFIX = "[AUTO_GAME_EVENT]"
 _EVENT_STATUSES = {"success", "failed", "skipped", "unknown"}
 _FAILURE_RE = re.compile(r"(?:执行异常|执行失败|任务(?:执行)?失败|任务已取消|任务被取消|任务取消|已取消任务|连续战斗失败\d+次，任务终止)")
@@ -85,6 +97,10 @@ def _event_from_line(line: str) -> dict[str, Any] | None:
         return None
     try:
         event = json.loads(payload)
+        # Serilog quotes a JS JSON argument as a JSON string. Unwrap that
+        # transport layer once; nested strings and non-object payloads stay invalid.
+        if isinstance(event, str):
+            event = json.loads(event)
     except json.JSONDecodeError:
         return None
     return event if isinstance(event, dict) else None
@@ -125,11 +141,47 @@ def _verified_event_status(event: dict[str, Any], expected: set[str]) -> str | N
     task = event.get("task", event.get("taskName"))
     status = event.get("status")
     verified = event.get("evidenceVerified", event.get("evidence_verified"))
+    if not isinstance(task, str) or not isinstance(status, str):
+        return None
     if task not in expected or status not in _EVENT_STATUSES or verified is not True:
         return None
     if task == "合成树脂" and status in {"success", "skipped"} and not _valid_crafting_event(event, status):
         return None
     return str(status)
+
+
+def _cultivation_event(
+    event: dict[str, Any], run_id: str | None, mode: str,
+) -> dict[str, Any] | None:
+    """Retain a scoped claim for the runner to verify against its saved report.
+
+    A machine event does not prove the referenced file exists or contains the
+    same evidence. In particular, a successful scan proves no material farming.
+    """
+    if (
+        not isinstance(run_id, str)
+        or not run_id
+        or event.get("runId") != run_id
+        or event.get("task") != _CULTIVATION_TASK
+        or not isinstance(event.get("status"), str)
+        or event.get("status") not in {"success", "failed", "unknown", "blocked"}
+        or event.get("evidenceVerified") is not True
+        or event.get("mode") != mode
+        or event.get("reportRelativePath") != f"record/{run_id}.json"
+        or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id)
+    ):
+        return None
+    if mode == "scan":
+        if event.get("readOnly") is not True:
+            return None
+    elif mode == "execute":
+        if event.get("readOnly") is not None and event.get("readOnly") is not False:
+            return None
+    else:
+        return None
+    # Preserve all plugin evidence (steps, gains, inventory and warnings), but
+    # reserve reportVerified for the runner's independent file validation.
+    return {**event, "claimedStatus": event["status"], "reportVerified": False}
 
 
 def _matching_runs(lines: list[str], task_count: int) -> list[list[tuple[int, int]]]:
@@ -173,6 +225,48 @@ def _segment_bounds(run: list[tuple[int, int]], line_count: int) -> dict[int, tu
         end = run[position + 1][0] if position + 1 < len(run) else line_count
         bounds[ordinal] = (start, end)
     return bounds
+
+
+def _legacy_cultivation_total_run(lines: list[str], expected: list[str], run_id: str | None,
+                                config_name: str | None, mode: str) -> list[list[tuple[int, int]]]:
+    """Recognize only the fixed, uniquely scoped builtin+one cultivation group case."""
+    if (expected.count(_CULTIVATION_TASK) != 1 or len(expected) < 2
+            or len(set(expected)) != len(expected) or not run_id
+            or config_name != f"AutoGame_{run_id}"):
+        return []
+    markers = [(index, int(match[1]), int(match[2])) for index, line in enumerate(lines)
+               if (match := _MARKER_RE.search(line))]
+    builtin_count = len(expected) - 1
+    if not markers or any(total != len(expected) or not 1 <= ordinal <= builtin_count
+                          for _, ordinal, total in markers):
+        return []
+    candidates = _matching_runs(lines, len(expected))
+    if len(candidates) != 1 or len(candidates[0]) != len(markers):
+        return []
+    references = [(index, reference) for index, line in enumerate(lines)
+                  if (reference := _config_reference(line))]
+    groups = [(index, int(match[1]), int(match[2])) for index, line in enumerate(lines)
+              if (match := _GROUP_MARKER_RE.search(line))]
+    if (not references or any(reference != config_name for _, reference in references)
+            or len(groups) != 1 or groups[0][1:] != (1, 1)
+            or references[-1][0] >= min(groups[0][0], markers[0][0])):
+        return []
+    group_start = groups[0][0]
+    cultivation_index = expected.index(_CULTIVATION_TASK)
+    preceding = sum(name != _CULTIVATION_TASK for name in expected[:cultivation_index])
+    run = candidates[0]
+    if preceding and (len(run) < preceding or group_start <= run[preceding - 1][0]):
+        return []
+    if len(run) > preceding and group_start >= run[preceding][0]:
+        return []
+    group_end = next((index for index, _, _ in markers if index > group_start), len(lines))
+    plugin_events = [(index, event) for index, line in enumerate(lines)
+                     if (event := _event_from_line(line)) is not None
+                     and event.get('task', event.get('taskName')) == _CULTIVATION_TASK]
+    if (len(plugin_events) != 1 or not group_start < plugin_events[0][0] < group_end
+            or _cultivation_event(plugin_events[0][1], run_id, mode) is None):
+        return []
+    return candidates
 
 
 def _parse_rewards(lines: list[str]) -> dict[str, int]:
@@ -306,6 +400,8 @@ def analyze_log(
     *,
     execution_outcome: str = "exited",
     config_name: str | None = None,
+    run_id: str | None = None,
+    cultivation_mode: str = "execute",
 ) -> dict[str, Any]:
     """Analyze one supplied log slice without making completion assumptions."""
     lines = text.splitlines()
@@ -320,15 +416,25 @@ def analyze_log(
     if len(expected_set) != len(expected):
         warnings.append("expected_tasks contains duplicate names; event attribution is ambiguous")
 
-    runs = _matching_runs(lines, len(expected))
+    builtin_indexes = [index for index, name in enumerate(expected) if name != _CULTIVATION_TASK]
+    runs = _matching_runs(lines, len(builtin_indexes))
+    if not runs:
+        runs = _legacy_cultivation_total_run(lines, expected, run_id, config_name, cultivation_mode)
+        if runs:
+            warnings.append("legacy mixed cultivation markers use total task denominator; builtin ordinals mapped with exact run/config/group evidence")
     marker_denominators = {
         int(match.group(2)) for line in lines if (match := _MARKER_RE.search(line))
     }
-    mixed_input = len(runs) > 1 or len(marker_denominators) > 1
+    legacy_total_rejected = (not runs and bool(builtin_indexes)
+                             and expected.count(_CULTIVATION_TASK) == 1
+                             and marker_denominators == {len(expected)})
+    mixed_input = len(runs) > 1 or len(marker_denominators) > 1 or legacy_total_rejected
     selected_run: list[tuple[int, int]] | None = None
     config_rejected = False
     if mixed_input:
-        if len(marker_denominators) > 1:
+        if legacy_total_rejected:
+            warnings.append("legacy mixed cultivation denominator lacks unique exact run/config/group proof; refusing attribution")
+        elif len(marker_denominators) > 1:
             warnings.append("one-dragon markers have different denominators; refusing mixed-run attribution")
         else:
             warnings.append("multiple matching one-dragon runs in one log slice; refusing cross-run attribution")
@@ -353,7 +459,14 @@ def analyze_log(
         else:
             warnings.append("no one-dragon markers; legacy task prose was not attributed")
 
+    if not builtin_indexes and config_name:
+        references = [name for line in lines if (name := _config_reference(line))]
+        if references and config_name not in references:
+            warnings.append("cultivation group names a different configuration")
+            config_rejected = True
+
     event_by_task: dict[str, tuple[str, int, str]] = {}
+    cultivation: dict[str, Any] | None = None
     rejected_events = 0
     for number, line in enumerate(lines, start=1):
         event = _event_from_line(line)
@@ -361,22 +474,41 @@ def analyze_log(
             if _EVENT_PREFIX in line:
                 rejected_events += 1
             continue
+        task = str(event.get("task", event.get("taskName")))
+        if task == _CULTIVATION_TASK:
+            candidate = _cultivation_event(event, run_id, cultivation_mode)
+            if task not in expected_set or candidate is None:
+                rejected_events += 1
+                continue
+            cultivation = {**candidate, "line": number}
+            status = event["status"]
+            event_by_task[task] = (status, number, line)
+            continue
+        if run_id is not None and event.get("runId") not in (None, run_id):
+            rejected_events += 1
+            continue
         status = _verified_event_status(event, expected_set)
         if status is None:
             rejected_events += 1
             continue
-        task = str(event.get("task", event.get("taskName")))
         event_by_task[task] = (status, number, line)
     if rejected_events:
         warnings.append("ignored AUTO_GAME_EVENT without supported task, status, or evidenceVerified=true")
 
     if selected_run is not None:
         for ordinal, (start, end) in _segment_bounds(selected_run, len(lines)).items():
-            index = ordinal - 1
-            if index >= len(task_results):
+            builtin_index = ordinal - 1
+            if builtin_index >= len(builtin_indexes):
                 continue
+            index = builtin_indexes[builtin_index]
             name = expected[index]
-            status, reason, evidence = _legacy_task_status(name, lines[start:end], start)
+            # A JS group is a separate execution scope and may occur between
+            # builtins. Its failure prose must not contaminate the prior task.
+            group_start = next(
+                (pos for pos in range(start + 1, end) if _GROUP_MARKER_RE.search(lines[pos])),
+                end,
+            )
+            status, reason, evidence = _legacy_task_status(name, lines[start:group_start], start)
             task_results[index].update(status=status, reason=reason, evidence=evidence)
 
     # Exact machine events can establish a task without legacy prose, but they
@@ -388,7 +520,7 @@ def analyze_log(
         for item in task_results:
             if item["name"] in event_by_task:
                 status, number, line = event_by_task[item["name"]]
-                if selected_bounds and not (selected_bounds[0] <= number <= selected_bounds[1]):
+                if item["name"] != _CULTIVATION_TASK and selected_bounds and not (selected_bounds[0] <= number <= selected_bounds[1]):
                     continue
                 failure_lines = [
                     evidence["line"] for evidence in item.get("evidence", [])
@@ -404,11 +536,24 @@ def analyze_log(
                     reason="verified AUTO_GAME_EVENT",
                     evidence=[_evidence(number, line)],
                 )
+                if item["name"] == _CULTIVATION_TASK:
+                    item.update(
+                        status="unknown",
+                        reason="cultivation report requires independent verification",
+                    )
+
+    if mixed_input or config_rejected:
+        cultivation = None
 
     if selected_run is not None:
         start = selected_run[0][0]
         end = len(lines)
         flow_ended = any("一条龙和配置组任务结束" in line for line in lines[start:end])
+    elif not builtin_indexes and cultivation is not None:
+        flow_ended = any(
+            "一条龙和配置组任务结束" in line
+            for line in lines[cultivation["line"] - 1 :]
+        )
     else:
         flow_ended = False
     if not flow_ended:
@@ -437,6 +582,14 @@ def analyze_log(
     elif selected_run is not None:
         accounting_lines = lines[selected_run[0][0] :]
         line_offset = selected_run[0][0]
+    if run_id is not None:
+        # Preserve physical line numbers while excluding foreign-run machine
+        # claims from both completion evidence and resin accounting.
+        accounting_lines = [
+            "" if (event := _event_from_line(line)) is not None
+            and event.get("runId") not in (None, run_id) else line
+            for line in accounting_lines
+        ]
     resin_events = _parse_resin_events(accounting_lines)
     if line_offset:
         resin_events = [{**event, "line": event["line"] + line_offset} for event in resin_events]
@@ -452,6 +605,7 @@ def analyze_log(
         "resinEvents": resin_events,
         "warnings": warnings,
         "flowEnded": flow_ended,
+        "cultivation": cultivation,
     }
 
 
@@ -462,6 +616,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", help="optional JSON output path; otherwise writes stdout")
     parser.add_argument("--execution-outcome", default="exited")
     parser.add_argument("--config-name")
+    parser.add_argument("--run-id")
+    parser.add_argument("--cultivation-mode", choices=("scan", "execute"), default="execute")
     args = parser.parse_args(argv)
 
     tasks_source = Path(args.tasks_json)
@@ -474,6 +630,8 @@ def main(argv: list[str] | None = None) -> int:
         tasks,
         execution_outcome=args.execution_outcome,
         config_name=args.config_name,
+        run_id=args.run_id,
+        cultivation_mode=args.cultivation_mode,
     )
     rendered = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:

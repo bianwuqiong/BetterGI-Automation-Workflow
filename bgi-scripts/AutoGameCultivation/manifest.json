@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "name": "培养材料",
+  "version": "0.1.0",
+  "bgi_version": "0.64.0",
+  "description": "读取目标角色与相关材料库存，生成可核验培养计划。默认只读；资源执行需工作流预算和验收护栏。",
+  "authors": [{"name":"BetterGI Automation Workflow contributors"}],
+  "settings_ui": "settings.json",
+  "main": "main.js"
+}

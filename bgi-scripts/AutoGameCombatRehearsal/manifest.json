@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "name": "战斗演练",
+  "version": "0.1.0",
+  "bgi_version": "0.64.2",
+  "description": "单轮钟离与木偶星超导战斗验证；禁用领奖，不作为培养材料成功。",
+  "authors": [{"name": "BetterGI Automation Workflow contributors"}],
+  "settings_ui": "settings.json",
+  "main": "main.js"
+}

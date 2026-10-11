@@ -1,0 +1,1 @@
+{"manifest_version":1,"name":"刀镡路线","version":"0.2.1","bgi_version":"0.64.2-alpha.2","description":"固定刀镡路线、两段连续会话和独立安全恢复，实际到点、库存核验与当日去重；不使用树脂。","authors":[{"name":"BetterGI Automation Workflow contributors"}],"settings_ui":"settings.json","main":"main.js"}

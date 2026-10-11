@@ -12,8 +12,15 @@ This repository is an independent community workflow that depends on and modifie
 - Reviewed source tag: [`automation-baseline-2026-10-08`](https://github.com/bianwuqiong/better-genshin-impact/tree/automation-baseline-2026-10-08)
 - Modified source commit: `d8c0aa238a949d7d74bfe5087f3a48e39771575a`
 - Upstream base commit: `9424d1f3c344f8ba99363e0b0d3756f76bce836d`
-- Modification dates: 2026-09-12 through 2026-10-08
+- Modification dates: 2026-09-12 through 2026-10-11
+- Latest development source: the pinned baseline above plus `patches/cultivation-engine.patch`; see `docs/TRANSFER_MANIFEST_2026-10-11.json`. The baseline commit alone does not include the latest cultivation changes.
 
 This repository does not contain BetterGI binaries, Genshin Impact files, game assets, account data, or login credentials. BetterGI and Genshin Impact names are used only to identify compatibility and upstream origin. All related trademarks belong to their respective owners.
 
 The repository is distributed under GNU GPL v3. See [LICENSE](./LICENSE) and [the upstream and license notes](./docs/UPSTREAM_AND_LICENSE.md).
+
+## 培养计算模块 / Cultivation calculation modules
+
+`bgi-scripts/AutoGameCultivation/upstream/` 包含社区项目 [GenshinCultivationPlanner](https://github.com/yunxi001/GenshinCultivationPlanner) 的纯计算代码及静态数据，固定提交 `3f1e938a6dcd5a34642dad03a91488db8d2da40c`。原作者署名、GPL v3 许可证与基于 `genshin-db` 的 MIT 数据声明保留在该目录。该社区模块不是 BetterGI 官方的已验证功能。
+
+The cultivation plugin retains GPL v3 calculation modules and static data from GenshinCultivationPlanner at the pinned commit above. Original attribution, license and MIT data notices are preserved in its `upstream/` directory. This is an independent community component, not an officially validated BetterGI feature.

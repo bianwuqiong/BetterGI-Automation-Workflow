@@ -18,6 +18,8 @@ GPL v3 也说明，独立作品与 GPL 程序仅作为聚合发布时，不会�
 
 当前仓库不分发 BetterGI 二进制；它将用户引导至带完整源码和历史的 GitHub fork。以后若发布定制 BetterGI 二进制，下载页必须同时清楚链接到生成该二进制的精确源码提交，并保留 LICENSE 与修改声明。
 
+2026-10-11开发快照的完整对应源码由固定fork基线提交与本仓库的 `patches/cultivation-engine.patch` 共同组成。补丁包含新增文件；基线提交单独不包含最新培养改动。精确基线、补丁SHA-256及构建步骤见 [TRANSFER_MANIFEST_2026-10-11.json](TRANSFER_MANIFEST_2026-10-11.json) 和 [TRANSFER_SETUP.md](TRANSFER_SETUP.md)。
+
 ## 推荐的公开表述
 
 > 本项目是基于 BetterGI 的非官方自动化工作流，并维护一个遵循 GNU GPL v3 的 BetterGI 修改分支。BetterGI 的名称、原始代码和版权归其原作者及贡献者；本项目与 BetterGI 官方、米哈游及 HoYoverse 无隶属、赞助或认可关系。修改版问题请优先在本项目反馈。
