@@ -15,6 +15,19 @@ class NamedInventoryTests(unittest.TestCase):
         temp=tempfile.TemporaryDirectory(prefix='synthetic-bound-inventory-');self.addCleanup(temp.cleanup);self.root=Path(temp.name)
         self.packet,self.request,self.context=fixture(self.root)
     def verify(self,packet=None,context=None):return verify_named_inventory(self.packet if packet is None else packet,self.request,START,END,trusted_runtime_root=self.root,trusted_game_context=self.context if context is None else context)
+    def test_native_prebinding_failure_is_preserved_without_any_inventory_or_balance_success(self):
+        packet=deepcopy(self.packet);packet.update(nativeObservation=None,bindingReceipt=None,reason='synthetic process query denied')
+        result=self.verify(packet)
+        self.assertEqual(result['status'],'unknown');self.assertFalse(result['rawEvidenceVerified'])
+        self.assertIn('synthetic process query denied',result['reason'])
+        self.assertTrue(all(v['count'] is None for v in result['inventory'].values()))
+        mora=verify_bound_mora(packet,START,END,trusted_runtime_root=self.root,trusted_game_context=self.context)
+        self.assertEqual(mora['status'],'unknown');self.assertIsNone(mora['balance'])
+        self.assertIn('synthetic process query denied',mora['reason'])
+        packet['nativeObservation']={'status':'unknown','primaryReason':'synthetic known-page rejection','reason':'synthetic known-page rejection'}
+        named=self.verify(packet);self.assertEqual(named['status'],'unknown');self.assertIn('synthetic known-page rejection',named['reason'])
+        mora=verify_bound_mora(packet,START,END,trusted_runtime_root=self.root,trusted_game_context=self.context)
+        self.assertEqual(mora['status'],'unknown');self.assertIsNone(mora['balance']);self.assertIn('synthetic known-page rejection',mora['reason'])
     def test_complete_original_png_catalog_models_os_receipt_and_ui_pairs_pass_without_live_or_consumer_claim(self):
         result=self.verify();self.assertEqual(result['status'],'success',result.get('reason'));self.assertEqual(result['inventory']['104301']['count'],7)
         for key in ('liveVerified','sessionAfterVerified','consumptionVerified','targetReached'):self.assertFalse(result[key])

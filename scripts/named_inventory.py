@@ -188,6 +188,11 @@ def verify_named_inventory(packet,request,started_at,finished_at,*,trusted_runti
         read_start,read_finish=_packet_interval(packet,started_at,finished_at)
         if packet.get('request')!=request:
             raise ValueError('named inventory diagnostic packet scope mismatch')
+        if packet.get('nativeObservation') is None and isinstance(packet.get('reason'),str):
+            raise ValueError('native named binding/read failed before evidence: '+packet['reason'][:180])
+        raw=packet.get('nativeObservation')
+        if isinstance(raw,dict) and raw.get('status')=='unknown' and isinstance(raw.get('primaryReason'),str):
+            raise ValueError('native named readonly result remains unknown: '+raw['primaryReason'][:180])
         result['inventory']=verified_named_observation(packet.get('nativeObservation'),request,read_start,read_finish,
             trusted_runtime_root=trusted_runtime_root,trusted_game_context=trusted_game_context,binding_receipt=packet.get('bindingReceipt'),trusted_workflow_root=trusted_workflow_root)
         result.update(status='success',rawEvidenceVerified=True)
@@ -208,7 +213,11 @@ def verify_bound_mora(packet,started_at,finished_at,*,trusted_runtime_root,trust
             from resource_coverage import _mora_frame
             from weekly_inventory import rows,rect
         read_start,read_finish=_packet_interval(packet,started_at,finished_at)
+        if packet.get('nativeObservation') is None and isinstance(packet.get('reason'),str):
+            raise ValueError('native bound Mora binding/read failed before evidence: '+packet['reason'][:180])
         start,finish=_time(read_start),_time(read_finish);root=Path(trusted_runtime_root).resolve(strict=True);raw=packet.get('nativeObservation')
+        if isinstance(raw,dict) and raw.get('status')=='unknown' and isinstance(raw.get('reason'),str):
+            raise ValueError('native bound Mora result remains unknown: '+raw['reason'][:180])
         if (not isinstance(raw,dict) or raw.get('schemaVersion')!=1 or raw.get('source')!='bound_precious_items_bottom_mora'
                 or raw.get('readOnly') is not True or raw.get('confirmationSubmitted') is not False
                 or type(raw.get('completedUpgrades')) is not int or raw['completedUpgrades']!=0

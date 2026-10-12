@@ -121,6 +121,16 @@
       "order": 23,
       "path": "patches/local-named-inventory-2026-10-12.patch",
       "sha256": "839a651540f58bd42c50fe79376993c5272f568264373412222c81052dc2d964"
+    },
+    {
+      "order": 24,
+      "path": "patches/local-limited-process-identity-2026-10-12.patch",
+      "sha256": "254f9994de65f55a955ae7ec6ef41a94b0524a9949da72400b7b370679b223db"
+    },
+    {
+      "order": 25,
+      "path": "patches/local-known-backpack-navigation-2026-10-12.patch",
+      "sha256": "df2137723872925ad54eb7370143ffd97eb0a5490aeef3c5266740eae1970517"
     }
   ],
   "offlineValidation": {
@@ -345,5 +355,34 @@
     "actualConversionOrUpgradeExecutorIncluded": false,
     "runtimeCaptureDependencyRequired": "Fischless.GameCapture.dll",
     "validationDocument": "docs/LOCAL_NAMED_INVENTORY_2026-10-12.md"
+  },
+  "limitedProcessIdentityExtension": {
+    "selectedPureTests": 81,
+    "newPureTests": 2,
+    "queryRights": "PROCESS_QUERY_LIMITED_INFORMATION_0x1000",
+    "actualSameHandleProcessImageAndCreationTime": true,
+    "beforeAfterWindowOwnerFocusAndProcessLiveness": true,
+    "processStartedUtcTicksEncoding": "exact_decimal_string",
+    "originalIdentityAndCaptureStandardsUnchanged": true,
+    "actualNamedInventoryVerified": false,
+    "actualBoundMoraVerified": false,
+    "consumerSessionIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_PROCESS_IDENTITY_2026-10-12.md"
+  },
+  "knownBackpackNavigationExtension": {
+    "selectedPureTests": 94,
+    "newPureTests": 13,
+    "knownPagePurpose": "navigation_and_cleanup_only",
+    "checkedTemplates": 9,
+    "selectedTemplateThreshold": 0.8,
+    "completeHeaderAndTwoPixelEdgesRequired": true,
+    "uniqueSelectedTabAndSamePageCleanupPair": true,
+    "inventoryReaderCategoriesUnchanged": true,
+    "actualNamedInventoryVerified": false,
+    "actualBoundMoraVerified": false,
+    "consumerSessionIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_KNOWN_BACKPACK_NAVIGATION_2026-10-12.md"
   }
 }

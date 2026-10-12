@@ -9,6 +9,7 @@ config/hoyolab.json
 config/.hoyolab-*.tmp
 config/.hoyolab-credential-quarantine/
 config/cultivation.json
+config/local-named-scope.json
 config/material-route.json
 config/material-route-session.json
 config/material-route-validation.json

@@ -1,0 +1,208 @@
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/LimitedInventoryProcessIdentity.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/LimitedInventoryProcessIdentity.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/LimitedInventoryProcessIdentity.cs
+@@ -0,0 +1,96 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: actual process identity with fixed query-only limited rights.
++using System;
++using System.ComponentModel;
++using System.Globalization;
++using System.IO;
++using System.Runtime.InteropServices;
++using System.Text;
++using Microsoft.Win32.SafeHandles;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++internal sealed record InventoryProcessIdentity(int ProcessId, string ExecutablePath, string ProcessStartedUtcTicks);
++
++/// <summary>Queries one real process handle; never requests module/VM read or input rights.</summary>
++internal static class LimitedInventoryProcessIdentity
++{
++    internal const uint QueryLimitedInformation = 0x1000;
++    private const uint StillActive = 259;
++    private const long FileTimeEpochTicks = 504911232000000000;
++    [StructLayout(LayoutKind.Sequential)]
++    private struct NativeFileTime
++    {
++        public uint Low, High;
++        public readonly ulong Value => ((ulong)High << 32) | Low;
++    }
++    [DllImport("kernel32.dll", SetLastError = true)]
++    private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
++    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    private static extern bool QueryFullProcessImageNameW(SafeProcessHandle handle, uint flags, StringBuilder name, ref uint size);
++    [DllImport("kernel32.dll", SetLastError = true)]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    private static extern bool GetProcessTimes(SafeProcessHandle handle, out NativeFileTime creation, out NativeFileTime exit,
++        out NativeFileTime kernel, out NativeFileTime user);
++    [DllImport("kernel32.dll", SetLastError = true)]
++    [return: MarshalAs(UnmanagedType.Bool)]
++    private static extern bool GetExitCodeProcess(SafeProcessHandle handle, out uint code);
++    [DllImport("kernel32.dll", SetLastError = true)]
++    private static extern uint GetProcessId(SafeProcessHandle handle);
++    [DllImport("user32.dll", SetLastError = true)]
++    private static extern uint GetWindowThreadProcessId(nint window, out uint pid);
++    [DllImport("user32.dll")]
++    private static extern nint GetForegroundWindow();
++
++    private static Win32Exception Failure(string phase, string operation)
++    {
++        int code = Marshal.GetLastWin32Error();
++        var error = new Win32Exception(code, phase + ":limited_process_identity:" + operation + ":win32=" + code + ":" + new Win32Exception(code).Message);
++        error.Data["nativeSource"] = "limited_process_identity";
++        error.Data["nativePhase"] = phase;
++        error.Data["nativeOperation"] = operation;
++        return error;
++    }
++    private static uint WindowOwner(nint window, string phase)
++    {
++        if (GetWindowThreadProcessId(window, out uint owner) == 0) throw Failure(phase, "GetWindowThreadProcessId");
++        return owner;
++    }
++    internal static string StartedUtcTicks(ulong creation)
++    {
++        if (creation == 0 || creation > (ulong)(DateTime.MaxValue.Ticks - FileTimeEpochTicks))
++            throw new InvalidOperationException("actual_process_creation_time_invalid");
++        return checked((long)creation + FileTimeEpochTicks).ToString(CultureInfo.InvariantCulture);
++    }
++    internal static void RequireStableLiveWindow(int expectedPid, nint window, uint ownerBefore, uint ownerAfter,
++        nint foregroundBefore, nint foregroundAfter, uint processId, uint codeBefore, uint codeAfter, ulong exitTime)
++    {
++        if (expectedPid <= 0 || window == 0 || ownerBefore != (uint)expectedPid || ownerAfter != (uint)expectedPid
++            || processId != (uint)expectedPid || foregroundBefore != window || foregroundAfter != window
++            || codeBefore != StillActive || codeAfter != StillActive || exitTime != 0)
++            throw new InvalidOperationException("actual_game_PID_HWND_liveness_or_focus_changed_during_limited_query");
++    }
++    internal static InventoryProcessIdentity Query(nint window, int expectedPid, string phase)
++    {
++        if (expectedPid <= 0 || window == 0) throw new InvalidOperationException("actual_game_window_and_PID_required");
++        uint ownerBefore = WindowOwner(window, phase); nint foregroundBefore = GetForegroundWindow();
++        if (ownerBefore != (uint)expectedPid || foregroundBefore != window)
++            throw new InvalidOperationException("actual_game_window_owner_or_focus_changed_before_limited_query");
++        using var handle = OpenProcess(QueryLimitedInformation, false, (uint)expectedPid);
++        if (handle.IsInvalid) throw Failure(phase, "OpenProcess_QUERY_LIMITED_INFORMATION");
++        uint processId = GetProcessId(handle);
++        if (processId == 0) throw Failure(phase, "GetProcessId");
++        if (!GetExitCodeProcess(handle, out uint codeBefore)) throw Failure(phase, "GetExitCodeProcess_before");
++        uint size = 32768; var path = new StringBuilder((int)size);
++        if (!QueryFullProcessImageNameW(handle, 0, path, ref size)) throw Failure(phase, "QueryFullProcessImageNameW");
++        if (!GetProcessTimes(handle, out var creation, out var exit, out _, out _)) throw Failure(phase, "GetProcessTimes");
++        if (!GetExitCodeProcess(handle, out uint codeAfter)) throw Failure(phase, "GetExitCodeProcess_after");
++        uint ownerAfter = WindowOwner(window, phase); nint foregroundAfter = GetForegroundWindow();
++        RequireStableLiveWindow(expectedPid, window, ownerBefore, ownerAfter, foregroundBefore, foregroundAfter,
++            processId, codeBefore, codeAfter, exit.Value);
++        if (size == 0 || path.Length == 0 || !Path.IsPathFullyQualified(path.ToString()))
++            throw new InvalidOperationException("actual_process_executable_path_missing_or_not_absolute");
++        return new(expectedPid, Path.GetFullPath(path.ToString()), StartedUtcTicks(creation.Value));
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs
+@@ -54,14 +54,13 @@
+         backend = (BitBltCapture)capture; systemInfo = context.SystemInfo;
+         actualBackendSessionGeneration=backend.SessionGeneration;
+         if(actualBackendSessionGeneration<=0)throw new InvalidOperationException("actual_BitBlt_session_generation_missing");
+-        using var owner = SystemControl.GetProcessByHandle(context.GameHandle)
+-            ?? throw new InvalidOperationException("actual_game_window_owner_unavailable");
++        var owner = LimitedInventoryProcessIdentity.Query(context.GameHandle, context.SystemInfo.GameProcessId, "binding_constructor");
+         var area = context.SystemInfo.CaptureAreaRect;
+         var rectangle = new Rect(area.Left, area.Top, area.Width, area.Height);
+         if (rectangle.Width != 1920 || rectangle.Height != 1080)
+             throw new InvalidOperationException("minimum_session_requires_current_native_1920x1080_capture_context");
+-        Binding = new(owner.Id, context.GameHandle.ToInt64(), owner.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+-            Path.GetFullPath(owner.MainModule?.FileName ?? throw new InvalidOperationException("actual_game_exe_path_missing")),
++        Binding = new(owner.ProcessId, context.GameHandle.ToInt64(), owner.ProcessStartedUtcTicks,
++            owner.ExecutablePath,
+             Generations.GetValue(systemInfo, _ => new(Guid.NewGuid().ToString("N"))).Value,
+             actualBackendSessionGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture),
+             backend.GetType().Assembly.ManifestModule.ModuleVersionId.ToString("N"), rectangle);
+@@ -78,10 +77,9 @@
+             || !ReferenceEquals(TaskTriggerDispatcher.GlobalGameCapture, backend) || !backend.IsCapturing||backend.SessionGeneration!=actualBackendSessionGeneration
+             || context.GameHandle.ToInt64() != Binding.WindowHandle || context.SystemInfo.GameProcessId != Binding.ProcessId)
+             throw new InvalidOperationException("game_or_actual_capture_lifecycle_changed");
+-        using var owner = SystemControl.GetProcessByHandle(context.GameHandle)
+-            ?? throw new InvalidOperationException("game_window_owner_lost");
+-        if (owner.HasExited || owner.Id != Binding.ProcessId || owner.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) != Binding.ProcessStartedUtcTicks
+-            || !string.Equals(Path.GetFullPath(owner.MainModule?.FileName ?? ""), Binding.ExecutablePath, StringComparison.OrdinalIgnoreCase)
++        var owner = LimitedInventoryProcessIdentity.Query(context.GameHandle, Binding.ProcessId, "binding_assert_current");
++        if (owner.ProcessId != Binding.ProcessId || owner.ProcessStartedUtcTicks != Binding.ProcessStartedUtcTicks
++            || !string.Equals(owner.ExecutablePath, Binding.ExecutablePath, StringComparison.OrdinalIgnoreCase)
+             || SystemControl.GetForegroundWindowHandle().ToInt64() != Binding.WindowHandle)
+             throw new InvalidOperationException("actual_game_PID_HWND_start_time_exe_or_focus_changed");
+         var area = context.SystemInfo.CaptureAreaRect;
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -542,7 +542,18 @@
+     {
+         if(!TaskRunner.HasOwnedSemaphore)throw new InvalidOperationException("bound_readonly_inventory_requires_actual_owned_solo_task_scope");
+         if(!await BoundInventoryGate.WaitAsync(0,ct))throw new InvalidOperationException("bound_readonly_inventory_operation_already_active");
+-        try{return await action(GameTask.Common.Job.NamedInventory.InventoryCaptureFactory.Create(),ct);}
++        string phase="actual_capture_factory_prebinding";
++        try{
++            var capture=GameTask.Common.Job.NamedInventory.InventoryCaptureFactory.Create();
++            phase="bound_readonly_action";
++            return await action(capture,ct);
++        }
++        catch(Exception error){
++            // Preserve the original exception, native error code and stack for private diagnostics.
++            error.Data["inventoryApiPhase"]=phase;
++            error.Data["inventoryApiSource"]="RunBoundInventoryRead";
++            throw;
++        }
+         finally{BoundInventoryGate.Release();}
+     }
+     public async Task<string> ReadNamedCultivationInventory(string requestJson,CancellationToken? customCt=null)
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/LimitedInventoryProcessIdentityTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/LimitedInventoryProcessIdentityTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/LimitedInventoryProcessIdentityTests.cs
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: anonymous limited-query identity guards; no process launch, capture or input.
++using System;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++using Xunit;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++public sealed class LimitedInventoryProcessIdentityTests
++{
++    [Fact] public void ActualFileTimeConvertsToExactDecimalUtcTicksWithoutFloatingPoint()
++    {
++        Assert.Equal("638950080000000001", LimitedInventoryProcessIdentity.StartedUtcTicks(134038848000000001));
++        Assert.Throws<InvalidOperationException>(()=>LimitedInventoryProcessIdentity.StartedUtcTicks(0));
++        Assert.Throws<InvalidOperationException>(()=>LimitedInventoryProcessIdentity.StartedUtcTicks(ulong.MaxValue));
++        Assert.Equal(0x1000u,LimitedInventoryProcessIdentity.QueryLimitedInformation);
++    }
++    [Fact] public void BothActualOwnersForegroundAndHandlePidMustRemainBound()
++    {
++        void Check(uint first=17,uint last=17,nint before=29,nint after=29,uint pid=17,uint codeBefore=259,uint codeAfter=259,ulong exit=0)
++            =>LimitedInventoryProcessIdentity.RequireStableLiveWindow(17,29,first,last,before,after,pid,codeBefore,codeAfter,exit);
++        Check();
++        Assert.Throws<InvalidOperationException>(()=>Check(first:18));
++        Assert.Throws<InvalidOperationException>(()=>Check(last:18));
++        Assert.Throws<InvalidOperationException>(()=>Check(before:30));
++        Assert.Throws<InvalidOperationException>(()=>Check(after:30));
++        Assert.Throws<InvalidOperationException>(()=>Check(pid:18));
++        Assert.Throws<InvalidOperationException>(()=>Check(codeBefore:0));
++        Assert.Throws<InvalidOperationException>(()=>Check(codeAfter:1));
++        // A process deliberately exiting with STILL_ACTIVE is still rejected by actual exit time.
++        Assert.Throws<InvalidOperationException>(()=>Check(exit:1));
++    }
++}
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -118,6 +118,8 @@
+ 
+ - 第二十三层新增正式只读通用培养库存与绑定摩拉入口：请求限8个完整实际CSV ID/名称，30页和每项两次选中观察，缺失保留null。原周本/Mora读取通过image-only共享体复用；新读取在原CSV/Item ONNX只读锁及本次新建CPU原OCR模型实例下推理，保留完整raw、模型资产、四边2px、双帧及world恢复证据，不复用全局旧模型缓存。内部工厂绑定真实PID/HWND/启动ticks字符串/坐标/实际BitBlt会话generation，每帧记录同步BitBlt调用区间、返回矩形与私有原PNG/像素SHA；Now只作输入前1500ms年龄上界。新鲜原world六模板/定义只读锁和同帧匹配记录供独立重核；未知和认证层不保存图像或输入。TaskRunner实际持锁所有者失效与网格输入守卫防止继承旧scope和主动焦点恢复，旧调用默认行为保留。本层需同步新的Fischless.GameCapture二进制依赖；不启用消费Session、转化、最终确认或任何实际升级，离线编译/纯回归不等于实机验收。
+ 
++- 第二十四层仅修复只读绑定的实际进程身份查询：使用固定PROCESS_QUERY_LIMITED_INFORMATION(0x1000)同一真实handle读取完整exe路径、创建FILETIME及前后exitCode/exitTime，避免MainModule所需的模块/VM读取权限。窗口owner/PID与前台在查询前后均须相同；原精确启动ticks字符串、exe、SystemInfo/真实BitBlt代次、MVID及1920×1080物理坐标仍持续核验。原Win32异常、code/HResult与堆栈保留，仅追加本机私有source/phase诊断；不得将预绑定失败伪称请求scope不匹配。没有管理员提权、游戏输入、消费者注册或资源功能，纯回归和编译不代表具名库存或摩拉实机通过。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
