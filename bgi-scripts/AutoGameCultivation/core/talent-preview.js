@@ -106,13 +106,25 @@ function coinIdentity(p){
   }else fail('talent_coin_variant_not_explicit_fixed_selection');
   if(p.coinName!=='摩拉'||number(p.coinScore)<.75||p.coinScore>1)fail('talent_primary_mora_model_missing');
 }
-function entryObservation(f,character,start,finish){
+function entryGlobalHeader(f,n,character,s){
+  if(n.nameSource!=='talent_global_header'||n.nameBoxMethod!=='whole_header_ocr_box_contains_name')fail('talent_entry_current_global_header_source_missing');
+  const box=rect(n.nameRegion),menu=rect(f.menuRegion),expected={x:roundEven(130*s),y:roundEven(20*s),width:roundEven(320*s),height:roundEven(85*s)},menuExpected={x:roundEven(40*s),y:roundEven(390*s),width:roundEven(320*s),height:roundEven(100*s)};
+  if(!same(box,expected)||!same(menu,menuExpected))fail('talent_global_header_menu_outside_exact_geometry');
+  if(n.nameRows?.length!==1||f.menuRows?.length!==1)fail('talent_global_header_menu_unique_complete_row_required');
+  const header=rowText(n.nameRows,box,s),label=rowText(f.menuRows,menu,s);
+  for(const [row,bounds] of [[n.nameRows[0],box],[f.menuRows[0],menu]]){const r=rect(row.bounds);if(Math.min(r.y-bounds.y,bounds.y+bounds.height-r.y-r.height)<2*s)fail('talent_global_header_menu_row_clipped');}
+  const match=header.match(/^(火|水|风|雷|草|冰|岩)元素\/([^/]+)$/);
+  if(n.headerRaw!==n.nameRows.map(r=>r.text).join('')||!match||match[2]!==clean(character)||n.name!==match[2]||n.headerElement!==match[1]||label!=='天赋')fail('talent_current_element_fullname_not_derived_from_raw_header');
+}
+function entryObservation(f,character,start,finish,globalHeader=false){
   const s=dimensions(f,start,finish);
   if(f.phase!=='talent_entry_observation'||f.focused!==true||f.overview!==true||f.promptVisible!==false||f.reviveVisible!==false)fail('talent_entry_known_focused_page_required');
-  const n=f.character;dimensions(n,start,finish);const nameBox=characterRegion(n);
-  if(n.observedAt!==f.observedAt||n.width!==f.width||n.height!==f.height||n.overview!==true||clean(n.name)!==clean(character)
-      ||n.nameRows?.length!==1||rowText(n.nameRows,nameBox,s)!==clean(character))fail('talent_entry_current_fullname_unverified');
-  const name=rect(n.nameRows[0].bounds);if(Math.min(name.y-nameBox.y,nameBox.y+nameBox.height-name.y-name.height)<2*s)fail('talent_entry_fullname_crop_edge');
+  const n=f.character;dimensions(n,start,finish);
+  if(n.observedAt!==f.observedAt||n.width!==f.width||n.height!==f.height||n.overview!==true)fail('talent_entry_current_fullname_unverified');
+  if(globalHeader)entryGlobalHeader(f,n,character,s);
+  else{const nameBox=characterRegion(n);if((n.nameSource??'attribute_right_full_name')!=='attribute_right_full_name'||clean(n.name)!==clean(character)
+      ||n.nameRows?.length!==1||rowText(n.nameRows,nameBox,s)!==clean(character))fail('talent_legacy_entry_current_fullname_unverified');
+    const name=rect(n.nameRows[0].bounds);if(Math.min(name.y-nameBox.y,nameBox.y+nameBox.height-name.y-name.height)<2*s)fail('talent_entry_fullname_crop_edge');}
   const box=region(f,'region',[1536,0,384,900]);if(!Array.isArray(f.rows))fail('talent_entry_original_rows_missing');
   const derived=[];
   for(const row of f.rows){if(typeof row.text!=='string'||!inside(rect(row.bounds),box))fail('talent_entry_raw_row_outside_roi');const match=clean(row.text).match(/^(?:Lv\.?|等级)?([0-9]{1,2})$/i);if(match&&Number(match[1])>=1&&Number(match[1])<=15)derived.push(row);}
@@ -142,20 +154,46 @@ function rollingIdentity(e,frames,names,character,start,finish){
   }
   fail('talent_rolling_final_triple_unverified');
 }
+function entryTriple(all,character,start,finish,globalHeader,completedAt=null){
+  const result=all.map(f=>entryObservation(f,character,start,finish,globalHeader));pair(all[0],all[1]);pair(all[1],all[2]);
+  if(completedAt!==null&&(completedAt<all[2].observedAt||completedAt-all[1].observedAt>1500||completedAt-all[2].observedAt>1500))fail('talent_entry_triple_stale_at_actual_read_completion');
+  for(const [a,b] of [[all[0].character,all[1].character],[all[1].character,all[2].character]])if(a.nameSource!==b.nameSource||clean(a.headerRaw??'')!==clean(b.headerRaw??''))fail('talent_global_header_source_or_raw_changed_between_frames');
+  for(let i=0;i<3;i++){
+    const [a,b,c]=result.map(values=>rect(values[i].bounds)),cy=r=>r.y+Math.floor(r.height/2),cx=r=>r.x+Math.floor(r.width/2);
+    if(Math.abs(cy(a)-cy(b))>6||Math.abs(cy(b)-cy(c))>6||Math.abs(cx(b)-cx(c))>6||new Set(result.map(values=>clean(values[i].text))).size!==1)fail('talent_entry_stable_geometry_or_text_required');
+  }
+  return result;
+}
 function entryBinding(e,frames,character,type,start,finish,names,details){
   const selected=e.twoPickedEntryFrames,click=e.entryClickFrame;
   if(!Array.isArray(selected)||selected.length!==2||!click||typeof click!=='object')fail('talent_explicit_entry_pair_click_required');
   const entries=frames.filter(f=>f.phase==='talent_entry_observation'),all=[...selected,click];
+  const globalHeader='talentEntryIdentitySource' in e||entries.some(f=>'menuRegion' in f||'menuRows' in f||f.character?.nameSource==='talent_global_header'
+    ||f.character?.nameBoxMethod==='whole_header_ocr_box_contains_name'||f.character?.headerRaw||f.character?.headerElement);
+  if(globalHeader){if(e.talentEntryIdentitySource!=='talent_global_header')fail('talent_global_header_identity_cannot_downgrade');
+    for(const n of e.characterIdentityTrials??names)if(n.nameSource!=='attribute_right_full_name'||n.nameBoxMethod!=='actual_name_ocr_box'
+        ||(n.headerRaw??'')!==''||(n.headerElement??'')!=='')fail('talent_initial_attribute_identity_cannot_be_header');}
   if(all.some(f=>!included(f,entries))||same(selected[0],selected[1])||selected.some(f=>same(f,click)))fail('talent_entry_references_not_independent_raw');
   const positions=all.map(f=>entries.findIndex(v=>same(v,f)));
   if(positions[1]!==positions[0]+1||positions[2]!==positions[1]+1)fail('talent_entry_refs_not_original_consecutive_sequence');
   if(selected[0].observedAt<=names.at(-1).observedAt||click.observedAt>=details[0].observedAt||click.observedAt-entries[0].observedAt>12000
       ||entries.some(f=>f.observedAt<names.at(-1).observedAt||f.observedAt>click.observedAt))fail('talent_entry_sequence_or_deadline_invalid');
-  const result=all.map(f=>entryObservation(f,character,start,finish));pair(selected[0],selected[1]);pair(selected[1],click);
-  for(let i=0;i<3;i++){
-    const [a,b,c]=result.map(values=>rect(values[i].bounds)),cy=r=>r.y+Math.floor(r.height/2),cx=r=>r.x+Math.floor(r.width/2);
-    if(Math.abs(cy(a)-cy(b))>6||Math.abs(cy(b)-cy(c))>6||Math.abs(cx(b)-cx(c))>6||new Set(result.map(values=>clean(values[i].text))).size!==1)fail('talent_entry_stable_geometry_or_text_required');
+  const rolling=['talentEntryObservationMethod','talentEntryObservationLimitMs','talentEntryObservationPollMs'].some(k=>k in e);
+  if(rolling){
+    if(e.talentEntryObservationMethod!=='bounded_contiguous_entry_triple'||e.talentEntryObservationLimitMs!==12000||e.talentEntryObservationPollMs!==300
+        ||!globalHeader||entries.length<3||entries.length>41||!same(all,entries.slice(-3))||click.observedAt-entries[0].observedAt>=12000)fail('talent_entry_rolling_method_limits_or_tail_invalid');
+    for(const [i,f] of entries.entries()){
+      integer(f.readCompletedAt,0,Number.MAX_SAFE_INTEGER);
+      if(f.focused!==true||f.promptVisible!==false||f.reviveVisible!==false||f.readCompletedAt<f.observedAt||f.readCompletedAt>finish
+          ||i&&f.observedAt-entries[i-1].readCompletedAt<300)fail('talent_entry_rolling_continued_after_abort_or_shortened_poll');
+    }
+    if(click.readCompletedAt-entries[0].observedAt>=12000)fail('talent_entry_completion_extends_original_deadline');
+    for(let i=0;i<entries.length-3;i++){
+      let valid=false;try{entryTriple(entries.slice(i,i+3),character,start,finish,globalHeader,entries[i+2].readCompletedAt);valid=true;}catch(error){if(error?.constructor!==Error)throw error;}
+      if(valid)fail('talent_entry_rolling_continued_after_first_legal_triple');
+    }
   }
+  const result=entryTriple(all,character,start,finish,globalHeader,rolling?click.readCompletedAt:null);
   const match=clean(result.at(-1)[TALENT_TYPES.indexOf(type)].text).match(/^(?:Lv\.?|等级)?([0-9]{1,2})$/i);
   if(Number(match[1])!==integer(details[0].displayLevel,1,13))fail('talent_requested_index_does_not_bind_detail_level');
 }
@@ -209,7 +247,7 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   if(details.length!==2||details[0].observedAt<=names[2].observedAt)fail('talent_detail_pair_missing');pair(details[0],details[1]);
   const a=detail(details[0],type,start,finish),b=detail(details[1],type,start,finish);
   if(!same(a,b)||!same(e.detailIdentityCarryover,details[1])||raw.talentName!==b.title)fail('talent_identity_carryover_mismatch');
-  if('characterIdentityMethod' in e||'twoPickedEntryFrames' in e||'entryClickFrame' in e||frames.some(f=>f.phase==='talent_entry_observation'))entryBinding(e,frames,character,type,start,finish,names,details);
+  if(['talentEntryObservationMethod','talentEntryObservationLimitMs','talentEntryObservationPollMs'].some(k=>k in e)||'talentEntryIdentitySource' in e||'characterIdentityMethod' in e||'twoPickedEntryFrames' in e||'entryClickFrame' in e||frames.some(f=>f.phase==='talent_entry_observation'))entryBinding(e,frames,character,type,start,finish,names,details);
   const previews=frames.filter(f=>'materials' in f&&'current' in f);
   if(previews.length<2||previews.length%2||previews[0].observedAt<=details[1].observedAt||!same(e.preview,previews.at(-1)))fail('talent_popup_pair_missing');let costs;
   for(let i=0;i<previews.length;i+=2){pair(previews[i],previews[i+1]);for(const p of previews.slice(i,i+2)){const actual=preview(p,b.base,start,finish);if(costs&&!same(costs,actual))fail('talent_costs_changed');costs=actual;}}

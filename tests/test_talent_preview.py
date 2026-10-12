@@ -72,6 +72,96 @@ class TalentPreviewTests(unittest.TestCase):
         self.assertEqual(p['nativeObservation'],snapshot)
         self.assertEqual(p['nativeObservation']['evidence']['characterIdentityTrials'][0]['name'],'芭芭拉。')
 
+    def global21(self):
+        p,finish=self.rolling20();e=p['nativeObservation']['evidence'];e['talentEntryIdentitySource']='talent_global_header'
+        for n in e['characterIdentityTrials']:n.update(nameSource='attribute_right_full_name',nameBoxMethod='actual_name_ocr_box')
+        for f in (v for v in e['rawFrames'] if v.get('phase')=='talent_entry_observation'):
+            n=f['character'];n.update(name='芭芭拉',nameSource='talent_global_header',nameBoxMethod='whole_header_ocr_box_contains_name',
+                nameRegion=rect(130,20,320,85),nameRows=[row('水元素 / 芭芭拉',150,40,260,35)],headerRaw='水元素 / 芭芭拉',headerElement='水')
+            f.update(menuRegion=rect(40,390,320,100),menuRows=[row('天赋',80,410,100,30)])
+        return p,finish
+
+    def test_global21_complete_current_header_derives_name_without_reusing_attribute_or_caller(self):
+        p,finish=self.global21();snapshot=deepcopy(p['nativeObservation'])
+        self.assertTrue(verify_talent_preview(p,'芭芭拉','元素战技',START,finish))
+        self.assertEqual(p['nativeObservation'],snapshot)
+        self.assertEqual(p['nativeObservation']['evidence']['characterIdentity'][0]['nameRegion'],rect(1420,110,360,68))
+
+    def rolling_entry22(self):
+        p,unused=self.global21();raw=p['nativeObservation'];e=raw['evidence'];seen=set()
+        def shift(value):
+            if not isinstance(value,(dict,list)) or id(value) in seen:return
+            seen.add(id(value))
+            if isinstance(value,dict):
+                if type(value.get('observedAt')) is int and value['observedAt']>=BASE+2600:value['observedAt']+=1500
+                for child in value.values():shift(child)
+            else:
+                for child in value:shift(child)
+        shift(e);entries=[f for f in e['rawFrames'] if f.get('phase')=='talent_entry_observation']
+        for f,at in zip(entries,(1400,1740,2080)):
+            f.update(observedAt=BASE+at,readCompletedAt=BASE+at+40);f['character']['observedAt']=BASE+at
+        more=[deepcopy(entries[1]) for i in range(3)]
+        for f,at in zip(more,(2420,2760,3100)):
+            f.update(observedAt=BASE+at,readCompletedAt=BASE+at+40);f['character']['observedAt']=BASE+at
+        entries[2]['rows'][-1]['text']='Lv.';entries[2]['candidates'].pop();entries[2]['failureReason']='wrong_candidate_count'
+        e['rawFrames'][7:7]=more;e['twoPickedEntryFrames']=more[:2];e['entryClickFrame']=more[2]
+        e.update(talentEntryObservationMethod='bounded_contiguous_entry_triple',talentEntryObservationLimitMs=12000,talentEntryObservationPollMs=300)
+        raw['observedAt']=datetime.fromtimestamp((BASE+6300)/1000,timezone.utc).isoformat()
+        return p,datetime.fromtimestamp((BASE+7300)/1000,timezone.utc).isoformat()
+
+    def test_rolling_entry22_retains_bad_third_and_clicks_first_later_complete_contiguous_triple(self):
+        p,finish=self.rolling_entry22();snapshot=deepcopy(p['nativeObservation'])
+        self.assertTrue(verify_talent_preview(p,'芭芭拉','元素战技',START,finish));self.assertEqual(p['nativeObservation'],snapshot)
+        entries=[f for f in snapshot['evidence']['rawFrames'] if f.get('phase')=='talent_entry_observation']
+        self.assertEqual(len(entries),6);self.assertEqual(entries[2]['rows'][-1]['text'],'Lv.');self.assertEqual(len(entries[2]['candidates']),2)
+
+    def test_rolling_entry22_cannot_pick_old_pair_extend_deadline_or_continue_after_legal_triple_or_abort(self):
+        def entries(e):return [f for f in e['rawFrames'] if f.get('phase')=='talent_entry_observation']
+        for mutate in (lambda e:e.pop('talentEntryObservationMethod'),lambda e:e.update(talentEntryObservationLimitMs=15000),
+            lambda e:e.update(talentEntryObservationPollMs=200),lambda e:e.update(twoPickedEntryFrames=entries(e)[:2]),
+            lambda e:e['entryClickFrame'].pop('readCompletedAt'),lambda e:entries(e)[2].update(focused=False),
+            lambda e:entries(e)[2].update(promptVisible=True),lambda e:entries(e)[2].update(reviveVisible=True),
+            lambda e:entries(e)[2].update(readCompletedAt=BASE+2100,observedAt=BASE+2000),
+            lambda e:e['entryClickFrame'].update(readCompletedAt=BASE+4800),
+            lambda e:entries(e)[2].update(readCompletedAt=BASE+2079)):
+            p,finish=self.rolling_entry22();mutate(p['nativeObservation']['evidence'])
+            with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,finish)
+        p,finish=self.rolling_entry22();e=p['nativeObservation']['evidence'];bad=entries(e)[2]
+        bad['rows'][-1]['text']='Lv.3';bad['candidates']=deepcopy(bad['rows'])
+        with self.assertRaisesRegex(ValueError,'first legal'):verify_talent_preview(p,'芭芭拉','元素战技',START,finish)
+        p,unused=self.rolling_entry22();e=p['nativeObservation']['evidence'];tail=entries(e)[-3:]
+        for f,at in zip(tail,(BASE+12700,BASE+13040,BASE+13380)):
+            f.update(observedAt=at,readCompletedAt=at+40);f['character']['observedAt']=at
+        for f in e['rawFrames'][10:]:f['observedAt']+=12000
+        with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,datetime.fromtimestamp((BASE+20000)/1000,timezone.utc).isoformat())
+
+    def test_global21_header_source_row_name_menu_geometry_and_attribute_substitution_reject(self):
+        for mutate in (lambda e:e.pop('talentEntryIdentitySource'),lambda e:e.update(talentEntryIdentitySource='previous_attribute'),
+            lambda e:e['entryClickFrame']['character'].update(nameSource='attribute_right_full_name'),
+            lambda e:e['entryClickFrame']['character'].update(nameBoxMethod='substring_estimated_box'),
+            lambda e:e['entryClickFrame']['character'].update(headerElement='火'),
+            lambda e:e['entryClickFrame']['character'].update(headerRaw='水元素/芭芭拉'),
+            lambda e:e['entryClickFrame']['character']['nameRows'][0].update(text='水元素 / 丽莎'),
+            lambda e:e['entryClickFrame']['character']['nameRows'][0].update(text='水元素 / 芭芭拉。'),
+            lambda e:e['entryClickFrame']['character']['nameRows'][0]['bounds'].update(x=131),
+            lambda e:e['entryClickFrame']['character']['nameRows'][0]['bounds'].update(y=21),
+            lambda e:e['entryClickFrame']['character']['nameRegion'].update(width=380),
+            lambda e:e['entryClickFrame']['character']['nameRows'].append(row('Q',420,40,20,30)),
+            lambda e:e['entryClickFrame'].pop('menuRows'),lambda e:e['entryClickFrame']['menuRows'][0].update(text='天赋详情'),
+            lambda e:e['entryClickFrame']['menuRows'][0]['bounds'].update(x=41),lambda e:e['entryClickFrame']['menuRegion'].update(width=200),
+            lambda e:e['entryClickFrame']['character'].update(observedAt=BASE+100),
+            lambda e:e['characterIdentityTrials'][0].update(nameSource='talent_global_header'),
+            lambda e:e['characterIdentityTrials'][0].update(nameBoxMethod='whole_header_ocr_box_contains_name')):
+            p,finish=self.global21();mutate(p['nativeObservation']['evidence'])
+            with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,finish)
+        for text in ('水元素｜芭芭拉','水元素/芭芭拉/额外','合成测试天赋','水元素/芭芭拉。'):
+            p,finish=self.global21();n=p['nativeObservation']['evidence']['entryClickFrame']['character']
+            n['headerRaw']=text;n['nameRows'][0]['text']=text
+            with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,finish)
+        p,finish=self.global21();n=p['nativeObservation']['evidence']['entryClickFrame']['character']
+        n.update(headerRaw='火元素 / 芭芭拉',headerElement='火');n['nameRows'][0]['text']=n['headerRaw']
+        with self.assertRaisesRegex(ValueError,'changed between'):verify_talent_preview(p,'芭芭拉','元素战技',START,finish)
+
     def test_rolling20_method_reference_poll_raw_and_downgrade_forgery_reject(self):
         for mutate in (lambda e:e.pop('characterIdentityMethod'),lambda e:e.update(characterIdentityObservationLimitMs=15000),
             lambda e:e.update(characterIdentityPollMs=200),lambda e:e.pop('characterIdentityTrials'),

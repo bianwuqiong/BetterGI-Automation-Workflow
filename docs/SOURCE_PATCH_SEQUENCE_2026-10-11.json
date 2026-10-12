@@ -106,6 +106,16 @@
       "order": 20,
       "path": "patches/local-named-stack-count-2026-10-12.patch",
       "sha256": "2f003a189643ca19d26a1282abaa9b8daac863dff157fc2ad16e38eb4f169a45"
+    },
+    {
+      "order": 21,
+      "path": "patches/local-talent-global-header-2026-10-12.patch",
+      "sha256": "cb5636c9e7b9127bd0381b8e3186d07b221d105b7e081fa57c80a2b394056c54"
+    },
+    {
+      "order": 22,
+      "path": "patches/local-entry-contiguous-triple-2026-10-12.patch",
+      "sha256": "d2a5a847b8b23bd701ac91b4b301662a391526a0ef3559d4a95ed278f5eb1c59"
     }
   ],
   "offlineValidation": {
@@ -283,5 +293,35 @@
     "genericEightMaterialInventoryIncluded": false,
     "actualConversionOrUpgradeExecutorIncluded": false,
     "validationDocument": "docs/LOCAL_NAMED_STACK_COUNT_2026-10-12.md"
+  },
+  "talentGlobalHeaderExtension": {
+    "selectedTests": 122,
+    "pureCases": 121,
+    "newPureCases": 10,
+    "privateStaticCases": 1,
+    "entryIdentityIndependentCurrentGlobalHeader": true,
+    "attributeOriginalTripleUnchanged": true,
+    "completeActualHeaderBoxAndMenuRequired": true,
+    "twoPickedFramesAndFreshClickHeaderConsistencyRequired": true,
+    "failedIdentityKnownTalentScenePrivatePngOnly": true,
+    "actualTalentPreviewVerified": false,
+    "genericEightMaterialInventoryIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_TALENT_GLOBAL_HEADER_2026-10-12.md"
+  },
+  "entryContiguousTripleExtension": {
+    "selectedPureTests": 127,
+    "finalTimestampSelectedPureTests": 32,
+    "newPureCases": 6,
+    "firstValidContiguousTripleOnly": true,
+    "originalDeadlineMs": 12000,
+    "originalPollMs": 300,
+    "originalMaximumObservations": 41,
+    "readCompletedAtIsNotAcquisitionMetadata": true,
+    "originalFreshnessAndIdentityThresholdsUnchanged": true,
+    "actualTalentPreviewVerified": false,
+    "genericEightMaterialInventoryIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_ENTRY_CONTIGUOUS_TRIPLE_2026-10-12.md"
   }
 }

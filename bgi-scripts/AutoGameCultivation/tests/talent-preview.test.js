@@ -53,6 +53,73 @@ test('rolling20 preserves bad original punctuation and accepts only first consec
   assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800).currentBaseLevel,1);
   assert.deepEqual(raw,snapshot);assert.equal(raw.evidence.characterIdentityTrials[0].name,'芭芭拉。');
 });
+function global21(){
+  const raw=rolling20(),e=raw.evidence;e.talentEntryIdentitySource='talent_global_header';
+  for(const n of e.characterIdentityTrials)Object.assign(n,{nameSource:'attribute_right_full_name',nameBoxMethod:'actual_name_ocr_box'});
+  for(const f of e.rawFrames.filter(v=>v.phase==='talent_entry_observation')){
+    Object.assign(f.character,{name:'芭芭拉',nameSource:'talent_global_header',nameBoxMethod:'whole_header_ocr_box_contains_name',
+      nameRegion:{x:130,y:20,width:320,height:85},nameRows:[{text:'水元素 / 芭芭拉',bounds:{x:150,y:40,width:260,height:35}}],headerRaw:'水元素 / 芭芭拉',headerElement:'水'});
+    f.menuRegion={x:40,y:390,width:320,height:100};f.menuRows=[{text:'天赋',bounds:{x:80,y:410,width:100,height:30}}];
+  }
+  return raw;
+}
+test('global21 name comes from complete current element/header row and leaves attribute triple unchanged',()=>{
+  const raw=global21(),snapshot=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800).currentBaseLevel,1);
+  assert.deepEqual(raw,snapshot);assert.equal(raw.evidence.characterIdentity[0].nameRegion.x,1420);
+});
+function rollingEntry22(){
+  const raw=global21(),e=raw.evidence,seen=new WeakSet();
+  function shift(v){if(!v||typeof v!=='object'||seen.has(v))return;seen.add(v);if(Number.isInteger(v.observedAt)&&v.observedAt>=BASE+2600)v.observedAt+=1500;for(const child of Object.values(v))shift(child);}
+  shift(e);const entries=e.rawFrames.filter(f=>f.phase==='talent_entry_observation');
+  entries.forEach((f,i)=>{f.observedAt=BASE+[1400,1740,2080][i];f.readCompletedAt=f.observedAt+40;f.character.observedAt=f.observedAt;});
+  const more=[2420,2760,3100].map(at=>{const f=structuredClone(entries[1]);f.observedAt=BASE+at;f.readCompletedAt=f.observedAt+40;f.character.observedAt=f.observedAt;return f;});
+  entries[2].rows.at(-1).text='Lv.';entries[2].candidates.pop();entries[2].failureReason='wrong_candidate_count';
+  e.rawFrames.splice(7,0,...more);e.twoPickedEntryFrames=more.slice(0,2);e.entryClickFrame=more[2];
+  Object.assign(e,{talentEntryObservationMethod:'bounded_contiguous_entry_triple',talentEntryObservationLimitMs:12000,talentEntryObservationPollMs:300});
+  raw.observedAt=new Date(BASE+6300).toISOString();return raw;
+}
+test('entry22 retains bad third raw row and accepts first later contiguous complete triple within original window',()=>{
+  const raw=rollingEntry22(),snapshot=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+7300).currentBaseLevel,1);assert.deepEqual(raw,snapshot);
+  const entries=raw.evidence.rawFrames.filter(f=>f.phase==='talent_entry_observation');assert.equal(entries.length,6);assert.equal(entries[2].rows.at(-1).text,'Lv.');assert.equal(entries[2].candidates.length,2);
+});
+test('entry22 rejects old pair selection, extended completion deadline, missing method and continuation after abort or first valid triple',()=>{
+  const entries=e=>e.rawFrames.filter(f=>f.phase==='talent_entry_observation');
+  for(const mutate of [e=>delete e.talentEntryObservationMethod,e=>e.talentEntryObservationLimitMs=15000,e=>e.talentEntryObservationPollMs=200,
+      e=>e.twoPickedEntryFrames=entries(e).slice(0,2),e=>delete e.entryClickFrame.readCompletedAt,
+      e=>entries(e)[2].focused=false,e=>entries(e)[2].promptVisible=true,e=>entries(e)[2].reviveVisible=true,
+      e=>Object.assign(entries(e)[2],{observedAt:BASE+2000,readCompletedAt:BASE+2100}),e=>e.entryClickFrame.readCompletedAt=BASE+4800,
+      e=>entries(e)[2].readCompletedAt=BASE+2079]){
+    const raw=rollingEntry22();mutate(raw.evidence);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+7300));
+  }
+  const raw=rollingEntry22(),bad=entries(raw.evidence)[2];bad.rows.at(-1).text='Lv.3';bad.candidates=structuredClone(bad.rows);
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+7300),/first_legal/);
+  const deadline=rollingEntry22(),e=deadline.evidence;
+  entries(e).slice(-3).forEach((f,i)=>{f.observedAt=BASE+[12700,13040,13380][i];f.readCompletedAt=f.observedAt+40;f.character.observedAt=f.observedAt;});
+  for(const f of e.rawFrames.slice(10))f.observedAt+=12000;
+  e.detailIdentityCarryover.observedAt+=12000;
+  assert.throws(()=>verifyTalentObservation(deadline,'芭芭拉','元素战技',BASE,BASE+20000),/completion_extends/);
+});
+test('global21 cannot copy caller name, invent substring box, trim punctuation, downgrade source or swap attribute proof',()=>{
+  for(const mutate of [e=>delete e.talentEntryIdentitySource,e=>e.talentEntryIdentitySource='previous_attribute',
+      e=>e.entryClickFrame.character.nameSource='attribute_right_full_name',e=>e.entryClickFrame.character.nameBoxMethod='substring_estimated_box',
+      e=>e.entryClickFrame.character.headerElement='火',e=>e.entryClickFrame.character.headerRaw='水元素/芭芭拉',
+      e=>e.entryClickFrame.character.nameRows[0].text='水元素 / 丽莎',e=>e.entryClickFrame.character.nameRows[0].text='水元素 / 芭芭拉。',
+      e=>e.entryClickFrame.character.nameRows[0].bounds.x=131,e=>e.entryClickFrame.character.nameRows[0].bounds.y=21,
+      e=>e.entryClickFrame.character.nameRegion.width=380,e=>e.entryClickFrame.character.nameRows.push({text:'Q',bounds:{x:420,y:40,width:20,height:30}}),
+      e=>delete e.entryClickFrame.menuRows,e=>e.entryClickFrame.menuRows[0].text='天赋详情',e=>e.entryClickFrame.menuRows[0].bounds.x=41,
+      e=>e.entryClickFrame.menuRegion.width=200,e=>e.entryClickFrame.character.observedAt=BASE+100,
+      e=>e.characterIdentityTrials[0].nameSource='talent_global_header',e=>e.characterIdentityTrials[0].nameBoxMethod='whole_header_ocr_box_contains_name']){
+    const raw=global21();mutate(raw.evidence);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800));
+  }
+  for(const text of ['水元素｜芭芭拉','水元素/芭芭拉/额外','合成测试天赋','水元素/芭芭拉。']){
+    const raw=global21(),n=raw.evidence.entryClickFrame.character;n.headerRaw=text;n.nameRows[0].text=text;
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800));
+  }
+  const raw=global21(),n=raw.evidence.entryClickFrame.character;n.headerRaw='火元素 / 芭芭拉';n.headerElement='火';n.nameRows[0].text=n.headerRaw;
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+5800),/raw_changed/);
+});
 test('rolling20 cannot drop failed trials, select old triple, trim punctuation or downgrade method and timing',()=>{
   for(const mutate of [e=>delete e.characterIdentityMethod,e=>e.characterIdentityObservationLimitMs=15000,e=>e.characterIdentityPollMs=200,
       e=>delete e.characterIdentityTrials,e=>e.characterIdentityTrials=e.characterIdentity,e=>e.characterIdentityTrials[0].name='芭芭拉',
