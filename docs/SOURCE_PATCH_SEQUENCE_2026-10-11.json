@@ -141,6 +141,16 @@
       "order": 27,
       "path": "patches/local-backpack-scene-policy-2026-10-12.patch",
       "sha256": "7406a9ff18e578c5f983168fe8fd1190746ab573e2b0e623ee172ea643de9a32"
+    },
+    {
+      "order": 28,
+      "path": "patches/local-named-inventory-scroll-reuse-2026-10-12.patch",
+      "sha256": "ebc646a0bc6e9b02198b9b956fca3acefd55e9ec8fbc0d073266ffb900655bb0"
+    },
+    {
+      "order": 29,
+      "path": "patches/local-talent-preview-timing-2026-10-12.patch",
+      "sha256": "0c0def69d8c76c2bef5b9e00a1a005c24557238c7963523d4a9b657e60c7ae90"
     }
   ],
   "offlineValidation": {

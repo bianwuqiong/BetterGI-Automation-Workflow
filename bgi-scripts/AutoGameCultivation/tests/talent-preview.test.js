@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {verifyTalentObservation,createTalentPreviewReader,verifyTalentQuantity} from '../core/talent-preview.js';
+import {verifyTalentObservation,createTalentPreviewReader,verifyTalentQuantity,readTalentPreview} from '../core/talent-preview.js';
 import {runCultivation} from '../core/operator.js';
 const fixture=()=>JSON.parse(readFileSync(new URL('./fixtures/talent-preview-synthetic.json',import.meta.url),'utf8'));
 const BASE=1791734400000;
@@ -33,6 +33,116 @@ function modernObservation(){
   }
   return raw;
 }
+const timedPreviews=raw=>raw.evidence.rawFrames.filter(f=>'materials' in f);
+function timedObservation(){
+  const raw=modernObservation(),previews=timedPreviews(raw);raw.previewTimingMethod='capture_read_evaluate_then_private_png_v1';
+  for(const [i,p] of previews.entries()){
+    const evaluated=previews[Math.floor(i/2)*2+1].observedAt+100;
+    p.privateCapture={observedAt:p.observedAt,width:1920,height:1080,pixelType:'CV_8UC3',path:`C:/synthetic-runtime/log/talent-originals/original-${i}.png`,
+      pngSha256:String(i+1).repeat(64),nativePixelsSha256:String(i+5).repeat(64),source:'diagnostic_only_lossless_native_srcmat_no_resize'};
+    p.readTiming={captureCallStartedAt:p.observedAt-5,captureReturnedAt:p.observedAt,readerStartedAt:p.observedAt+1,readerCompletedAt:p.observedAt+70,
+      pairEvaluatedAt:i%2===0?null:evaluated,pairAccepted:i%2===0?null:true,diagnosticPngCompletedAt:evaluated+200+(i%2?50:0)};
+  }
+  raw.evidence.preview=structuredClone(previews.at(-1));return raw;
+}
+function syncTimedPreview(raw){raw.evidence.preview=structuredClone(timedPreviews(raw).at(-1));}
+test('timing29 validates protocol sequence and original PNG metadata shape without claiming disk IO or BitBlt ownership',()=>{
+  const raw=timedObservation(),before=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);
+  assert.deepEqual(raw,before);assert.equal(raw.confirmationSubmitted,false);assert.equal('actualCapture' in timedPreviews(raw)[0],false);
+});
+test('timing29 all-null timing and marker keep legacy readonly compatibility',()=>{
+  const raw=fixture();raw.previewTimingMethod=null;for(const p of [...timedPreviews(raw),raw.evidence.preview])p.readTiming=null;
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);assert.equal(raw.confirmationSubmitted,false);
+});
+test('timing29 any partial modern metadata requires every pair and the exact marker',()=>{
+  for(const change of [r=>delete r.previewTimingMethod,r=>r.previewTimingMethod=null,r=>r.previewTimingMethod='legacy',r=>r.previewTimingMethod=true,
+      r=>timedPreviews(r)[0].readTiming=null,r=>delete timedPreviews(r).at(-1).readTiming]){
+    const raw=timedObservation();change(raw);syncTimedPreview(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('timing29 exact seven fields require actual integer clocks, first null and second true',()=>{
+  const fields=['captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'];
+  for(const key of fields){
+    for(const value of [null,true,false,{},1.5]){
+      if(key==='pairAccepted'&&value===true)continue;
+      const raw=timedObservation();timedPreviews(raw)[1].readTiming[key]=value;
+      assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+    }
+    const raw=timedObservation();delete timedPreviews(raw)[1].readTiming[key];assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+  for(const change of [t=>t.pairAccepted=false,t=>t.pairEvaluatedAt=BASE+1500,t=>t.syntheticNow=BASE+1800]){
+    const raw=timedObservation();change(timedPreviews(raw)[0].readTiming);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('timing29 capture reader evaluation and PNG completion clocks cannot be reordered or leave run range',()=>{
+  for(const change of [(a,b)=>a.captureCallStartedAt=a.captureReturnedAt+1,(a,b)=>a.readerStartedAt=a.captureReturnedAt-1,
+      (a,b)=>a.readerCompletedAt=b.captureCallStartedAt,(a,b)=>b.pairEvaluatedAt=b.readerCompletedAt-1,
+      (a,b)=>a.diagnosticPngCompletedAt=b.pairEvaluatedAt-1,(a,b)=>b.diagnosticPngCompletedAt=a.diagnosticPngCompletedAt-1,
+      (a,b)=>a.captureCallStartedAt=BASE-1,(a,b)=>b.diagnosticPngCompletedAt=BASE+4001,(a,b)=>b.captureReturnedAt++]){
+    const raw=timedObservation(),frames=timedPreviews(raw);change(frames[0].readTiming,frames[1].readTiming);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('timing29 original evaluation clock accepts1500ms and rejects1501ms with later cleanup captures',()=>{
+  for(const age of [1500,1501]){
+    const raw=timedObservation(),frames=timedPreviews(raw),a=frames.at(-2).readTiming,b=frames.at(-1).readTiming;
+    b.pairEvaluatedAt=frames.at(-1).observedAt+age;a.diagnosticPngCompletedAt=b.pairEvaluatedAt+1;b.diagnosticPngCompletedAt=b.pairEvaluatedAt+2;
+    raw.evidence.rawFrames.filter(f=>f.phase==='world_restore').forEach((f,i)=>f.observedAt=BASE+5000+i*300);syncTimedPreview(raw);
+    if(age===1500)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+6000).currentBaseLevel,1);
+    else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+6000));
+  }
+});
+test('timing29 saving cannot finish after the next original tooltip or world capture',()=>{
+  for(const cleanup of [false,true]){
+    const raw=timedObservation(),frames=timedPreviews(raw),second=cleanup?frames.at(-1):frames[1];
+    const following=raw.evidence.rawFrames.find(f=>f.observedAt>second.observedAt);second.readTiming.diagnosticPngCompletedAt=following.observedAt+1;syncTimedPreview(raw);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/precede_next_original_capture/);
+  }
+});
+test('timing29 PNG completion precedes the next preview capture start even when its return is later',()=>{
+  const raw=timedObservation(),previews=timedPreviews(raw),frames=raw.evidence.rawFrames;
+  const extra=[structuredClone(previews[2]),structuredClone(previews[3])];
+  for(const [i,p] of extra.entries()){
+    p.observedAt=BASE+2080+i*10;p.materials[0].quantity.observedAt=p.observedAt;p.mora.observedAt=p.observedAt;p.privateCapture.observedAt=p.observedAt;
+  }
+  Object.assign(extra[0].readTiming,{captureCallStartedAt:BASE+2040,captureReturnedAt:BASE+2080,readerStartedAt:BASE+2080,readerCompletedAt:BASE+2081,diagnosticPngCompletedAt:BASE+2093});
+  Object.assign(extra[1].readTiming,{captureCallStartedAt:BASE+2085,captureReturnedAt:BASE+2090,readerStartedAt:BASE+2090,readerCompletedAt:BASE+2091,pairEvaluatedAt:BASE+2092,diagnosticPngCompletedAt:BASE+2094});
+  frames.splice(frames.indexOf(previews[1])+1,0,...extra);
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/precede_next_original_capture/);
+});
+test('timing29 Windows original path aliases cannot reuse one retained PNG',()=>{
+  for(const alias of [path=>path.replace('synthetic-runtime','SYNTHETIC-RUNTIME'),path=>path.replaceAll('/','\\'),path=>path.replaceAll('/','//')]){
+    const raw=timedObservation(),previews=timedPreviews(raw);
+    previews[1].privateCapture.path=alias(previews[0].privateCapture.path);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/path_reused/);
+  }
+});
+test('timing29 mixed second and millisecond clocks reject without inferring repaired time',()=>{
+  const raw=timedObservation();timedPreviews(raw)[1].readTiming.readerStartedAt=Math.floor(timedPreviews(raw)[1].readTiming.readerStartedAt/1000);
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+});
+test('timing29 both PNG shapes require fixed origin time dimensions hashes source and absolute log path',()=>{
+  for(const change of [p=>p.privateCapture=null,p=>delete p.privateCapture,p=>p.privateCapture.observedAt++,p=>p.privateCapture.observedAt=true,
+      p=>p.privateCapture.width=1280,p=>p.privateCapture.pixelType='CV_8UC4',p=>p.privateCapture.source='actual_synchronous_BitBltCapture',
+      p=>p.privateCapture.pngSha256='0'.repeat(63),p=>p.privateCapture.path='relative/log/f.png',p=>p.privateCapture.path='C:/synthetic-runtime/state/f.png',
+      p=>p.privateCapture.path='C:/synthetic-runtime/log/../other/f.png']){
+    const raw=timedObservation();change(timedPreviews(raw)[0]);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+  const raw=timedObservation(),frames=timedPreviews(raw);frames[1].privateCapture={...structuredClone(frames[0].privateCapture),observedAt:frames[1].observedAt};
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/path_reused/);
+});
+test('timing29 cannot package legacy costs or missing26 material proofs as modern complete preview',()=>{
+  for(const change of [r=>r.costQuantityMethod='legacy_observed_ratio',r=>timedPreviews(r)[0].costQuantityMethod='legacy_observed_ratio',
+      r=>timedPreviews(r)[0].materials[0].quantity.splitModelEvidence=null]){
+    const raw=timedObservation();change(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('timing29 new timestamps on unknown native result keep raw and null costs',async()=>{
+  const raw=timedObservation();raw.status='unknown';const before=structuredClone(raw);
+  const result=await readTalentPreview({now:()=>BASE+4000,inspectTalentUpgrade:async()=>raw},'芭芭拉','元素战技',BASE,BASE+5000);
+  assert.equal(result.evidenceVerified,false);assert.equal(result.costs,null);assert.deepEqual(result.nativeObservation,before);assert.equal(result.completedUpgrades,0);
+});
 test('modern26 split validates exact six-asset protocol shape without claiming disk or consumption verification',()=>{
   const raw=modernObservation(),copy=structuredClone(raw);
   assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);

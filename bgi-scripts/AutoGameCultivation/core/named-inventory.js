@@ -1,6 +1,8 @@
 // GPL-3.0-only. Bounded readonly native snapshots; never a consumer or Session After proof.
 const fail=m=>{throw Error(m);};
 const exactKeys=(v,keys)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join()===keys.sort().join();
+// Complete raw timelines remain bounded; over-limit responses are rejected, never truncated.
+export const NAMED_INVENTORY_MAX_UTF8_BYTES=16000000;
 export function buildNamedInventoryRequest(scope,context){
   if(!exactKeys(scope,['executionEnabled','policy','materials'])||scope.executionEnabled!==false
       ||!exactKeys(scope.policy,['originalResinBudget','condensedResinBudget','maxMinutes'])
@@ -29,7 +31,7 @@ export function createNamedInventoryReader({dispatcher,log}){
     try{
       cts.CancelAfter(Math.max(1,Math.min(scope.policy.maxMinutes*60000,180000,Math.floor(remainingMilliseconds))));
       const bindingReceipt=boundedJson(await dispatcher.ReadNamedInventoryBinding(cts.Token),64000);
-      const raw=boundedJson(await dispatcher.ReadNamedCultivationInventory(serialized,cts.Token),8000000);
+      const raw=boundedJson(await dispatcher.ReadNamedCultivationInventory(serialized,cts.Token),NAMED_INVENTORY_MAX_UTF8_BYTES);
       log?.Info('[CULTIVATION_NAMED_INVENTORY_RAW] {payload}',JSON.stringify({bindingReceipt,nativeObservation:raw}));return {bindingReceipt,nativeObservation:raw};
     }finally{cts.Dispose();}
   };

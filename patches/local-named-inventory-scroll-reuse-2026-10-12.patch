@@ -1,0 +1,392 @@
+diff --git a/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs b/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
+--- a/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
++++ b/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
+@@ -13,11 +13,78 @@
+ 
+ namespace BetterGenshinImpact.GameTask.Model.GameUI
+ {
++    internal readonly record struct GridScrollInputAudit(string Stage, int WheelIndex, int GroupIndex,
++        long GuardCheckedAt, long InputSentAt);
++
++    internal static class GridIndividualInputGuard
++    {
++        internal static void BeforeWheel(Action? fullGuard, Func<bool>? fastGuard)
++        {
++            fullGuard?.Invoke();
++            if (fastGuard is not null && !fastGuard())
++            {
++                fullGuard?.Invoke();
++                if (!fastGuard()) throw new InvalidOperationException("grid_scroll_individual_fresh_guard_expired_after_refresh");
++            }
++        }
++    }
++
++    // A fresh page proof may cover a short, bounded burst of second-stage wheel inputs.
++    // The fast guard still runs before every input and may only return false for expiry.
++    internal sealed class GridSecondStageInputBatch
++    {
++        private readonly int maximumWheels;
++        private readonly Action fullGuard;
++        private readonly Func<bool> fastGuard;
++        private readonly Func<long> monotonicMilliseconds;
++        private long openedAt;
++        private int used;
++        private int groupIndex = -1;
++
++        internal GridSecondStageInputBatch(int maximumWheels, Action fullGuard, Func<bool> fastGuard,
++            Func<long> monotonicMilliseconds)
++        {
++            if (maximumWheels is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(maximumWheels));
++            this.maximumWheels = maximumWheels;
++            this.fullGuard = fullGuard ?? throw new ArgumentNullException(nameof(fullGuard));
++            this.fastGuard = fastGuard ?? throw new ArgumentNullException(nameof(fastGuard));
++            this.monotonicMilliseconds = monotonicMilliseconds ?? throw new ArgumentNullException(nameof(monotonicMilliseconds));
++        }
++
++        internal int BeforeWheel()
++        {
++            bool refreshRequired = false;
++            for (int attempt = 0; attempt < 2; attempt++)
++            {
++                var now = monotonicMilliseconds();
++                if (refreshRequired || used == 0 || used >= maximumWheels || now < openedAt || now - openedAt > 250)
++                    Refresh();
++                // Only an expired proof may return false. A lost focus, owner, binding,
++                // process or cancellation must throw and can never be reacquired here.
++                if (!fastGuard()) { refreshRequired = true; continue; }
++                now = monotonicMilliseconds();
++                if (now < openedAt || now - openedAt > 250) { refreshRequired = true; continue; }
++                used++;
++                return groupIndex;
++            }
++            throw new InvalidOperationException("grid_scroll_fresh_guard_expired_after_refresh");
++        }
++
++        private void Refresh()
++        {
++            fullGuard();
++            openedAt = monotonicMilliseconds();
++            used = 0;
++            groupIndex++;
++        }
++    }
++
+     /// <summary>
+     /// Grid界面垂直滚动服务类
+     /// </summary>
+     public class GridScroller
+     {
++        internal const int DefaultSecondStageMaxWheelsPerFreshGuard = 1;
+         private readonly Rect roi;
+         private readonly CancellationToken ct;
+         private readonly ILogger logger;
+@@ -28,9 +95,18 @@
+         private readonly int s2Round;
+         private readonly double s3Scale;
+         private readonly Action? beforeInputGuard;
+-
+-        internal GridScroller(GridParams @params, ILogger logger, InputSimulator input, CancellationToken ct,Action? beforeInputGuard=null)
+-        {
++        private readonly Func<bool>? beforeEachWheelFastGuard;
++        private readonly Action<GridScrollInputAudit>? onWheelInput;
++        private readonly int secondStageMaxWheelsPerFreshGuard;
++
++        internal GridScroller(GridParams @params, ILogger logger, InputSimulator input, CancellationToken ct,
++            Action? beforeInputGuard=null, Func<bool>? beforeEachWheelFastGuard=null,
++            Action<GridScrollInputAudit>? onWheelInput=null,
++            int secondStageMaxWheelsPerFreshGuard=DefaultSecondStageMaxWheelsPerFreshGuard)
++        {
++            if (secondStageMaxWheelsPerFreshGuard is < 1 or > 4 ||
++                (secondStageMaxWheelsPerFreshGuard > 1 && (beforeInputGuard is null || beforeEachWheelFastGuard is null)))
++                throw new ArgumentOutOfRangeException(nameof(secondStageMaxWheelsPerFreshGuard));
+             this.roi = @params.Roi;
+             this.ct = ct;
+             this.logger = logger;
+@@ -41,9 +117,25 @@
+             this.s2Round = @params.S2Round;
+             this.s3Scale = @params.S3Scale;
+             this.beforeInputGuard=beforeInputGuard;
++            this.beforeEachWheelFastGuard=beforeEachWheelFastGuard;
++            this.onWheelInput=onWheelInput;
++            this.secondStageMaxWheelsPerFreshGuard=secondStageMaxWheelsPerFreshGuard;
+         }
+ 
+         private Task GuardedDelay(int milliseconds,CancellationToken token) => beforeInputGuard is null ? TaskControl.Delay(milliseconds,token) : Task.Delay(milliseconds,token);
++        private static long UtcMilliseconds() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++        private int GuardIndividualWheel(int wheelIndex)
++        {
++            ct.ThrowIfCancellationRequested();
++            GridIndividualInputGuard.BeforeWheel(beforeInputGuard, beforeEachWheelFastGuard);
++            return wheelIndex;
++        }
++        private void ScrollWheel(int amount, string stage, int wheelIndex, int groupIndex)
++        {
++            var checkedAt = UtcMilliseconds();
++            input.Mouse.VerticalScroll(amount);
++            onWheelInput?.Invoke(new(stage, wheelIndex, groupIndex, checkedAt, UtcMilliseconds()));
++        }
+ 
+         internal async Task<bool> TryVerticalScollDown(Func<Mat, int, IEnumerable<Rect>> GetGridItems)
+         {
+@@ -52,7 +144,8 @@
+ 
+             for (int i = 0; i < this.s1Round; i++)
+             {
+-                this.ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();this.input.Mouse.VerticalScroll(-2);
++                var groupIndex = GuardIndividualWheel(i);
++                ScrollWheel(-2, "s1_probe", i, groupIndex);
+                 await GuardedDelay(this.roundMilliseconds, this.ct);
+             }
+             await GuardedDelay(300, this.ct);
+@@ -63,13 +156,19 @@
+ 
+             if (isScrolling)
+             {
++                var batch = beforeInputGuard is null ? null : new GridSecondStageInputBatch(
++                    secondStageMaxWheelsPerFreshGuard, beforeInputGuard,
++                    beforeEachWheelFastGuard ?? (() => true), () => Environment.TickCount64);
+                 for (int i = 0; i < this.s2Round; i++)    // 再滚动差不多（最多行数-1）行
+                 {
+-                    ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();input.Mouse.VerticalScroll(-2);
++                    ct.ThrowIfCancellationRequested();
++                    int groupIndex = batch?.BeforeWheel() ?? i;
++                    ScrollWheel(-2, "s2_page", i, groupIndex);
+                     await GuardedDelay(this.roundMilliseconds, ct);
+                 }
+ 
+                 DateTimeOffset rollingEndTime = DateTime.Now.AddSeconds(2);
++                int fineWheelIndex = 0;
+                 while (DateTime.Now < rollingEndTime)
+                 {
+                     await GuardedDelay(60, ct);
+@@ -84,7 +183,8 @@
+ 
+                     if (gridItems2.Min(i => i.Y) > (ra4.Width * this.s3Scale))  // 最后精细滚动，保证完整地显示最多行
+                     {
+-                        ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();input.Mouse.VerticalScroll(-1);
++                        var groupIndex = GuardIndividualWheel(fineWheelIndex);
++                        ScrollWheel(-1, "s3_fine", fineWheelIndex++, groupIndex);
+                     }
+                     else
+                     {
+diff --git a/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs b/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
+--- a/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
++++ b/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
+@@ -23,6 +23,9 @@
+         private readonly InputSimulator input = Simulation.SendInput;
+         internal Action? OnBeforeScroll { get; set; }
+         internal Action? BeforeInputGuard { get; set; }
++        internal Func<bool>? BeforeEachWheelFastGuard { get; set; }
++        internal Action<GridScrollInputAudit>? OnWheelInput { get; set; }
++        internal int SecondStageMaxWheelsPerFreshGuard { get; set; } = GridScroller.DefaultSecondStageMaxWheelsPerFreshGuard;
+         internal Action<Tuple<ImageRegion, IEnumerable<Tuple<Rect, bool>>>>? OnAfterTurnToNewPage { get; set; }
+ 
+         /// <summary>
+@@ -60,7 +63,9 @@
+ 
+         public IAsyncEnumerator<Tuple<ImageRegion, Rect>> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+         {
+-            return new GridEnumerator(this, @params.Roi, @params.Columns, new GridScroller(@params, logger, input, ct,BeforeInputGuard), ct);
++            return new GridEnumerator(this, @params.Roi, @params.Columns,
++                new GridScroller(@params, logger, input, ct, BeforeInputGuard, BeforeEachWheelFastGuard,
++                    OnWheelInput, SecondStageMaxWheelsPerFreshGuard), ct);
+         }
+ 
+         public class GridEnumerator : IAsyncEnumerator<Tuple<ImageRegion, Rect>>
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+@@ -160,9 +160,41 @@
+                 await SelectTab(group.Key, deadline.Token);
+                 var gridParameters = GridParams.Templates[WeeklyInventoryCatalog.Grid(group.Key)];
+                 var grid = new GridScreen(gridParameters, logger, deadline.Token); int pages = 0;
++                long lastGridGuardObservedAt = -1;
++                InventoryBoundRawFrame? lastGridGuardFrame = null;
++                grid.SecondStageMaxWheelsPerFreshGuard = 4;
+                 grid.BeforeInputGuard=()=>{
+                     using var shot=Capture(deadline.Token);RequirePage(shot.Image,group.Key,deadline.Token);
+                     Remember("grid_input_guard",shot,WorldFrame(shot,bag:true));captures.AssertFresh(shot.ObservedAt);
++                    lastGridGuardObservedAt = shot.ObservedAt;
++                    lastGridGuardFrame = result.RawFrames[^1];
++                };
++                grid.BeforeEachWheelFastGuard=()=>{
++                    deadline.Token.ThrowIfCancellationRequested();
++                    // AssertCurrent includes the owned semaphore, backend generation,
++                    // PID/start time, foreground HWND and physical capture rectangle.
++                    captures.AssertCurrent();
++                    if (!SystemControl.IsGenshinImpactActiveByProcess())
++                        throw new InvalidOperationException("named_inventory_scroll_foreground_lost");
++                    if (!InventoryCaptureEvidence.FreshForInput(lastGridGuardObservedAt, Now())) return false;
++                    try { captures.AssertFresh(lastGridGuardObservedAt); return true; }
++                    catch (InvalidOperationException ex) when (ex.Message == "bound_inventory_page_capture_stale_before_input")
++                    { return false; }
++                };
++                grid.OnWheelInput=audit=>{
++                    var original = lastGridGuardFrame;
++                    if (original is null || original.Phase != "grid_input_guard"
++                        || original.ObservedAt != lastGridGuardObservedAt
++                        || audit.GuardCheckedAt < original.ObservedAt
++                        || audit.InputSentAt < audit.GuardCheckedAt)
++                        throw new InvalidOperationException("named_inventory_scroll_original_guard_audit_missing");
++                    if (original.Recognized["scrollInputGuards"] is not JArray checks)
++                    { checks = new JArray(); original.Recognized["scrollInputGuards"] = checks; }
++                    checks.Add(new JObject {
++                        ["stage"] = audit.Stage, ["wheelIndex"] = audit.WheelIndex,
++                        ["groupIndex"] = audit.GroupIndex, ["guardObservedAt"] = original.ObservedAt,
++                        ["guardCheckedAt"] = audit.GuardCheckedAt, ["inputSentAt"] = audit.InputSentAt,
++                        ["originalPngSha256"] = original.PrivateCapture.PngSha256 });
+                 };
+                 grid.OnBeforeScroll = () => {
+                     using var shot = Capture(deadline.Token); RequirePage(shot.Image, group.Key, deadline.Token);
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Model/GameUI/GridSecondStageInputBatchTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Model/GameUI/GridSecondStageInputBatchTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Model/GameUI/GridSecondStageInputBatchTests.cs
+@@ -0,0 +1,147 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: pure bounds for named inventory second-stage wheel guards.
++using System;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Xunit;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests.Model.GameUI;
++
++public sealed class GridSecondStageInputBatchTests
++{
++    [Fact]
++    public void DefaultGridPolicyAndIndividualProbeFineWheelRemainOneFullGuardPerInput()
++    {
++        Assert.Equal(1, GridScroller.DefaultSecondStageMaxWheelsPerFreshGuard);
++        int fullGuards = 0, fastGuards = 0;
++        for (int i = 0; i < 3; i++)
++            GridIndividualInputGuard.BeforeWheel(() => fullGuards++, () => { fastGuards++; return true; });
++        Assert.Equal(3, fullGuards);
++        Assert.Equal(3, fastGuards);
++    }
++
++    [Fact]
++    public void ExpiredIndividualWheelProofAlsoRequiresANewFullGuard()
++    {
++        int fullGuards = 0, fastGuards = 0;
++        GridIndividualInputGuard.BeforeWheel(() => fullGuards++, () => ++fastGuards > 1);
++        Assert.Equal(2, fullGuards);
++        Assert.Equal(2, fastGuards);
++    }
++
++    [Theory]
++    [InlineData(1, 32, 32)]
++    [InlineData(4, 32, 8)]
++    public void OnlyExplicitOptInCanReuseOneFreshProofForUpToFourWheels(int maximum, int wheels, int expectedFullGuards)
++    {
++        long now = 1000;
++        int fullGuards = 0, fastGuards = 0;
++        var batch = new GridSecondStageInputBatch(maximum, () => fullGuards++, () => { fastGuards++; return true; }, () => now);
++        for (int i = 0; i < wheels; i++)
++        {
++            Assert.Equal(i / maximum, batch.BeforeWheel());
++            now += 40;
++        }
++        Assert.Equal(expectedFullGuards, fullGuards);
++        Assert.Equal(wheels, fastGuards);
++    }
++
++    [Fact]
++    public void ZeroAndMoreThanFourWheelsPerProofAreRejected()
++    {
++        Assert.Throws<ArgumentOutOfRangeException>(() => new GridSecondStageInputBatch(0, () => { }, () => true, () => 0));
++        Assert.Throws<ArgumentOutOfRangeException>(() => new GridSecondStageInputBatch(5, () => { }, () => true, () => 0));
++    }
++
++    [Fact]
++    public void QuarterSecondBoundaryRequiresNewFullGuard()
++    {
++        long now = 1000;
++        int fullGuards = 0;
++        var batch = new GridSecondStageInputBatch(4, () => fullGuards++, () => true, () => now);
++        Assert.Equal(0, batch.BeforeWheel());
++        now = 1250;
++        Assert.Equal(0, batch.BeforeWheel());
++        now = 1251;
++        Assert.Equal(1, batch.BeforeWheel());
++        Assert.Equal(2, fullGuards);
++    }
++
++    [Fact]
++    public void ExpiredProofIsRefreshedBeforeAnyFurtherWheel()
++    {
++        long now = 1000;
++        int fullGuards = 0, fastGuards = 0;
++        var batch = new GridSecondStageInputBatch(4,
++            () => fullGuards++,
++            () => { fastGuards++; return fastGuards != 2; }, () => now);
++        Assert.Equal(0, batch.BeforeWheel());
++        now = 1040;
++        Assert.Equal(1, batch.BeforeWheel());
++        Assert.Equal(2, fullGuards);
++        Assert.Equal(3, fastGuards);
++    }
++
++    [Theory]
++    [InlineData("foreground")]
++    [InlineData("binding")]
++    [InlineData("cancel")]
++    public void FocusBindingAndCancellationFailureNeverTriggerRefresh(string failure)
++    {
++        int fullGuards = 0, fastGuards = 0;
++        var batch = new GridSecondStageInputBatch(4, () => fullGuards++, () =>
++        {
++            fastGuards++;
++            if (fastGuards == 2)
++            {
++                if (failure == "cancel") throw new OperationCanceledException();
++                throw new InvalidOperationException(failure);
++            }
++            return true;
++        }, () => 1000);
++        Assert.Equal(0, batch.BeforeWheel());
++        if (failure == "cancel") Assert.Throws<OperationCanceledException>(() => batch.BeforeWheel());
++        else Assert.Throws<InvalidOperationException>(() => batch.BeforeWheel());
++        Assert.Equal(1, fullGuards);
++    }
++
++    [Fact]
++    public void ProofStillExpiredAfterRefreshFailsClosed()
++    {
++        int fullGuards = 0;
++        var batch = new GridSecondStageInputBatch(4, () => fullGuards++, () => false, () => 1000);
++        Assert.Throws<InvalidOperationException>(() => batch.BeforeWheel());
++        Assert.Equal(2, fullGuards);
++    }
++
++    [Fact]
++    public void SlowFastGuardCannotSendAfterTheQuarterSecondWindow()
++    {
++        long now = 1000;
++        int fullGuards = 0, fastGuards = 0;
++        var batch = new GridSecondStageInputBatch(4, () => fullGuards++, () =>
++        {
++            if (++fastGuards == 2) now += 251;
++            return true;
++        }, () => now);
++        Assert.Equal(0, batch.BeforeWheel());
++        Assert.Equal(1, batch.BeforeWheel());
++        Assert.Equal(2, fullGuards);
++        Assert.Equal(3, fastGuards);
++    }
++
++    [Fact]
++    public void RepeatedSlowFastGuardFailsAfterTwoBoundedAttempts()
++    {
++        long now = 1000;
++        int fullGuards = 0, fastGuards = 0;
++        var batch = new GridSecondStageInputBatch(4, () => fullGuards++, () =>
++        {
++            fastGuards++;
++            now += 251;
++            return true;
++        }, () => now);
++        Assert.Throws<InvalidOperationException>(() => batch.BeforeWheel());
++        Assert.Equal(2, fullGuards);
++        Assert.Equal(2, fastGuards);
++    }
++}

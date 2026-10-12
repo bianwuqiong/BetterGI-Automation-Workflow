@@ -1,0 +1,273 @@
+diff --git a/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs b/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
+--- a/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
++++ b/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
+@@ -329,7 +329,13 @@
+     {
+         if(strictOriginalCpu)
+         {
+-            using var options=new SessionOptions{ExecutionMode=ExecutionMode.ORT_SEQUENTIAL,GraphOptimizationLevel=GraphOptimizationLevel.ORT_ENABLE_ALL};
++            // Each pinned OCR model owns a CPU session. Bound its workers to avoid the
++            // default per-session core-sized pools competing during a fresh preview pair.
++            using var options=new SessionOptions{ExecutionMode=ExecutionMode.ORT_SEQUENTIAL,
++                GraphOptimizationLevel=GraphOptimizationLevel.ORT_ENABLE_ALL,
++                IntraOpNumThreads=12,InterOpNumThreads=1};
++            options.AddSessionConfigEntry("session.intra_op.allow_spinning","0");
++            options.AddSessionConfigEntry("session.inter_op.allow_spinning","0");
+             return new InferenceSession(model.ModalPath,options);
+         }
+         _logger.LogDebug("[ONNX]创建推理会话，模型: {ModelName}", model.Name);
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -14,6 +14,7 @@
+ using BetterGenshinImpact.GameTask.Model.Area;
+ using Microsoft.Extensions.Logging;
+ using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
+ using Newtonsoft.Json.Serialization;
+ using OpenCvSharp;
+ using Vanara.PInvoke;
+@@ -62,11 +63,41 @@
+     }
+     private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level,StrictInventoryOcrSession quantityModels)
+     {
+-        UpgradePreviewFrame Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Preview(frame,quantityModels.Raw,recognizer,at,quantityModels);
+-            if(read.Page)read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};frames.Add(read);return read;}
+-        var first=Read();await Delay();var second=Read();
+-        if(!TalentUpgradePreviewEvidence.PreviewPair(first,second,level,Now()))throw new InvalidOperationException("upgrade_preview_pair_unverified");
+-        return(first,second);
++        (ImageRegion Frame,UpgradePreviewFrame Read) Read()
++        {
++            var captureCallStartedAt=Now();var frame=Capture();
++            try
++            {
++                // ObservedAt remains the actual Capture() return time, never OCR or PNG completion.
++                var at=Now();var readerStartedAt=Now();
++                var read=TalentUpgradePreviewReader.Preview(frame,quantityModels.Raw,recognizer,at,quantityModels);
++                read=read with{ReadTiming=new(captureCallStartedAt,at,readerStartedAt,Now(),null,null,null)};
++                frames.Add(read);return(frame,read);
++            }
++            catch{frame.Dispose();throw;}
++        }
++        ImageRegion? firstFrame=null,secondFrame=null;
++        try
++        {
++            var firstRead=Read();firstFrame=firstRead.Frame;var first=firstRead.Read;
++            await Delay();
++            var secondRead=Read();secondFrame=secondRead.Frame;var second=secondRead.Read;
++            // Evaluate before PNG diagnostics and use this exact clock value for the 1500 ms gate.
++            var evaluatedAt=Now();var accepted=TalentUpgradePreviewEvidence.PreviewPair(first,second,level,evaluatedAt);
++            second=second with{ReadTiming=second.ReadTiming! with{PairEvaluatedAt=evaluatedAt,PairAccepted=accepted}};
++            frames[^1]=second;
++            var firstCapture=first.Page?RetainDiagnosticCapture(firstFrame,first.ObservedAt):null;
++            first=first with{PrivateCapture=firstCapture,ReadTiming=first.ReadTiming! with{DiagnosticPngCompletedAt=Now()}};
++            frames[^2]=first;
++            var secondCapture=second.Page?RetainDiagnosticCapture(secondFrame,second.ObservedAt):null;
++            second=second with{PrivateCapture=secondCapture,ReadTiming=second.ReadTiming! with{DiagnosticPngCompletedAt=Now()}};
++            frames[^1]=second;
++            if(!accepted)throw new InvalidOperationException("upgrade_preview_pair_unverified");
++            if(!TalentUpgradePreviewEvidence.TimedPreviewPair(first,second,level))
++                throw new InvalidOperationException("upgrade_preview_timing_or_source_unverified");
++            return(first,second);
++        }
++        finally{secondFrame?.Dispose();firstFrame?.Dispose();}
+     }
+     private InspectionPrivateCapture? RetainDiagnosticCapture(ImageRegion frame,long at)
+     {
+@@ -77,7 +108,16 @@
+             var folder=Global.Absolute("log\\talent-upgrade-inspection\\native-frames");System.IO.Directory.CreateDirectory(folder);
+             var path=System.IO.Path.Combine(folder,DateTimeOffset.FromUnixTimeMilliseconds(at).ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".png");
+             var encoded=InspectionNativeFrameEncoding.Encode(frame.SrcMat);
+-            System.IO.File.WriteAllBytes(path,encoded.Png);
++            using(var file=new System.IO.FileStream(path,System.IO.FileMode.CreateNew,System.IO.FileAccess.Write,System.IO.FileShare.None))
++            {file.Write(encoded.Png);file.Flush(flushToDisk:true);}
++            // Diagnostic files are accepted only after exact byte and decoded BGR pixel readback.
++            var saved=System.IO.File.ReadAllBytes(path);
++            if(!Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(saved)).Equals(encoded.PngSha256,StringComparison.Ordinal))
++                throw new InvalidOperationException("private_png_readback_hash_mismatch");
++            using var decoded=Cv2.ImDecode(saved,ImreadModes.Color);
++            if(decoded.Width!=frame.Width||decoded.Height!=frame.Height||decoded.Type()!=frame.SrcMat.Type()||
++                InspectionNativeFrameEncoding.NativePixelsSha256(decoded)!=encoded.NativePixelsSha256)
++                throw new InvalidOperationException("private_png_readback_pixels_mismatch");
+             return new(at,frame.Width,frame.Height,frame.SrcMat.Type().ToString(),path,
+                 encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize");
+         }
+@@ -303,6 +343,12 @@
+                 twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+         },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
++        if(frames.OfType<UpgradePreviewFrame>().Any(f=>f.ReadTiming is not null))
++        {
++            var timed=JObject.Parse(payload);
++            timed["previewTimingMethod"]=TalentUpgradePreviewEvidence.PreviewTimingMethod;
++            payload=timed.ToString(Formatting.None);
++        }
+         try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
+         catch(Exception ex){logger.LogWarning("只读天赋预览私有报告写入失败：{Type}",ex.GetType().Name);}
+         return payload;
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -44,7 +44,10 @@
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
+     public string CoinVariant{get;init;}="tight_37";public string? InitialCoinName{get;init;}public double? InitialCoinScore{get;init;}public Rect? InitialCoinRegion{get;init;}
+     public string CostQuantityMethod{get;init;}="legacy_observed_ratio";
++    public UpgradePreviewReadTiming? ReadTiming{get;init;}
+ }
++public sealed record UpgradePreviewReadTiming(long CaptureCallStartedAt,long CaptureReturnedAt,
++    long ReaderStartedAt,long ReaderCompletedAt,long? PairEvaluatedAt,long? DiagnosticPngCompletedAt,bool? PairAccepted);
+ public sealed record InspectionPrivateCapture(long ObservedAt,int Width,int Height,string PixelType,
+     string Path,string PngSha256,string NativePixelsSha256,string Source);
+ public sealed record UpgradePreviewTooltip(long ObservedAt,bool Page,string Name,string Kind,UpgradePreviewRatio Quantity,string RawName="",string AlternateRawName="")
+@@ -68,6 +71,7 @@
+ public static class TalentUpgradePreviewEvidence
+ {
+     public const string PinnedCostQuantityMethod="pinned_v6_v4_slash_integer_split";
++    public const string PreviewTimingMethod="capture_read_evaluate_then_private_png_v1";
+     public static readonly Rect InspectionNameReference=new(1420,110,360,68);
+     public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
+     public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
+@@ -155,6 +159,30 @@
+         a.Materials.Zip(b.Materials).All(p=>QuantityInsideCard(p.First)&&QuantityInsideCard(p.Second)&&p.First.Name.Length>0&&p.First.Name==p.Second.Name&&double.IsFinite(p.First.IconScore)&&double.IsFinite(p.Second.IconScore)&&p.First.IconScore>=.75&&p.Second.IconScore>=.75&&
+             QuantityPair(p.First.Quantity,p.Second.Quantity,now))&&a.CoinName=="摩拉"&&b.CoinName=="摩拉"&&double.IsFinite(a.CoinScore)&&double.IsFinite(b.CoinScore)&&a.CoinScore>=.75&&b.CoinScore>=.75&&
+         QuantityPair(a.Mora,b.Mora,now);
++    public static bool TimedPreviewPair(UpgradePreviewFrame a,UpgradePreviewFrame b,int current)
++    {
++        if(a.ReadTiming is not { } x||b.ReadTiming is not { } y||
++            x.CaptureCallStartedAt<0||x.CaptureCallStartedAt>x.CaptureReturnedAt||x.CaptureReturnedAt!=a.ObservedAt||
++            x.ReaderStartedAt<x.CaptureReturnedAt||x.ReaderCompletedAt<x.ReaderStartedAt||
++            x.PairEvaluatedAt is not null||x.PairAccepted is not null||
++            y.CaptureCallStartedAt<=x.ReaderCompletedAt||y.CaptureCallStartedAt>y.CaptureReturnedAt||
++            y.CaptureReturnedAt!=b.ObservedAt||y.ReaderStartedAt<y.CaptureReturnedAt||
++            y.ReaderCompletedAt<y.ReaderStartedAt||y.PairEvaluatedAt is not long evaluated||
++            evaluated<y.ReaderCompletedAt||y.PairAccepted is not true||
++            x.DiagnosticPngCompletedAt is not long firstPngDone||y.DiagnosticPngCompletedAt is not long secondPngDone||
++            firstPngDone<evaluated||secondPngDone<firstPngDone||
++            a.PrivateCapture is not { } firstImage||b.PrivateCapture is not { } secondImage||
++            firstImage.ObservedAt!=a.ObservedAt||secondImage.ObservedAt!=b.ObservedAt||
++            a.Width!=1920||a.Height!=1080||b.Width!=1920||b.Height!=1080||
++            firstImage.Width!=a.Width||firstImage.Height!=a.Height||secondImage.Width!=b.Width||secondImage.Height!=b.Height||
++            !PrivateCaptureShape(firstImage)||!PrivateCaptureShape(secondImage))
++            return false;
++        return PreviewPair(a,b,current,evaluated);
++    }
++    private static bool PrivateCaptureShape(InspectionPrivateCapture source)=>
++        source.PixelType=="CV_8UC3"&&source.Source=="diagnostic_only_lossless_native_srcmat_no_resize"&&
++        !string.IsNullOrWhiteSpace(source.Path)&&source.PngSha256.Length==64&&source.NativePixelsSha256.Length==64&&
++        source.PngSha256.All(Uri.IsHexDigit)&&source.NativePixelsSha256.All(Uri.IsHexDigit);
+     public static bool SameCosts(UpgradePreviewFrame a,UpgradePreviewFrame b)=>a.Current==b.Current&&a.Next==b.Next&&
+         a.Mora.Owned==b.Mora.Owned&&a.Mora.Required==b.Mora.Required&&a.Materials.Length==b.Materials.Length&&
+         a.Materials.Zip(b.Materials).All(p=>p.First.Name==p.Second.Name&&p.First.Quantity.Owned==p.Second.Quantity.Owned&&p.First.Quantity.Required==p.Second.Quantity.Required);
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs
+@@ -7,13 +7,23 @@
+ /// <summary>Lossless diagnostics only. No capture, transformation, UI input or verification decision.</summary>
+ internal static class InspectionNativeFrameEncoding
+ {
++    private static string HashContiguousPixels(Mat exact)
++    {
++        var pixels=new byte[checked((int)(exact.Total()*exact.ElemSize()))];
++        System.Runtime.InteropServices.Marshal.Copy(exact.Data,pixels,0,pixels.Length);
++        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pixels));
++    }
++    internal static string NativePixelsSha256(Mat source)
++    {
++        using var exact=source.Clone();
++        return HashContiguousPixels(exact);
++    }
+     internal static EncodedInspectionFrame Encode(Mat source)
+     {
+         using var exact=source.Clone(); // Contiguous copy only, pixels/geometry/type remain unchanged.
+-        var pixels=new byte[checked((int)(exact.Total()*exact.ElemSize()))];
+-        System.Runtime.InteropServices.Marshal.Copy(exact.Data,pixels,0,pixels.Length);
++        var pixelsHash=HashContiguousPixels(exact);
+         if(!Cv2.ImEncode(".png",exact,out var png)||png.Length==0)throw new InvalidOperationException("PNG encoding failed.");
+         return new(png,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(png)),
+-            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pixels)));
++            pixelsHash);
+     }
+ }
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewReadTimingTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewReadTimingTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewReadTimingTests.cs
+@@ -0,0 +1,68 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: the original capture clock is retained through OCR and later PNG diagnostics.
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentPreviewReadTimingTests
++{
++    private static UpgradePreviewFrame Frame(long at)=>new(at,true,1,2,
++        [new("材料甲",.9,new Rect(838,627,116,146),new(at,"4/1",new Rect(844,737,104,33),4,1,true))],
++        new(at,"200/10",new Rect(900,800,275,55),200,10,true),"摩拉",.9,[])
++    {
++        Width=1920,Height=1080,
++        PrivateCapture=new(at,1920,1080,"CV_8UC3","private-fixture-only",new string('A',64),new string('B',64),
++            "diagnostic_only_lossless_native_srcmat_no_resize")
++    };
++    private static (UpgradePreviewFrame First,UpgradePreviewFrame Second) Pair()
++    {
++        var first=Frame(100) with{ReadTiming=new(90,100,101,150,null,600,null)};
++        var second=Frame(400) with{ReadTiming=new(390,400,401,450,500,650,true)};
++        return(first,second);
++    }
++    [Fact] public void EvaluationClockPrecedesPngYetUsesOriginalCaptureTime()
++    {
++        var (first,second)=Pair();
++        Assert.True(TalentUpgradePreviewEvidence.TimedPreviewPair(first,second,1));
++        Assert.Equal(first.ObservedAt,first.ReadTiming!.CaptureReturnedAt);
++        Assert.Equal(second.ObservedAt,second.ReadTiming!.CaptureReturnedAt);
++    }
++    [Fact] public void PngCompletionCannotRefreshAnExpiredSecondFrame()
++    {
++        var (first,second)=Pair();
++        first=first with{ReadTiming=first.ReadTiming! with{DiagnosticPngCompletedAt=2000}};
++        second=second with{ReadTiming=second.ReadTiming! with{PairEvaluatedAt=1901,DiagnosticPngCompletedAt=2100}};
++        Assert.False(TalentUpgradePreviewEvidence.TimedPreviewPair(first,second,1));
++    }
++    [Fact] public void ExactEvaluationDeadlineRemainsAcceptedBeforeLaterPng()
++    {
++        var (first,second)=Pair();
++        first=first with{ReadTiming=first.ReadTiming! with{DiagnosticPngCompletedAt=2000}};
++        second=second with{ReadTiming=second.ReadTiming! with{PairEvaluatedAt=1900,DiagnosticPngCompletedAt=2100}};
++        Assert.True(TalentUpgradePreviewEvidence.TimedPreviewPair(first,second,1));
++    }
++    [Theory]
++    [InlineData("missing")][InlineData("wrongCapture")][InlineData("firstEval")][InlineData("readerAfterEval")]
++    [InlineData("pngBeforeEval")][InlineData("missingPng")][InlineData("secondFalse")]
++    [InlineData("wrongPixels")][InlineData("wrongSource")][InlineData("shortHash")][InlineData("overlap")]
++    public void PartialReorderedOrUnretainedTimingCannotClaimSuccess(string fault)
++    {
++        var (first,second)=Pair();
++        switch(fault)
++        {
++            case "missing":second=second with{ReadTiming=null};break;
++            case "wrongCapture":second=second with{ReadTiming=second.ReadTiming! with{CaptureReturnedAt=401}};break;
++            case "firstEval":first=first with{ReadTiming=first.ReadTiming! with{PairEvaluatedAt=200}};break;
++            case "readerAfterEval":second=second with{ReadTiming=second.ReadTiming! with{ReaderCompletedAt=501}};break;
++            case "pngBeforeEval":first=first with{ReadTiming=first.ReadTiming! with{DiagnosticPngCompletedAt=499}};break;
++            case "missingPng":second=second with{PrivateCapture=null};break;
++            case "secondFalse":second=second with{ReadTiming=second.ReadTiming! with{PairAccepted=false}};break;
++            case "wrongPixels":second=second with{PrivateCapture=second.PrivateCapture! with{PixelType="CV_8UC4"}};break;
++            case "wrongSource":second=second with{PrivateCapture=second.PrivateCapture! with{Source="synthetic"}};break;
++            case "shortHash":second=second with{PrivateCapture=second.PrivateCapture! with{PngSha256="AA"}};break;
++            case "overlap":second=second with{ReadTiming=second.ReadTiming! with{CaptureCallStartedAt=150}};break;
++        }
++        Assert.False(TalentUpgradePreviewEvidence.TimedPreviewPair(first,second,1));
++    }
++}
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -125,4 +125,6 @@
+ - 第二十六层为实际只读天赋预览增加opt-in的固定V4整数检测器，复用本次新CPU/uncached V6与V4原资产六项读锁及配置回读8。材料数量强制唯一真实斜杠分割，两个完整整数保持V6 raw与V4 detector同字、原4倍cubic/源ROI/四边2px；记录完整现代模型来源与pinned方法，不能以legacy标记降级。旧reader默认、Mora whole、名字、身份/详情/双帧和所有消费边界不改。
+ - 第二十七层仅修正完整背包页中通用F圆环与X图形的归属：原世界六锚点成功/否决逻辑不改；完整header/唯一原Checked/0.8/同帧原WorldProof/四边2px先证明已知背包，Paimon/domain/star/blackConfirm及真实Prompt/复苏仍拒绝，再仅允许原F匹配完整位于固定下角role和原X匹配完整位于原关闭ROI。准确scenePolicy、真实锚点和role矩形全部保留，不谎称全负锚点不存在；越界/未知页只留固定无文字无图像的拒绝诊断、不输入。导航和双帧一次Esc清理仍是原两类库存读取的辅助，不接消费Session或实际升级/转换确认。
++- 第二十八层仅为具名培养库存的已核实单页网格增加第二阶段可选连续滚动：同一受控批次最多四次滚轮、总时长最多250毫秒，轮间沿用原`GridParams.RoundMilliseconds`；原通用网格默认一次、第一和第三阶段逐次完整检查不改。每次输入前仍重新核实际取消令牌、session所有权、捕获后端、进程/窗口、物理矩形、前台与原1500毫秒新鲜度；过期重新完整核验，不改采集时间、不抢焦点。每次滚轮保留对应原始PNG哈希、检查与输入时钟，所选物品双数量和未知标题仍按原规则拒绝，缺失保持unknown/null。具名库存原始JSON传输固定16MB UTF-8完整上限，超限整体拒绝而不截断；摩拉和其他传输上限、所有消费入口保持原状。
++- 第二十九层仅为严格CPU原模型会话限定12个算子内线程、一个顺序执行算子间线程并关闭忙等；普通模型提供者、原ONNX和六资产读锁、整页标记OCR、材料initial/final分割、摩拉、等级及全部双帧数量标准不变。只读预览在两张原图采集与解析后，先用第二张原始采集时间和实际判定时间执行原5000/1500毫秒门禁，再将两张仍持有的原图各自保存为新建、落盘刷新且读回PNG字节/BGR像素哈希的私有诊断。每帧保留采集、解析与PNG完成时钟；每对第二帧保留真实判定时钟和结果，第一帧不得伪填。任一图像证明缺失或时序不完整仍为unknown，不回写采集时间、不放宽新鲜度、不声明实际升级或消费已完成。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。

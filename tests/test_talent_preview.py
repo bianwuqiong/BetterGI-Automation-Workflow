@@ -2,10 +2,12 @@ from copy import deepcopy
 from datetime import datetime,timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from PIL import Image
 from scripts.talent_preview import verify_talent_preview,quantity
 from scripts.named_count_model_assets import COUNT_MODEL_ASSETS,read_named_count_model_assets
 from scripts.named_inventory import RAW_DETECTOR
@@ -38,6 +40,170 @@ class TalentPreviewTests(unittest.TestCase):
         return p,root
     def verify_modern(self,p,root):
         return verify_talent_preview(p,'芭芭拉','元素战技',START,FINISH,trusted_runtime_root=root)
+    def timed_packet(self):
+        p,root=self.modern_packet();raw=p['nativeObservation'];raw['previewTimingMethod']='capture_read_evaluate_then_private_png_v1'
+        previews=[f for f in raw['evidence']['rawFrames'] if 'materials' in f]
+        for i,f in enumerate(previews):
+            path=root/'log/synthetic-talent-preview-originals'/f'original-{i}.png';path.parent.mkdir(parents=True,exist_ok=True)
+            with Image.new('RGB',(1920,1080),(20+i,30+i,40+i)) as image:
+                image.save(path,format='PNG');pixels_hash=hashlib.sha256(image.tobytes('raw','BGR')).hexdigest()
+            f['privateCapture']={'observedAt':f['observedAt'],'width':1920,'height':1080,'pixelType':'CV_8UC3',
+                'path':str(path),'pngSha256':hashlib.sha256(path.read_bytes()).hexdigest(),'nativePixelsSha256':pixels_hash,
+                'source':'diagnostic_only_lossless_native_srcmat_no_resize'}
+            evaluated=previews[(i//2)*2+1]['observedAt']+100
+            f['readTiming']={'captureCallStartedAt':f['observedAt']-5,'captureReturnedAt':f['observedAt'],
+                'readerStartedAt':f['observedAt']+1,'readerCompletedAt':f['observedAt']+70,
+                'pairEvaluatedAt':None if i%2==0 else evaluated,'pairAccepted':None if i%2==0 else True,
+                'diagnosticPngCompletedAt':evaluated+200+(50 if i%2 else 0)}
+        return p,root
+    def timed_previews(self,p):return [f for f in p['nativeObservation']['evidence']['rawFrames'] if 'materials' in f]
+
+    def test_timing29_real_synthetic_full_pngs_and_fixed_models_match_without_bitblt_or_consumer_claim(self):
+        p,root=self.timed_packet();before=deepcopy(p)
+        self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+        self.assertFalse(p['nativeObservation']['confirmationSubmitted']);self.assertEqual(p['completedUpgrades'],0)
+        self.assertNotIn('actualCapture',self.timed_previews(p)[0]);self.assertNotIn('sessionAfterVerified',p['costs'])
+
+    def test_timing29_all_null_fields_keep_only_legacy_readonly_compatibility(self):
+        p=packet('芭芭拉');p['nativeObservation']['previewTimingMethod']=None
+        for f in self.timed_previews(p):f['readTiming']=None
+        self.assertTrue(self.verify(p));self.assertFalse(p['nativeObservation']['confirmationSubmitted'])
+
+    def test_timing29_any_nonnull_timing_or_marker_requires_every_pair_without_downgrade(self):
+        for mutate in (lambda raw:raw.pop('previewTimingMethod'),lambda raw:raw.update(previewTimingMethod=None),
+                       lambda raw:raw.update(previewTimingMethod='legacy'),lambda raw:raw.update(previewTimingMethod=True),
+                       lambda raw:self.timed_previews({'nativeObservation':raw})[0].update(readTiming=None),
+                       lambda raw:self.timed_previews({'nativeObservation':raw})[-1].pop('readTiming')):
+            p,root=self.timed_packet();mutate(p['nativeObservation'])
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p=packet('芭芭拉');p['nativeObservation']['previewTimingMethod']='capture_read_evaluate_then_private_png_v1'
+        with self.assertRaises(ValueError):self.verify(p)
+
+    def test_timing29_exact_dictionary_shape_actual_integers_and_first_null_second_true_are_required(self):
+        fields=('captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted')
+        for key in fields:
+            for value in (None,True,False,{},1.5):
+                if key=='pairAccepted' and value is True:continue
+                p,root=self.timed_packet();self.timed_previews(p)[1]['readTiming'][key]=value
+                with self.subTest(key=key,value=value),self.assertRaises(ValueError):self.verify_modern(p,root)
+            p,root=self.timed_packet();self.timed_previews(p)[1]['readTiming'].pop(key)
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.timed_packet();self.timed_previews(p)[0]['readTiming']['pairAccepted']=False
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.timed_packet();self.timed_previews(p)[0]['readTiming']['pairEvaluatedAt']=BASE+1500
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.timed_packet();self.timed_previews(p)[1]['readTiming']['syntheticNow']=BASE+1800
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_capture_reader_evaluation_and_two_png_write_order_cannot_be_rewritten(self):
+        for mutate in (lambda a,b:a.update(captureCallStartedAt=a['captureReturnedAt']+1),
+                       lambda a,b:a.update(readerStartedAt=a['captureReturnedAt']-1),
+                       lambda a,b:a.update(readerCompletedAt=b['captureCallStartedAt']),
+                       lambda a,b:b.update(pairEvaluatedAt=b['readerCompletedAt']-1),
+                       lambda a,b:a.update(diagnosticPngCompletedAt=b['pairEvaluatedAt']-1),
+                       lambda a,b:b.update(diagnosticPngCompletedAt=a['diagnosticPngCompletedAt']-1),
+                       lambda a,b:a.update(captureCallStartedAt=BASE-1),
+                       lambda a,b:b.update(diagnosticPngCompletedAt=BASE+4001),
+                       lambda a,b:b.update(captureReturnedAt=b['captureReturnedAt']+1)):
+            p,root=self.timed_packet();a,b=(f['readTiming'] for f in self.timed_previews(p)[:2]);mutate(a,b)
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_original_evaluation_freshness_accepts1500_and_rejects1501(self):
+        for age in (1500,1501):
+            p,root=self.timed_packet();previews=self.timed_previews(p);a,b=(f['readTiming'] for f in previews[-2:])
+            b['pairEvaluatedAt']=previews[-1]['observedAt']+age;a['diagnosticPngCompletedAt']=b['pairEvaluatedAt']+1;b['diagnosticPngCompletedAt']=b['pairEvaluatedAt']+2
+            for world,at in zip((f for f in p['nativeObservation']['evidence']['rawFrames'] if f.get('phase')=='world_restore'),(5000,5300)):
+                world['observedAt']=BASE+at
+            finish=datetime.fromtimestamp((BASE+6000)/1000,timezone.utc).isoformat()
+            if age==1500:self.assertTrue(verify_talent_preview(p,'芭芭拉','元素战技',START,finish,trusted_runtime_root=root))
+            else:
+                with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,finish,trusted_runtime_root=root)
+
+    def test_timing29_pair_png_cannot_finish_after_next_tooltip_cleanup_or_next_preview_capture(self):
+        for cleanup in (False,True):
+            p,root=self.timed_packet();previews=self.timed_previews(p)
+            second=previews[-1] if cleanup else previews[1]
+            following=next(f for f in p['nativeObservation']['evidence']['rawFrames'] if f['observedAt']>second['observedAt'])
+            second['readTiming']['diagnosticPngCompletedAt']=following['observedAt']+1
+            with self.assertRaisesRegex(ValueError,'next original capture'):self.verify_modern(p,root)
+        p,root=self.timed_packet();previews=self.timed_previews(p);frames=p['nativeObservation']['evidence']['rawFrames']
+        # A later same-cost preview is the next real capture; its start predates its return.
+        extra=[deepcopy(previews[2]),deepcopy(previews[3])]
+        for f,at in zip(extra,(2080,2090)):
+            f['observedAt']=BASE+at
+            for q in (f['materials'][0]['quantity'],f['mora']):q['observedAt']=f['observedAt']
+            f['privateCapture']['observedAt']=f['observedAt']
+        extra[0]['readTiming'].update(captureCallStartedAt=BASE+2040,captureReturnedAt=BASE+2080,readerStartedAt=BASE+2080,readerCompletedAt=BASE+2081,
+            diagnosticPngCompletedAt=BASE+2093)
+        extra[1]['readTiming'].update(captureCallStartedAt=BASE+2085,captureReturnedAt=BASE+2090,readerStartedAt=BASE+2090,readerCompletedAt=BASE+2091,
+            pairEvaluatedAt=BASE+2092,diagnosticPngCompletedAt=BASE+2094)
+        insert=frames.index(previews[1])+1;frames[insert:insert]=extra
+        with self.assertRaisesRegex(ValueError,'next original capture'):self.verify_modern(p,root)
+
+    def test_timing29_requires_two_full_original_pngs_trusted_log_and_exact_observed_origin(self):
+        for mutate in (lambda f:f.update(privateCapture=None),lambda f:f.pop('privateCapture'),
+                       lambda f:f['privateCapture'].update(observedAt=f['observedAt']+1),
+                       lambda f:f['privateCapture'].update(observedAt=True),lambda f:f['privateCapture'].update(pixelType='CV_8UC4'),
+                       lambda f:f['privateCapture'].update(width=1280),lambda f:f['privateCapture'].update(width=1920.0),
+                       lambda f:f['privateCapture'].update(source='actual_synchronous_BitBltCapture'),
+                       lambda f:f['privateCapture'].update(pngSha256='0'*64),lambda f:f['privateCapture'].update(nativePixelsSha256='0'*64)):
+            p,root=self.timed_packet();mutate(self.timed_previews(p)[0])
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.timed_packet();f=self.timed_previews(p)[0];source=Path(f['privateCapture']['path']);outside=root/'state/foreign.png';outside.parent.mkdir();outside.write_bytes(source.read_bytes());f['privateCapture']['path']=str(outside)
+        with self.assertRaisesRegex(ValueError,'trusted runtime log'):self.verify_modern(p,root)
+        p,root=self.timed_packet()
+        with self.assertRaisesRegex(ValueError,'trusted BetterGI runtime root'):self.verify(p)
+        p,root=self.timed_packet();a,b=self.timed_previews(p)[:2];b['privateCapture']={**deepcopy(a['privateCapture']),'observedAt':b['observedAt']}
+        with self.assertRaisesRegex(ValueError,'reused'):self.verify_modern(p,root)
+
+    def test_timing29_actual_png_bytes_color_dimensions_and_pixel_hash_cannot_be_forged(self):
+        for mode,size in (('RGBA',(1920,1080)),('RGB',(1280,720))):
+            p,root=self.timed_packet();pixels=self.timed_previews(p)[0]['privateCapture'];path=Path(pixels['path'])
+            with Image.new(mode,size) as image:image.save(path,format='PNG')
+            pixels['pngSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.timed_packet();pixels=self.timed_previews(p)[0]['privateCapture'];path=Path(pixels['path']);path.write_bytes(path.read_bytes()+b'changed')
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_png_pixel_changes_and_incomplete_stream_reject_even_with_new_file_hash(self):
+        for change_pixels in (False,True):
+            p,root=self.timed_packet();pixels=self.timed_previews(p)[0]['privateCapture'];path=Path(pixels['path'])
+            if change_pixels:
+                with Image.new('RGB',(1920,1080),(90,80,70)) as image:image.save(path,format='PNG')
+            else:path.write_bytes(path.read_bytes()+b'synthetic-trailing-data')
+            pixels['pngSha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_original_files_cannot_be_reused_through_hardlink_or_path_alias(self):
+        for hardlink in (False,True):
+            p,root=self.timed_packet();a,b=self.timed_previews(p)[:2]
+            source=Path(a['privateCapture']['path'])
+            if hardlink:
+                alias=source.with_name('synthetic-hardlink.png');os.link(source,alias)
+            else:alias=source.parent/'nested'/ '..'/source.name
+            if not hardlink:(source.parent/'nested').mkdir()
+            b['privateCapture']={**deepcopy(a['privateCapture']),'path':str(alias),'observedAt':b['observedAt']}
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_every_actual_asset_byte_is_rehashed_under_the_trusted_root(self):
+        for unused,path in [*COUNT_MODEL_ASSETS,('PpOcrDetV6',RAW_DETECTOR)]:
+            p,root=self.timed_packet();(root/path).write_bytes(b'SYNTHETIC-CHANGED-ASSET')
+            with self.subTest(path=path),self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_mixed_second_and_millisecond_clocks_cannot_pass(self):
+        p,root=self.timed_packet();self.timed_previews(p)[1]['readTiming']['readerStartedAt']//=1000
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_cannot_wrap_legacy_cost_method_or_drop_any_pinned_material_model(self):
+        for mutate in (lambda raw:raw.update(costQuantityMethod='legacy_observed_ratio'),
+                       lambda raw:self.timed_previews({'nativeObservation':raw})[0].update(costQuantityMethod='legacy_observed_ratio'),
+                       lambda raw:self.timed_previews({'nativeObservation':raw})[0]['materials'][0]['quantity'].update(splitModelEvidence=None)):
+            p,root=self.timed_packet();mutate(p['nativeObservation'])
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_timing29_unknown_packet_preserves_raw_and_new_timing_never_promotes_it_to_success(self):
+        p,root=self.timed_packet();p.update(evidenceVerified=False,costs=None);p['nativeObservation']['status']='unknown';before=deepcopy(p)
+        self.assertFalse(self.verify_modern(p,root));self.assertEqual(p,before)
 
     def test_modern26_pinned_split_independently_hashes_six_fixed_runtime_assets(self):
         p,root=self.modern_packet();before=deepcopy(p)

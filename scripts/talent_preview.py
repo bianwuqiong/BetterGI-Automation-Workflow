@@ -4,20 +4,93 @@ Legacy fixtures remain diagnostic compatibility only. Neither legacy nor model-
 pinned costs authorize consumption or replace the unintegrated native final gate.
 """
 import math
+from pathlib import Path
 import re
 import unicodedata
 try:
     from .backpack_inventory_evidence import _number,_rect,_inside,_time
     from .named_count_model_assets import COUNT_MODEL_ASSETS
     from .named_inventory import RAW_DETECTOR,strict_models
+    from .named_inventory_capture import original_png
 except ImportError:
     from backpack_inventory_evidence import _number,_rect,_inside,_time
     from named_count_model_assets import COUNT_MODEL_ASSETS
     from named_inventory import RAW_DETECTOR,strict_models
+    from named_inventory_capture import original_png
 
 TYPES=('普通攻击','元素战技','元素爆发')
 PINNED_SPLIT_METHOD='pinned_v6_v4_slash_integer_split'
 SPLIT_METADATA=('splitRawModel','splitDetectorModel','splitModelEvidence','splitRawPaddleReadback')
+PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1'
+READ_TIMING_FIELDS={'captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt',
+    'pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'}
+PRIVATE_CAPTURE_FIELDS={'observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'}
+
+def preview_timing(raw,previews,start,finish,*,trusted_runtime_root=None):
+    """Authenticate retained PNG bytes and the reported evaluation sequence, not BitBlt ownership."""
+    active=raw.get('previewTimingMethod') is not None or any(p.get('readTiming') is not None for p in previews)
+    if not active:return
+    if raw.get('previewTimingMethod')!=PREVIEW_TIMING_METHOD:
+        raise ValueError('modern preview timing requires the exact capture/read/evaluate/PNG method')
+    if cost_method(raw)!=PINNED_SPLIT_METHOD or any(cost_method(p)!=PINNED_SPLIT_METHOD for p in previews):
+        raise ValueError('modern preview timing cannot authenticate legacy quantity costs')
+    if trusted_runtime_root is None:raise ValueError('modern preview PNG requires trusted BetterGI runtime root')
+    paths=set();file_ids=set()
+    for offset in range(0,len(previews),2):
+        first,second=previews[offset:offset+2];times=[]
+        for index,p in enumerate((first,second)):
+            timing=p.get('readTiming');pixels=p.get('privateCapture')
+            if (not isinstance(timing,dict) or set(timing)!=READ_TIMING_FIELDS
+                    or not isinstance(pixels,dict) or set(pixels)!=PRIVATE_CAPTURE_FIELDS):
+                raise ValueError('modern preview requires both complete readTiming and original PNG metadata')
+            for key in READ_TIMING_FIELDS-{'pairEvaluatedAt','pairAccepted'}:
+                value=integer(timing[key],0,9007199254740991)
+                if not start<=value<=finish:raise ValueError('preview timing clock outside actual run')
+            at=integer(p.get('observedAt'),0,9007199254740991)
+            if not timing['captureCallStartedAt']<=timing['captureReturnedAt']==at<=timing['readerStartedAt']<=timing['readerCompletedAt']:
+                raise ValueError('preview actual capture/reader clock order mismatch')
+            if index==0:
+                if timing['pairEvaluatedAt'] is not None or timing['pairAccepted'] is not None:
+                    raise ValueError('first preview frame cannot claim pair evaluation or acceptance')
+            else:
+                evaluated=integer(timing['pairEvaluatedAt'],0,9007199254740991)
+                if not start<=evaluated<=finish or timing['pairAccepted'] is not True:
+                    raise ValueError('second preview frame needs actual accepted pair evaluation')
+            if ((p['width'],p['height'])!=(1920,1080) or type(pixels.get('observedAt')) is not int
+                    or pixels['observedAt']!=at or not isinstance(pixels.get('path'),str)
+                    or len(pixels['path'])>4096 or re.search(r'[\x00-\x1f\x7f]',pixels['path'])
+                    or any(part in ('.','..') for part in re.split(r'[\\/]',pixels['path']))
+                    or not Path(pixels['path']).is_absolute()):
+                raise ValueError('preview original PNG origin/time/native geometry mismatch')
+            try:
+                runtime=Path(trusted_runtime_root).resolve(strict=True)
+                path=Path(pixels['path']).resolve(strict=True)
+                if not path.is_relative_to(runtime/'log'):
+                    raise ValueError('preview original PNG must stay inside trusted runtime log')
+                identity=path.stat();file_id=(identity.st_dev,identity.st_ino)
+                if path in paths or identity.st_ino and file_id in file_ids:
+                    raise ValueError('preview original PNG reused for another capture')
+                paths.add(path);file_ids.add(file_id)
+                # No workflow/state fallback: modern originals must be in this trusted runtime's log.
+                with original_png(pixels,trusted_runtime_root):pass
+            except (OSError,SyntaxError) as error:
+                raise ValueError('modern preview original PNG unavailable or unverified') from error
+            times.append(timing)
+        a,b=times
+        if (not a['readerCompletedAt']<b['captureCallStartedAt']
+                or not b['readerCompletedAt']<=b['pairEvaluatedAt']<=a['diagnosticPngCompletedAt']<=b['diagnosticPngCompletedAt']
+                or not 0<second['observedAt']-first['observedAt']<=5000
+                or not 0<=b['pairEvaluatedAt']-second['observedAt']<=1500):
+            raise ValueError('preview original pair freshness/evaluation-before-PNG sequence invalid')
+        following=next((f for f in raw['evidence']['rawFrames'] if f['observedAt']>second['observedAt']),None)
+        if following is not None:
+            next_capture=following['observedAt']
+            if 'materials' in following and 'current' in following:
+                timing=following.get('readTiming')
+                if not isinstance(timing,dict):raise ValueError('next modern preview capture timing missing')
+                next_capture=integer(timing.get('captureCallStartedAt'),0,9007199254740991)
+            if b['diagnosticPngCompletedAt']>min(next_capture,following['observedAt']):
+                raise ValueError('preview PNG completion cannot follow the next original capture')
 
 def modern_split(q):
     if not isinstance(q,dict):raise ValueError('talent quantity must be a native JSON object')
@@ -456,6 +529,7 @@ def verified_observation(raw,character,talent_type,started_at,finished_at,*,trus
         entry_binding(evidence,frames,character,talent_type,start,finish,names,details)
     previews=[f for f in frames if 'materials' in f and 'current' in f]
     if len(previews)<2 or len(previews)%2 or previews[0]['observedAt']<=details[1]['observedAt'] or evidence.get('preview')!=previews[-1]: raise ValueError('independent full next-cost popup pair missing')
+    preview_timing(raw,previews,start,finish,trusted_runtime_root=trusted_runtime_root)
     method=cost_method(raw)
     if any(cost_method(p)!=method for p in previews):raise ValueError('payload and every popup quantity method must agree')
     pinned_proof=None

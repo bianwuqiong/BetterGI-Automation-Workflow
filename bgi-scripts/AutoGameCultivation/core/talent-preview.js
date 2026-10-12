@@ -45,6 +45,46 @@ const SPLIT_ASSETS=[
 const modernSplit=q=>q&&typeof q==='object'&&!Array.isArray(q)?SPLIT_METADATA.some(key=>q[key]!=null):fail('talent_quantity_json_object_required');
 const quantityChainModern=q=>modernSplit(q)||(q.initialReading!=null&&modernSplit(q.initialReading));
 const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+const PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1';
+const READ_TIMING_FIELDS=['captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'];
+const PRIVATE_CAPTURE_FIELDS=['observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'];
+function previewTiming(raw,previews,start,finish){
+  if(raw.previewTimingMethod==null&&previews.every(p=>p.readTiming==null))return;
+  if(raw.previewTimingMethod!==PREVIEW_TIMING_METHOD)fail('talent_modern_preview_timing_method_required');
+  if(costMethod(raw)!=='pinned_v6_v4_slash_integer_split'||previews.some(p=>costMethod(p)!=='pinned_v6_v4_slash_integer_split'))fail('talent_modern_preview_timing_cannot_authenticate_legacy_costs');
+  const paths=new Set(),clock=(v)=>{if(!Number.isSafeInteger(v)||v<start||v>finish)fail('talent_preview_actual_clock_invalid');return v;};
+  for(let offset=0;offset<previews.length;offset+=2){
+    const frames=previews.slice(offset,offset+2),times=[];
+    for(const [index,p] of frames.entries()){
+      const t=p.readTiming,pixels=p.privateCapture;
+      if(!exactKeys(t,READ_TIMING_FIELDS)||!exactKeys(pixels,PRIVATE_CAPTURE_FIELDS))fail('talent_modern_preview_timing_or_original_png_incomplete');
+      for(const key of READ_TIMING_FIELDS)if(!['pairEvaluatedAt','pairAccepted'].includes(key))clock(t[key]);
+      clock(p.observedAt);
+      if(!(t.captureCallStartedAt<=t.captureReturnedAt&&t.captureReturnedAt===p.observedAt&&p.observedAt<=t.readerStartedAt&&t.readerStartedAt<=t.readerCompletedAt))fail('talent_preview_capture_reader_clock_order');
+      if(index===0){if(t.pairEvaluatedAt!==null||t.pairAccepted!==null)fail('talent_first_preview_must_not_claim_pair_acceptance');}
+      else if(clock(t.pairEvaluatedAt)<start||t.pairAccepted!==true)fail('talent_second_preview_actual_accepted_pair_required');
+      if(p.width!==1920||p.height!==1080||pixels.width!==1920||pixels.height!==1080||pixels.observedAt!==p.observedAt
+          ||pixels.pixelType!=='CV_8UC3'||pixels.source!=='diagnostic_only_lossless_native_srcmat_no_resize'
+          ||typeof pixels.path!=='string'||pixels.path.length>4096||/[\x00-\x1f\x7f]/.test(pixels.path)
+          ||!(/^[A-Za-z]:[\\/]/.test(pixels.path)||/^\/(?!\/)/.test(pixels.path))||!pixels.path.toLowerCase().endsWith('.png')
+          ||pixels.path.split(/[\\/]/).some(part=>part==='.'||part==='..')||!pixels.path.split(/[\\/]/).includes('log')
+          ||[pixels.pngSha256,pixels.nativePixelsSha256].some(v=>typeof v!=='string'||!/^[0-9a-fA-F]{64}$/.test(v)))fail('talent_preview_original_png_origin_or_shape_invalid');
+      let path=pixels.path.replaceAll('\\','/').replace(/\/{2,}/g,'/');
+      if(/^[A-Za-z]:\//.test(path))path=path.toLowerCase();
+      if(paths.has(path))fail('talent_preview_original_png_path_reused');paths.add(path);times.push(t);
+    }
+    const [a,b]=times;
+    if(!(a.readerCompletedAt<b.captureCallStartedAt&&b.readerCompletedAt<=b.pairEvaluatedAt&&b.pairEvaluatedAt<=a.diagnosticPngCompletedAt&&a.diagnosticPngCompletedAt<=b.diagnosticPngCompletedAt)
+        ||frames[1].observedAt-frames[0].observedAt<=0||frames[1].observedAt-frames[0].observedAt>5000
+        ||b.pairEvaluatedAt-frames[1].observedAt<0||b.pairEvaluatedAt-frames[1].observedAt>1500)fail('talent_preview_actual_pair_freshness_or_evaluate_before_png_invalid');
+    const following=raw.evidence.rawFrames.find(f=>f.observedAt>frames[1].observedAt);
+    if(following){
+      const nextCapture='materials' in following&&'current' in following?clock(following.readTiming?.captureCallStartedAt):following.observedAt;
+      if(b.diagnosticPngCompletedAt>Math.min(nextCapture,following.observedAt))fail('talent_preview_png_completion_must_precede_next_original_capture');
+    }
+  }
+  // This checks protocol shape only; the Host reads the original PNG and recomputes BGR hashes.
+}
 function splitModelShape(q){
   if(!modernSplit(q))return false;
   if(q.splitRawModel!=='V6'||q.splitDetectorModel!=='V4'||q.splitRawPaddleReadback!==8||q.slashPixelVerified!==true
@@ -289,6 +329,7 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   if(['talentEntryObservationMethod','talentEntryObservationLimitMs','talentEntryObservationPollMs'].some(k=>k in e)||'talentEntryIdentitySource' in e||'characterIdentityMethod' in e||'twoPickedEntryFrames' in e||'entryClickFrame' in e||frames.some(f=>f.phase==='talent_entry_observation'))entryBinding(e,frames,character,type,start,finish,names,details);
   const previews=frames.filter(f=>'materials' in f&&'current' in f);
   if(previews.length<2||previews.length%2||previews[0].observedAt<=details[1].observedAt||!same(e.preview,previews.at(-1)))fail('talent_popup_pair_missing');let costs;
+  previewTiming(raw,previews,start,finish);
   if(previews.some(p=>costMethod(p)!==costMethod(raw)))fail('talent_payload_popup_quantity_method_mismatch');
   let pinnedProof=null;
   for(const p of previews)for(const item of previewMaterials(p))for(const reading of [item.quantity,item.quantity.initialReading])if(reading!=null&&modernSplit(reading)){
