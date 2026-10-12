@@ -4,6 +4,7 @@ import { createWeaponGuideBgiApi, readWeaponGuideInventory } from './core/weapon
 import { createBackpackInventoryReader } from './core/backpack-reader.js';
 import { createTalentPreviewReader } from './core/talent-preview.js';
 import { createWeeklyInventoryReader } from './core/weekly-inventory.js';
+import { createNamedInventoryReader,createBoundMoraReader } from './core/named-inventory.js';
 
 const data={rulebook:JSON.parse(file.ReadTextSync('upstream/data/rulebook.json')),
   materials:JSON.parse(file.ReadTextSync('upstream/data/materials.json')),
@@ -13,6 +14,8 @@ const api={
   now:()=>Date.now(),
   inspectTalentUpgrade:createTalentPreviewReader({dispatcher,log}),
   readWeeklyConversionInventory:createWeeklyInventoryReader({dispatcher,log}),
+  readNamedCultivationInventory:createNamedInventoryReader({dispatcher,log}),
+  readBoundMoraSnapshot:createBoundMoraReader({dispatcher,log}),
   async readMoraSnapshot(remainingMilliseconds) {
     const cts=dispatcher.GetLinkedCancellationTokenSource();
     try {

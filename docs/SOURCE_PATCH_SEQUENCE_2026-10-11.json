@@ -116,6 +116,11 @@
       "order": 22,
       "path": "patches/local-entry-contiguous-triple-2026-10-12.patch",
       "sha256": "d2a5a847b8b23bd701ac91b4b301662a391526a0ef3559d4a95ed278f5eb1c59"
+    },
+    {
+      "order": 23,
+      "path": "patches/local-named-inventory-2026-10-12.patch",
+      "sha256": "839a651540f58bd42c50fe79376993c5272f568264373412222c81052dc2d964"
     }
   ],
   "offlineValidation": {
@@ -323,5 +328,22 @@
     "genericEightMaterialInventoryIncluded": false,
     "actualConversionOrUpgradeExecutorIncluded": false,
     "validationDocument": "docs/LOCAL_ENTRY_CONTIGUOUS_TRIPLE_2026-10-12.md"
+  },
+  "namedInventoryExtension": {
+    "selectedPureTests": 79,
+    "actualNamedInventoryVerified": false,
+    "actualBoundMoraVerified": false,
+    "readOnly": true,
+    "maximumMaterials": 8,
+    "maximumPagesPerCategory": 30,
+    "maximumSelectionAttempts": 2,
+    "actualSynchronousBitBltBinding": true,
+    "processStartedUtcTicksEncoding": "exact_decimal_string",
+    "originalOnnxCpuUncachedSessions": true,
+    "sharedImageOnlyReaders": true,
+    "consumerSessionIncluded": false,
+    "actualConversionOrUpgradeExecutorIncluded": false,
+    "runtimeCaptureDependencyRequired": "Fischless.GameCapture.dll",
+    "validationDocument": "docs/LOCAL_NAMED_INVENTORY_2026-10-12.md"
   }
 }

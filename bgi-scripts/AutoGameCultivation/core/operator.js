@@ -5,6 +5,7 @@ import { verifyBackpackInventory } from './backpack-evidence.js';
 import { readResourceCoverage } from './resource-coverage.js';
 import { readTalentPreview } from './talent-preview.js';
 import { readWeeklyInventory } from './weekly-inventory.js';
+import { readNamedInventory,readBoundMora } from './named-inventory.js';
 import {parseInputs,readProfile,makeRequirements,scanGroups,normalizeCounts,buildPlan,candidateDomains,candidateBosses,candidateCrafting,createDomainParam,createBossParam,verifiedGain,verifiedCraft,gameWeekday,normalizeResinSnapshot,observedBudgetBlocker} from './safe.js';
 
 const cloneInventory=inventory=>JSON.parse(JSON.stringify(inventory));
@@ -56,8 +57,17 @@ export async function runCultivation(settings,api,data) {
   if(await api.writeText(entryCheckpointPath,entryCheckpoint)!==true || api.readText(entryCheckpointPath)!==entryCheckpoint)
     throw new Error('初始unknown记录写入失败，未调用角色/库存/树脂或资源接口');
   try {
-    if([settings.weeklyInventoryOnly,settings.talentPreviewOnly,settings.resourceDiagnosticOnly,settings.resinDiagnosticOnly].filter(enabled).length>1)throw Error('只读诊断模式互斥，未调用游戏接口');
-    if(enabled(settings.weeklyInventoryOnly)) {
+    if([settings.namedInventoryOnly,settings.boundMoraOnly,settings.weeklyInventoryOnly,settings.talentPreviewOnly,settings.resourceDiagnosticOnly,settings.resinDiagnosticOnly].filter(enabled).length>1)throw Error('只读诊断模式互斥，未调用游戏接口');
+    if(enabled(settings.namedInventoryOnly)||enabled(settings.boundMoraOnly)) {
+      if(input.mode!=='scan'||input.policy.originalResinBudget!==0||input.policy.condensedResinBudget!==0||input.policy.maxMinutes>3
+          ||['allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'].some(key=>input.policy[key]))throw Error('绑定原图诊断仅允许scan零预算且禁止执行');
+      report.metadata.diagnostic=enabled(settings.namedInventoryOnly)?'named-inventory-only':'bound-mora-only';
+      report.metadata.calculationScope='独立只读原PNG与实际捕获绑定；Host核验前数量未知，不证明消费Session After';
+      if(enabled(settings.namedInventoryOnly))report.namedInventory=await readNamedInventory(api,JSON.parse(settings.namedInventoryScopeJson),
+        {runId:input.runId,stepId:settings.namedInventoryStepId,phase:'diagnostic'},started+input.policy.maxMinutes*60000);
+      else report.boundMora=await readBoundMora(api,started+input.policy.maxMinutes*60000);
+      report.blockers.push({code:'native_bound_readonly',message:'原始证据由Host独立核验；不执行消费、不证明升级或Session After'});
+    } else if(enabled(settings.weeklyInventoryOnly)) {
       if(input.mode!=='scan'||input.policy.originalResinBudget!==0||input.policy.condensedResinBudget!==0||input.policy.maxMinutes>3
           ||['allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'].some(key=>input.policy[key]))throw Error('周本四库存仅允许独立scan、零预算、最多3分钟、禁止所有执行');
       report.metadata.diagnostic='weekly-conversion-inventory-only';

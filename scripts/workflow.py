@@ -1725,7 +1725,8 @@ def check_resource_policy(global_config, names):
 
 
 def verify_cultivation_analysis(analysis, exe, run_id, mode, target, directory,
-                               *, execution_outcome='running', expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False):
+                               *, execution_outcome='running', expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False,
+                               expected_named_request=None,expected_bound_mora=False,trusted_game_context=None,trusted_workflow_root=None):
     """A log event is a pointer, not proof; validate its private report separately."""
     if target is None or not analysis.get('cultivation'):
         return analysis
@@ -1733,7 +1734,9 @@ def verify_cultivation_analysis(analysis, exe, run_id, mode, target, directory,
     try:
         verified = verify_cultivation_report(
             analysis['cultivation'], exe.parent, run_id, mode, target, directory,
-            expected_policy=expected_policy, expected_talent_type=expected_talent_type, expected_weekly_inventory=expected_weekly_inventory)
+            expected_policy=expected_policy, expected_talent_type=expected_talent_type, expected_weekly_inventory=expected_weekly_inventory,
+            expected_named_request=expected_named_request,expected_bound_mora=expected_bound_mora,
+            trusted_game_context=trusted_game_context,trusted_workflow_root=trusted_workflow_root)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         analysis.setdefault('warnings', []).append('培养报告尚未核验：' + str(exc))
         return analysis
@@ -1876,6 +1879,16 @@ def fresh_artifact_day_review_identity(root, config, host, settings, *, profile_
     return {'pid': pid, 'exe': str(game_path), 'physicalClient': physical}, graphics
 
 
+def fresh_named_inventory_context(root,host,settings,expected_pid=None):
+    """Source OS facts only from the runner's controller, never caller/raw binding."""
+    from named_inventory_context import query_game_context
+    executable=resolved(root,settings['gameExe']).resolve()
+    pid=verify_existing_game(host,settings['gameProcessNames'],executable,expected_pid=expected_pid)
+    if pid is None:raise WorkflowError('具名库存只读核验缺少当前唯一游戏进程。',6)
+    try:return query_game_context(pid,executable)
+    except (OSError,ValueError) as error:raise WorkflowError('具名库存只读OS身份未核验：'+str(error),6) from error
+
+
 def slow_stage_reason(performance, limits):
     stage = performance.get('currentStage')
     if not stage:
@@ -1941,6 +1954,9 @@ def execute(args, host=None):
     cultivation_resource_check = bool(getattr(args, 'cultivation_resource_check', False))
     cultivation_talent_preview = bool(getattr(args, 'cultivation_talent_preview', False))
     cultivation_weekly_inventory = bool(getattr(args, 'cultivation_weekly_inventory', False))
+    cultivation_named_inventory=bool(getattr(args,'cultivation_named_inventory',False))
+    cultivation_bound_mora=bool(getattr(args,'cultivation_bound_mora_check',False))
+    named_scope=None;named_request=None;named_game_context=None
     talent_type = getattr(args, 'talent_type', None) or 'elemental-skill'
     cultivation_scan = False
     combat_rehearsal = False
@@ -1964,6 +1980,12 @@ def execute(args, host=None):
             publish(root, directory, result, current=not args.dry_run)
             try:
                 cfg = read_json(root / 'config/settings.json')
+                if cultivation_named_inventory or cultivation_bound_mora:
+                    if (cultivation_mode!='scan' or graphics_check_only or sum((cultivation_named_inventory,cultivation_bound_mora,cultivation_weekly_inventory,cultivation_talent_preview,cultivation_resource_check,cultivation_resin_check))!=1
+                            or args.task not in (None,'培养材料') or not (getattr(args,'profile',None)=='cultivation' or args.task=='培养材料')):
+                        raise WorkflowError('具名库存/绑定摩拉仅允许单培养scan、零预算、独立只读诊断。')
+                if getattr(args,'cultivation_material_scope',None) and not cultivation_named_inventory:
+                    raise WorkflowError('--cultivation-material-scope 仅用于 --cultivation-named-inventory。')
                 if cultivation_weekly_inventory and (cultivation_mode != 'scan' or graphics_check_only or cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview):
                     raise WorkflowError('周本四库存只读诊断仅允许独立scan，不能与execute、其他诊断或画质验收组合。')
                 if cultivation_resin_check and (cultivation_mode != 'scan' or graphics_check_only):
@@ -2187,18 +2209,25 @@ def execute(args, host=None):
                         raise WorkflowError('天赋类型只允许 normal-attack、elemental-skill、elemental-burst。')
                     result['cultivationTalentPreview'] = True
                     result['cultivationTalentType'] = talent_type
+                if cultivation_named_inventory:
+                    if not getattr(args,'cultivation_material_scope',None):raise WorkflowError('具名库存必须指定本机合法零预算材料scope配置。')
+                    named_scope=read_json(resolved(root,args.cultivation_material_scope))
+                    from named_inventory import prepare_named_request
+                    named_request=prepare_named_request(named_scope,run_id=run_id,step_id=run_id+':named-inventory-diagnostic',trusted_runtime_root=exe.parent)
+                    result['cultivationNamedInventory']=True
+                if cultivation_bound_mora:result['cultivationBoundMoraCheck']=True
                 if profile == 'cultivation' or args.task == '培养材料':
                     from cultivation import inject_cultivation_task, load_cultivation_config
                     cultivation_config = load_cultivation_config(
                         root / 'config/cultivation.json', cultivation_mode)
-                    if cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory:
+                    if cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory or cultivation_named_inventory or cultivation_bound_mora:
                         cultivation_config = {'target': cultivation_config['target'], 'executionEnabled': False,
-                            'policy': {'originalResinBudget': 0, 'condensedResinBudget': 0, **({'maxMinutes':3} if cultivation_talent_preview or cultivation_weekly_inventory else {})}}
+                            'policy': {'originalResinBudget': 0, 'condensedResinBudget': 0, **({'maxMinutes':3} if cultivation_talent_preview or cultivation_weekly_inventory or cultivation_named_inventory or cultivation_bound_mora else {})}}
                     template = inject_cultivation_task(template)
                 selected, names = task_selection(template, args.task, profile)
                 cultivation_scan = cultivation_config is not None and cultivation_mode == 'scan'
                 if cultivation_scan:
-                    selected = [key for key in (template['TaskOrder'] if cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory else selected)
+                    selected = [key for key in (template['TaskOrder'] if cultivation_resin_check or cultivation_resource_check or cultivation_talent_preview or cultivation_weekly_inventory or cultivation_named_inventory or cultivation_bound_mora else selected)
                                 if template['TaskDefinitions'][key] == '培养材料']
                     names = ['培养材料']
                     result['mode'] = 'cultivation-scan' if not args.dry_run else 'dry-run'
@@ -2456,6 +2485,10 @@ def execute(args, host=None):
                         cultivation_group['Projects'][0]['JsScriptSettingsObject']['resourceDiagnosticOnly'] = True
                     if cultivation_weekly_inventory:
                         cultivation_group['Projects'][0]['JsScriptSettingsObject']['weeklyInventoryOnly'] = True
+                    if cultivation_named_inventory:
+                        cultivation_group['Projects'][0]['JsScriptSettingsObject'].update(namedInventoryOnly=True,namedInventoryScopeJson=json.dumps(named_scope,ensure_ascii=False),
+                            namedInventoryStepId=named_request['stepId'])
+                    if cultivation_bound_mora:cultivation_group['Projects'][0]['JsScriptSettingsObject']['boundMoraOnly']=True
                     if cultivation_talent_preview:
                         cultivation_group['Projects'][0]['JsScriptSettingsObject'].update(talentPreviewOnly=True,
                             talentPreviewType={'normal-attack':'普通攻击','elemental-skill':'元素战技','elemental-burst':'元素爆发'}[talent_type])
@@ -2796,6 +2829,11 @@ def execute(args, host=None):
                             from material_route import verify_material_route_report, verify_material_route_session_report, verify_material_recovery_report, verify_party_preparation_report
                             route_verify = verify_party_preparation_report if party_preparation else verify_material_recovery_report if material_recovery else verify_material_route_session_report if route_session else verify_material_route_report
                             analysis = route_verify(text, exe.parent, run_id, route_group, generated_name, 'running')
+                        if (cultivation_named_inventory or cultivation_bound_mora) and named_game_context is None and current_game_pids:
+                            try:
+                                named_game_context=fresh_named_inventory_context(root,host,cfg,expected_pid=adopted_game_pid)
+                                result['namedInventoryGameContext']=named_game_context
+                            except WorkflowError as error:result['namedInventoryGameContextFailure']=str(error)
                         analysis = verify_cultivation_analysis(
                             analysis, exe, run_id, cultivation_mode,
                             cultivation_config['target'] if cultivation_config else None, directory,
@@ -2803,7 +2841,8 @@ def execute(args, host=None):
                                 json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
                                 if cultivation_group else None),expected_talent_type=(
                                 cultivation_group['Projects'][0]['JsScriptSettingsObject'].get('talentPreviewType')
-                                if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory)
+                                if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory,
+                            expected_named_request=named_request,expected_bound_mora=cultivation_bound_mora,trusted_game_context=named_game_context,trusted_workflow_root=root)
                         performance = analyze_performance(text, names, now_elapsed_sec=elapsed)
                         result['performance'] = performance
                         result.update(tasks=analysis.get('tasks', []), rewards=analysis.get('rewards', {}),
@@ -2998,7 +3037,8 @@ def execute(args, host=None):
                             json.loads(cultivation_group['Projects'][0]['JsScriptSettingsObject']['policyJson'])
                             if cultivation_group else None),expected_talent_type=(
                             cultivation_group['Projects'][0]['JsScriptSettingsObject'].get('talentPreviewType')
-                            if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory)
+                            if cultivation_talent_preview and cultivation_group else None),expected_weekly_inventory=cultivation_weekly_inventory,
+                        expected_named_request=named_request,expected_bound_mora=cultivation_bound_mora,trusted_game_context=named_game_context,trusted_workflow_root=root)
                     result['performance'] = analyze_performance(text, names, now_elapsed_sec=time.monotonic() - start)
                     saved_errors = result['errors']
                     result.update({k: v for k, v in analysis.items() if k != 'schemaVersion'})
@@ -3207,6 +3247,9 @@ def main(argv=None):
                      help='单培养scan节点只读摩拉及三种武器经验矿覆盖，不执行日常、合成或升级')
     run.add_argument('--cultivation-weekly-inventory', action='store_true',
                      help='单培养scan节点只读残火灯烛、丝织之羽、否定裁断、异梦溶媒库存；不转换或消费')
+    run.add_argument('--cultivation-named-inventory',action='store_true',help='独立只读最多8个合法配置具名培养材料；不消费或升级')
+    run.add_argument('--cultivation-material-scope',help='本机零预算execution=false材料ID/完整名scope配置，禁止caller库存/费用/binding')
+    run.add_argument('--cultivation-bound-mora-check',action='store_true',help='独立同步BitBlt绑定的只读摩拉原始证据诊断')
     run.add_argument('--cultivation-talent-preview', action='store_true',
                      help='单培养scan节点只读当前目标的一项天赋下一等级成本，禁止确认升级')
     run.add_argument('--talent-type', choices=['normal-attack','elemental-skill','elemental-burst'],

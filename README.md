@@ -15,6 +15,8 @@
 
 新增独立周本四库存只读入口 `--cultivation-weekly-inventory`：固定读取三种周本材料和异梦溶媒，JS/Python均重新核验原始具名、模型、数量和恢复双帧，任一不足保持unknown/null。临时零预算且不执行转换或消费；普通材料扫描保持原义。使用与证据边界见[培养脚本说明](bgi-scripts/AutoGameCultivation/README.md#独立周本四库存只读诊断)，离线测试不代表实机验收。
 
+新增可复用的具名培养库存与摩拉只读入口：同次最多读取8个完整材料ID/名称，绑定实际进程、窗口、同步采集及固定模型，并从原始PNG复核数量预处理、选中边框和世界恢复。使用方式见[具名库存控制器说明](docs/NAMED_INVENTORY_HOST.md)和[对应引擎补丁](docs/LOCAL_NAMED_INVENTORY_2026-10-12.md)。当前只完成离线验证，尚未完成新入口的实机验收，也没有接通自动升级或转换。
+
 本轮继续开发的启动修复、库存读取优化、游戏日边界、选路与派遣证据修复见[开发验收记录](docs/LOCAL_TRANSFER_VALIDATION_2026-10-11.md)。原始校验清单描述下载包快照；后续修改用独立补丁和验收记录追踪，不能把离线测试通过当作完整实机通过。
 
 ## 与 BetterGI 的关系
@@ -55,7 +57,7 @@ python scripts/audit_public_tree.py --tracked
 
 - Windows 10/11 x64；
 - Python 3.10 或更高版本；
-- 安装 `requirements-runtime.txt` 中的 Pillow（真实PNG/JPEG附件完整性核验）；
+- 安装 `requirements-runtime.txt` 中的 Pillow（真实PNG/JPEG附件完整性核验）和 headless OpenCV（新只读入口的原始像素与模板核验）；
 - .NET 8 SDK（自行构建修改版 BetterGI 时）；
 - 原神简体中文界面；
 - 16:9 分辨率。BetterGI 上游推荐 `1920x1080` 窗口化、默认亮度，并要求关闭 HDR/滤镜。

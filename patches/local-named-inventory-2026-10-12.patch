@@ -1,0 +1,2151 @@
+diff --git a/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs b/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
+--- a/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
++++ b/BetterGenshinImpact/Core/Recognition/ONNX/BgiOnnxFactory.cs
+@@ -17,6 +17,7 @@
+ public class BgiOnnxFactory
+ {
+     private readonly ILogger _logger;
++    private readonly bool strictOriginalCpu;
+ 
+     /// <summary>
+     ///     缓存模型路径。如果一开始使用缓存就一直使用缓存文件，如果没有使用缓存就一直使用原始模型路径。
+@@ -30,9 +31,16 @@
+     /// 请勿直接实例化此类
+     /// </summary>
+     /// <param name="logger"></param>
+-    public BgiOnnxFactory(ILogger<BgiOnnxFactory> logger)
++    public BgiOnnxFactory(ILogger<BgiOnnxFactory> logger):this(logger,false){}
++    internal BgiOnnxFactory(ILogger<BgiOnnxFactory> logger,bool strictOriginalCpu)
+     {
+         _logger = logger;
++        this.strictOriginalCpu=strictOriginalCpu;
++        if(strictOriginalCpu)
++        {
++            ProviderTypes=[ProviderType.Cpu];CpuOcr=true;EnableCache=false;OptimizedModel=false;
++            OpenVinoDevice="CPU";return;
++        }
+ 
+         var config = GetConfig();
+         if (config.AutoAppendCudaPath) AppendCudaPath();
+@@ -319,6 +327,11 @@
+     /// <returns>InferenceSession</returns>
+     public InferenceSession CreateInferenceSession(BgiOnnxModel model, bool ocr = false)
+     {
++        if(strictOriginalCpu)
++        {
++            using var options=new SessionOptions{ExecutionMode=ExecutionMode.ORT_SEQUENTIAL,GraphOptimizationLevel=GraphOptimizationLevel.ORT_ENABLE_ALL};
++            return new InferenceSession(model.ModalPath,options);
++        }
+         _logger.LogDebug("[ONNX]创建推理会话，模型: {ModelName}", model.Name);
+         var providerTypes = SelectForcedProviders(model.Name, CpuOcr, ocr);
+ 
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -150,6 +150,12 @@
+         // 根据名称执行任务
+         switch (soloTask.Name)
+         {
++            case "ReadNamedCultivationInventory":
++                return await ReadNamedCultivationInventory(soloTask.Config is ScriptObject namedConfig?
++                    ScriptObjectConverter.GetValue(namedConfig,"requestJson",""):"",cancellationToken);
++            case "ReadBoundMoraSnapshot":
++                return await ReadBoundMoraSnapshot(soloTask.Config is ScriptObject moraConfig?
++                    ScriptObjectConverter.GetValue(moraConfig,"requestJson","{}"):"{}",cancellationToken);
+             case "AutoGeniusInvokation":
+                 string content;
+                 // 检查是否有自定义策略内容  
+@@ -531,6 +537,37 @@
+         using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
+         return await new ReadWeeklyConversionInventoryTask(request).Start(linked.Token);
+     }
++    private static readonly SemaphoreSlim BoundInventoryGate=new(1,1);
++    private static async Task<string> RunBoundInventoryRead(Func<GameTask.Common.Job.NamedInventory.InventoryCaptureSource,CancellationToken,Task<string>> action,CancellationToken ct)
++    {
++        if(!TaskRunner.HasOwnedSemaphore)throw new InvalidOperationException("bound_readonly_inventory_requires_actual_owned_solo_task_scope");
++        if(!await BoundInventoryGate.WaitAsync(0,ct))throw new InvalidOperationException("bound_readonly_inventory_operation_already_active");
++        try{return await action(GameTask.Common.Job.NamedInventory.InventoryCaptureFactory.Create(),ct);}
++        finally{BoundInventoryGate.Release();}
++    }
++    public async Task<string> ReadNamedCultivationInventory(string requestJson,CancellationToken? customCt=null)
++    {
++        var request=GameTask.Common.Job.NamedInventory.ReadNamedCultivationInventoryTask.ParseRequest(requestJson);
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
++        return await RunBoundInventoryRead((source,ct)=>new GameTask.Common.Job.NamedInventory.ReadNamedCultivationInventoryTask(request,source).Start(ct),linked.Token);
++    }
++    public async Task<string> ReadNamedInventoryBinding(CancellationToken? customCt=null)
++    {
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
++        return await RunBoundInventoryRead((source,ct)=>{
++            ct.ThrowIfCancellationRequested();source.AssertCurrent();
++            return Task.FromResult(new Newtonsoft.Json.Linq.JObject{
++                ["schemaVersion"]=1,["source"]="actual_synchronous_BitBlt_inventory_binding",["readOnly"]=true,["confirmationSubmitted"]=false,
++                ["observedAt"]=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),["captureSession"]=source.CaptureSession,
++                ["gameBinding"]=source.Binding.DeepClone()}.ToString(Newtonsoft.Json.Formatting.None));
++        },linked.Token);
++    }
++    public async Task<string> ReadBoundMoraSnapshot(string requestJson="{}",CancellationToken? customCt=null)
++    {
++        var request=ReadMoraSnapshotTask.ParseRequest(requestJson);
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
++        return await RunBoundInventoryRead((source,ct)=>new GameTask.Common.Job.NamedInventory.ReadBoundMoraSnapshotTask(source).Start(request,ct),linked.Token);
++    }
+ 
+     public async Task<string> ReadGameNetworkSnapshot(CancellationToken? customCt = null)
+     {
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+@@ -107,16 +107,21 @@
+     {
+         using var frame = TaskControl.CaptureToRectArea(forceNew: true);
+         long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); ct.ThrowIfCancellationRequested();
++        return ReadFrame(frame,at,request,recognizer,ct);
++    }
++    internal static MoraFrameEvidence ReadFrame(ImageRegion frame,long at,MoraSnapshotRequest request,ItemRecognizer recognizer,CancellationToken ct,IOcrService? actualOcr=null)
++    {
++        ct.ThrowIfCancellationRequested();
+         if (!SystemControl.IsGenshinImpactActiveByProcess()) throw new InvalidOperationException("Game focus changed.");
+         var iconRect = MoraSnapshotRequest.Scale(request.IconRegion, frame.Width);
+         var balanceRect = MoraSnapshotRequest.Scale(request.BalanceRegion, frame.Width);
+         var candidate = ReadCoinCandidate(frame, request, recognizer);
+         using var amount = frame.DeriveCrop(balanceRect);
+-        var raw = OcrFactory.Paddle.OcrWithoutDetector(amount.SrcMat);
++        var ocr=actualOcr??OcrFactory.Paddle;var raw = ocr.OcrWithoutDetector(amount.SrcMat);
+         BackpackOcrRow[] Rows(Rect rect)
+         {
+             using var crop = frame.DeriveCrop(rect);
+-            return OcrFactory.Paddle.OcrResult(crop.SrcMat).Regions.Select(r => {
++            return ocr.OcrResult(crop.SrcMat).Regions.Select(r => {
+                 var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + rect.X, b.Y + rect.Y, b.Width, b.Height);
+             }).ToArray();
+         }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+@@ -55,10 +55,10 @@
+         using var tab = frame.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + suffix, frame));
+         return tab.IsExist();
+     }
+-    private static BackpackOcrRow[] Rows(ImageRegion frame, Rect rect)
++    private static BackpackOcrRow[] Rows(ImageRegion frame, Rect rect,IOcrService? service=null)
+     {
+         using var crop = frame.DeriveCrop(rect);
+-        return OcrFactory.Paddle.OcrResult(crop.SrcMat).Regions.Select(r => {
++        return (service??OcrFactory.Paddle).OcrResult(crop.SrcMat).Regions.Select(r => {
+             var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + rect.X, b.Y + rect.Y, b.Width, b.Height);
+         }).ToArray();
+     }
+@@ -206,12 +206,19 @@
+     {
+         ct.ThrowIfCancellationRequested(); using var frame = TaskControl.CaptureToRectArea(forceNew: true);
+         long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); ct.ThrowIfCancellationRequested();
++        return ReadFrame(frame,at,selection,category,recognizer,ct,fixedCountDetector,countModelPin,true);
++    }
++    internal static WeeklyInventoryFrameEvidence ReadFrame(ImageRegion frame,long at,BackpackSelection selection,string category,
++        ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin countModelPin,bool retainDiagnostic=false,IOcrService? actualRawOcr=null)
++    {
++        ct.ThrowIfCancellationRequested();
+         var nameRect = BackpackInventoryEvidenceSafety.NameRect(frame.Width);
+         var countRect = BackpackInventoryEvidenceSafety.RawCountRect(selection.ItemRect.ToRect());
+         var headerRect = WeeklyConversionInventoryEvidence.HeaderRect(frame.Width);
+-        var names = Rows(frame, nameRect); var counts = Rows(frame, countRect); var headers = Rows(frame, headerRect.ToRect());
++        var rawOcr=actualRawOcr??OcrFactory.Paddle;
++        var names = Rows(frame, nameRect,rawOcr); var counts = Rows(frame, countRect,rawOcr); var headers = Rows(frame, headerRect.ToRect(),rawOcr);
+         using var count = frame.DeriveCrop(countRect);
+-        var raw = OcrFactory.Paddle.OcrWithoutDetector(count.SrcMat);
++        var raw = rawOcr.OcrWithoutDetector(count.SrcMat);
+         using var cell = frame.DeriveCrop(selection.ItemRect.ToRect()); using var icon = cell.SrcMat.GetGridIcon();
+         var matched = recognizer.Match(icon);
+         var border = BackpackInventoryEvidenceSafety.ReadSelectedBorder(frame.SrcMat, selection.ItemRect.ToRect());
+@@ -223,16 +230,16 @@
+             SelectedItemRect = border.Verified ? selection.ItemRect : new(0, 0, 0, 0), SelectionEvidence = border };
+         var iconRegion=new BackpackRect(selection.ItemRect.X,selection.ItemRect.Y,selection.ItemRect.Width,(int)Math.Round(selection.ItemRect.Height*125d/153));
+         countModelPin.Readback();
+-        var refinedCount=NamedStackCountReader.Read(frame.SrcMat,selection.ItemRect.ToRect(),OcrFactory.Paddle,fixedCountDetector)
++        var refinedCount=NamedStackCountReader.Read(frame.SrcMat,selection.ItemRect.ToRect(),rawOcr,fixedCountDetector)
+             with{ModelEvidence=countModelPin.Evidence,RawPaddleReadback=countModelPin.Readback()};
+-        var expandedNameRect=NamedStackCountReader.NameRect(frame.Width);var expandedNames=Rows(frame,expandedNameRect);
++        var expandedNameRect=NamedStackCountReader.NameRect(frame.Width);var expandedNames=Rows(frame,expandedNameRect,rawOcr);
+         var refinedStack=new BackpackFrameEvidence{ObservedAt=at,NameRegion=BackpackRect.From(expandedNameRect),NameRows=expandedNames,
+             CountRegion=refinedCount.SourceRegion,CountRows=refinedCount.SourceRows,RawCountText=refinedCount.Raw,
+             CountMethod="grid_hsv_foreground_exact_dual_ocr",SelectedItemVerified=stack.SelectedItemVerified,
+             SelectedItemRect=stack.SelectedItemRect,SelectionEvidence=stack.SelectionEvidence};
+         var read=new WeeklyInventoryFrameEvidence(refinedStack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion)
+             {InitialStack=stack,CountReading=refinedCount};
+-        if(WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read))
++        if(retainDiagnostic&&WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read))
+         {
+             // The complete known bag, model, selected outline and actual name identify this private diagnostic scene.
+             // Numeric/title edge failures remain in the unmodified raw evidence and never become a verified count.
+diff --git a/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs b/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
+--- a/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
++++ b/BetterGenshinImpact/GameTask/Model/GameUI/GridScreen.cs
+@@ -22,6 +22,7 @@
+         private readonly ILogger logger;
+         private readonly InputSimulator input = Simulation.SendInput;
+         internal Action? OnBeforeScroll { get; set; }
++        internal Action? BeforeInputGuard { get; set; }
+         internal Action<Tuple<ImageRegion, IEnumerable<Tuple<Rect, bool>>>>? OnAfterTurnToNewPage { get; set; }
+ 
+         /// <summary>
+@@ -59,7 +60,7 @@
+ 
+         public IAsyncEnumerator<Tuple<ImageRegion, Rect>> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+         {
+-            return new GridEnumerator(this, @params.Roi, @params.Columns, new GridScroller(@params, logger, input, ct), ct);
++            return new GridEnumerator(this, @params.Roi, @params.Columns, new GridScroller(@params, logger, input, ct,BeforeInputGuard), ct);
+         }
+ 
+         public class GridEnumerator : IAsyncEnumerator<Tuple<ImageRegion, Rect>>
+@@ -497,8 +498,9 @@
+                         if (this.currentPage != null)   // 当前页遍历完了就向下滚动
+                         {
+                             using var ra4 = TaskControl.CaptureToRectArea();
++                            owner.BeforeInputGuard?.Invoke();
+                             ra4.MoveTo(this.roi.X + this.roi.Width / 2, this.roi.Y + this.roi.Height / 2);
+-                            await TaskControl.Delay(300, ct);
++                            if(owner.BeforeInputGuard is null)await TaskControl.Delay(300,ct);else await Task.Delay(300,ct);
+ 
+                             owner.OnBeforeScroll?.Invoke();
+                             if (!await this.gridScroller.TryVerticalScollDown((src, columns) => GetGridItems(src, columns)))
+diff --git a/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs b/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
+--- a/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
++++ b/BetterGenshinImpact/GameTask/Model/GameUI/GridScroller.cs
+@@ -27,8 +27,9 @@
+         private readonly int roundMilliseconds;
+         private readonly int s2Round;
+         private readonly double s3Scale;
++        private readonly Action? beforeInputGuard;
+ 
+-        internal GridScroller(GridParams @params, ILogger logger, InputSimulator input, CancellationToken ct)
++        internal GridScroller(GridParams @params, ILogger logger, InputSimulator input, CancellationToken ct,Action? beforeInputGuard=null)
+         {
+             this.roi = @params.Roi;
+             this.ct = ct;
+@@ -39,7 +40,10 @@
+             this.roundMilliseconds = @params.RoundMilliseconds;
+             this.s2Round = @params.S2Round;
+             this.s3Scale = @params.S3Scale;
++            this.beforeInputGuard=beforeInputGuard;
+         }
++
++        private Task GuardedDelay(int milliseconds,CancellationToken token) => beforeInputGuard is null ? TaskControl.Delay(milliseconds,token) : Task.Delay(milliseconds,token);
+ 
+         internal async Task<bool> TryVerticalScollDown(Func<Mat, int, IEnumerable<Rect>> GetGridItems)
+         {
+@@ -48,10 +52,10 @@
+ 
+             for (int i = 0; i < this.s1Round; i++)
+             {
+-                this.input.Mouse.VerticalScroll(-2);
+-                await TaskControl.Delay(this.roundMilliseconds, this.ct);
++                this.ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();this.input.Mouse.VerticalScroll(-2);
++                await GuardedDelay(this.roundMilliseconds, this.ct);
+             }
+-            await TaskControl.Delay(300, this.ct);
++            await GuardedDelay(300, this.ct);
+             using var ra2 = TaskControl.CaptureToRectArea();
+             using ImageRegion scrolledGrid = ra2.DeriveCrop(this.roi);
+ 
+@@ -61,14 +65,14 @@
+             {
+                 for (int i = 0; i < this.s2Round; i++)    // 再滚动差不多（最多行数-1）行
+                 {
+-                    input.Mouse.VerticalScroll(-2);
+-                    await TaskControl.Delay(this.roundMilliseconds, ct);
++                    ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();input.Mouse.VerticalScroll(-2);
++                    await GuardedDelay(this.roundMilliseconds, ct);
+                 }
+ 
+                 DateTimeOffset rollingEndTime = DateTime.Now.AddSeconds(2);
+                 while (DateTime.Now < rollingEndTime)
+                 {
+-                    await TaskControl.Delay(60, ct);
++                    await GuardedDelay(60, ct);
+                     using var ra4 = TaskControl.CaptureToRectArea();
+                     using ImageRegion grid2 = ra4.DeriveCrop(this.roi);
+                     var gridItems2 = GetGridItems(grid2.SrcMat, this.columns).ToList();
+@@ -80,7 +84,7 @@
+ 
+                     if (gridItems2.Min(i => i.Y) > (ra4.Width * this.s3Scale))  // 最后精细滚动，保证完整地显示最多行
+                     {
+-                        input.Mouse.VerticalScroll(-1);
++                        ct.ThrowIfCancellationRequested();beforeInputGuard?.Invoke();input.Mouse.VerticalScroll(-1);
+                     }
+                     else
+                     {
+@@ -89,13 +93,14 @@
+                 }
+                 using var ra3 = TaskControl.CaptureToRectArea();
+                 using ImageRegion grid3 = ra3.DeriveCrop(this.roi);
++                beforeInputGuard?.Invoke();
+                 grid3.MoveTo(grid3.Width, grid3.Height);
+-                await TaskControl.Delay(300, ct);
++                await GuardedDelay(300, ct);
+                 return true;
+             }
+             else
+             {
+-                await TaskControl.Delay(300, ct);
++                await GuardedDelay(300, ct);
+                 this.logger.LogInformation("滚动到底部了");
+                 return false;
+             }
+diff --git a/BetterGenshinImpact/GameTask/TaskRunner.cs b/BetterGenshinImpact/GameTask/TaskRunner.cs
+--- a/BetterGenshinImpact/GameTask/TaskRunner.cs
++++ b/BetterGenshinImpact/GameTask/TaskRunner.cs
+@@ -23,6 +23,13 @@
+ /// </summary>
+ public class TaskRunner
+ {
++    internal sealed class OwnedScope
++    {
++        private int active=1;internal bool IsActive=>Volatile.Read(ref active)==1;
++        internal void Invalidate()=>Interlocked.Exchange(ref active,0);
++    }
++    private static readonly AsyncLocal<OwnedScope?> OwnedSemaphoreScope=new();
++    internal static bool HasOwnedSemaphore=>OwnedSemaphoreScope.Value is {IsActive:true}&&TaskSemaphore.CurrentCount==0;
+     private readonly ILogger<TaskRunner> _logger = App.GetLogger<TaskRunner>();
+ 
+     // private readonly DispatcherTimerOperationEnum _timerOperation = DispatcherTimerOperationEnum.None;
+@@ -60,6 +67,7 @@
+         }
+         try
+         {
++            OwnedSemaphoreScope.Value=new OwnedScope();
+             _logger.LogInformation("→ {Text}", _name + "任务启动！");
+ 
+             // 初始化
+@@ -100,6 +108,7 @@
+         }
+         finally
+         {
++            OwnedSemaphoreScope.Value?.Invalidate();OwnedSemaphoreScope.Value=null;
+             End();
+             _logger.LogInformation("→ {Text}", _name + "任务结束");
+ 
+diff --git a/Fischless.GameCapture/BitBlt/BitBltCapture.cs b/Fischless.GameCapture/BitBlt/BitBltCapture.cs
+--- a/Fischless.GameCapture/BitBlt/BitBltCapture.cs
++++ b/Fischless.GameCapture/BitBlt/BitBltCapture.cs
+@@ -1,4 +1,5 @@
+ ﻿using System.Diagnostics;
++// Modified 2026-10-12: expose the actual BitBlt session lifecycle generation for bound read-only capture.
+ using OpenCvSharp;
+ using Vanara.PInvoke;
+ using static System.Console;
+@@ -12,6 +13,8 @@
+     private readonly ReaderWriterLockSlim _lockSlim = new();
+     private volatile nint _hWnd; // 需要加锁
+     private BitBltSession? _session; // 需要加锁
++    private long _sessionGeneration;
++    public long SessionGeneration=>Interlocked.Read(ref _sessionGeneration);
+     private RECT? _captureRect;
+ 
+     private volatile bool _lastCaptureFailed;
+@@ -43,6 +46,7 @@
+ 
+             _session?.Dispose();
+             _session = null;
++            Interlocked.Increment(ref _sessionGeneration);
+             IsCapturing = true;
+         }
+         finally
+@@ -74,6 +78,7 @@
+             {
+                 _session.Dispose();
+                 _session = null;
++                Interlocked.Increment(ref _sessionGeneration);
+             }
+ 
+             if (!User32.GetClientRect(_hWnd, out var clientRect) || clientRect == default)
+@@ -83,6 +88,7 @@
+                 _session?.Dispose();
+                 _session = null;
+                 _captureRect = null;
++                Interlocked.Increment(ref _sessionGeneration);
+                 return;
+             }
+ 
+@@ -105,9 +111,12 @@
+ 
+                 // 窗口尺寸被改变，释放资源，然后重新创建会话
+                 _session.Dispose();
++                _session = null;
++                Interlocked.Increment(ref _sessionGeneration);
+             }
+ 
+             _session = new BitBltSession(_hWnd, width, height);
++            Interlocked.Increment(ref _sessionGeneration);
+         }
+         catch (Exception e)
+         {
+@@ -210,6 +219,7 @@
+             }
+ 
+             _captureRect = null;
++            Interlocked.Increment(ref _sessionGeneration);
+         }
+         finally
+         {
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -116,6 +116,8 @@
+ 
+ - 第二十二层仅把天赋入口的两帧加独立第三帧检查改为原12秒/300ms/最多41次窗口内的连续三帧滚动观察。第三帧漏识别仍原样保留，只有首次完整连续三张的全局header/菜单/三条完整等级、原新鲜度及6px位置绑定全部通过才在该第三张当前图像点击一次；不挑旧pair、不多抓第四张、不重按导航或放宽门槛。读完成时间另记录用于独立核对原1500ms新鲜度，不冒充采集时间；弹窗/失焦/复活立即停，原deadline不延。未加入通用库存或消费事务。
+ 
++- 第二十三层新增正式只读通用培养库存与绑定摩拉入口：请求限8个完整实际CSV ID/名称，30页和每项两次选中观察，缺失保留null。原周本/Mora读取通过image-only共享体复用；新读取在原CSV/Item ONNX只读锁及本次新建CPU原OCR模型实例下推理，保留完整raw、模型资产、四边2px、双帧及world恢复证据，不复用全局旧模型缓存。内部工厂绑定真实PID/HWND/启动ticks字符串/坐标/实际BitBlt会话generation，每帧记录同步BitBlt调用区间、返回矩形与私有原PNG/像素SHA；Now只作输入前1500ms年龄上界。新鲜原world六模板/定义只读锁和同帧匹配记录供独立重核；未知和认证层不保存图像或输入。TaskRunner实际持锁所有者失效与网格输入守卫防止继承旧scope和主动焦点恢复，旧调用默认行为保留。本层需同步新的Fischless.GameCapture二进制依赖；不启用消费Session、转化、最终确认或任何实际升级，离线编译/纯回归不等于实机验收。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/BoundBitBltInventoryCapture.cs
+@@ -0,0 +1,118 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: neutral actual synchronous BitBlt inventory binding and acquisition.
++using System;
++using System.Collections.Generic;
++using System.Diagnostics;
++using System.IO;
++using System.Linq;
++using System.Runtime.CompilerServices;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.RegularExpressions;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Fischless.GameCapture.BitBlt;
++using Microsoft.VisualBasic.FileIO;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++using Vanara.PInvoke;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed record InventoryGameBindingProof(int ProcessId, long WindowHandle, string ProcessStartedUtcTicks,
++    string ExecutablePath, string SystemInfoGeneration, string BackendGeneration, string BackendAssemblyMvid,
++    Rect CaptureRectangle, string CaptureMethod = "actual_synchronous_BitBltCapture");
++public sealed record InventorySyncCaptureProof(long CallStartedAt, long CallReturnedAt, Rect ReturnedRectangle,
++    int NativeWidth, int NativeHeight, string PixelType, InventoryGameBindingProof Binding,
++    string FreshnessSource = "BitBltSession.GetImage_executes_BitBlt_GdiFlush_new_buffer_each_call");
++
++/// <summary>Strongly limited to the actually audited synchronous BitBlt backend.</summary>
++internal sealed class BoundBitBltInventoryCapture
++{
++    private sealed record Generation(string Value);
++    private static readonly ConditionalWeakTable<object, Generation> Generations = new();
++    private readonly object systemInfo;
++    private readonly BitBltCapture backend;
++    private readonly long actualBackendSessionGeneration;
++    public InventoryGameBindingProof Binding { get; }
++    public string CaptureSession { get; }
++    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++    public BoundBitBltInventoryCapture()
++    {
++        var context = TaskContext.Instance();
++        if (!context.IsInitialized || context.GameHandle == 0 || context.SystemInfo.GameProcessId <= 0)
++            throw new InvalidOperationException("initialized_actual_game_context_required");
++        var capture = TaskTriggerDispatcher.GlobalGameCapture;
++        if (capture.GetType() != typeof(BitBltCapture) || !capture.IsCapturing)
++            throw new NotSupportedException("session_supports_only_audited_actual_synchronous_BitBlt_backend");
++        backend = (BitBltCapture)capture; systemInfo = context.SystemInfo;
++        actualBackendSessionGeneration=backend.SessionGeneration;
++        if(actualBackendSessionGeneration<=0)throw new InvalidOperationException("actual_BitBlt_session_generation_missing");
++        using var owner = SystemControl.GetProcessByHandle(context.GameHandle)
++            ?? throw new InvalidOperationException("actual_game_window_owner_unavailable");
++        var area = context.SystemInfo.CaptureAreaRect;
++        var rectangle = new Rect(area.Left, area.Top, area.Width, area.Height);
++        if (rectangle.Width != 1920 || rectangle.Height != 1080)
++            throw new InvalidOperationException("minimum_session_requires_current_native_1920x1080_capture_context");
++        Binding = new(owner.Id, context.GameHandle.ToInt64(), owner.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
++            Path.GetFullPath(owner.MainModule?.FileName ?? throw new InvalidOperationException("actual_game_exe_path_missing")),
++            Generations.GetValue(systemInfo, _ => new(Guid.NewGuid().ToString("N"))).Value,
++            actualBackendSessionGeneration.ToString(System.Globalization.CultureInfo.InvariantCulture),
++            backend.GetType().Assembly.ManifestModule.ModuleVersionId.ToString("N"), rectangle);
++        CaptureSession = "bitblt-inventory:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(Binding)))).ToLowerInvariant();
++        AssertCurrent();
++    }
++    // Native authorization may obtain this same actual token before issuing its permit.
++    // The token is never accepted from an arbitrary request Boolean or synthetic frame.
++    public static string CurrentSessionToken() => new BoundBitBltInventoryCapture().CaptureSession;
++    public void AssertCurrent()
++    {
++        var context = TaskContext.Instance();
++        if (!context.IsInitialized || !ReferenceEquals(context.SystemInfo, systemInfo)
++            || !ReferenceEquals(TaskTriggerDispatcher.GlobalGameCapture, backend) || !backend.IsCapturing||backend.SessionGeneration!=actualBackendSessionGeneration
++            || context.GameHandle.ToInt64() != Binding.WindowHandle || context.SystemInfo.GameProcessId != Binding.ProcessId)
++            throw new InvalidOperationException("game_or_actual_capture_lifecycle_changed");
++        using var owner = SystemControl.GetProcessByHandle(context.GameHandle)
++            ?? throw new InvalidOperationException("game_window_owner_lost");
++        if (owner.HasExited || owner.Id != Binding.ProcessId || owner.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) != Binding.ProcessStartedUtcTicks
++            || !string.Equals(Path.GetFullPath(owner.MainModule?.FileName ?? ""), Binding.ExecutablePath, StringComparison.OrdinalIgnoreCase)
++            || SystemControl.GetForegroundWindowHandle().ToInt64() != Binding.WindowHandle)
++            throw new InvalidOperationException("actual_game_PID_HWND_start_time_exe_or_focus_changed");
++        var area = context.SystemInfo.CaptureAreaRect;
++        if (new Rect(area.Left, area.Top, area.Width, area.Height) != Binding.CaptureRectangle)
++            throw new InvalidOperationException("actual_capture_coordinate_context_changed");
++        if (!User32.GetClientRect(context.GameHandle, out var client) || client.Width != 1920 || client.Height != 1080)
++            throw new InvalidOperationException("actual_current_game_client_rectangle_changed");
++        DwmApi.DwmGetWindowAttribute<RECT>(context.GameHandle, DwmApi.DWMWINDOWATTRIBUTE.DWMWA_EXTENDED_FRAME_BOUNDS, out var window);
++        if (new Rect(window.Left, window.Top + window.Height - client.Height, client.Width, client.Height) != Binding.CaptureRectangle)
++            throw new InvalidOperationException("actual_game_window_position_or_capture_origin_changed");
++    }
++    public CapturedInventoryNativeImage Capture(CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested(); AssertCurrent(); long started = Now();
++        using var native = backend.Capture() ?? throw new InvalidOperationException("synchronous_BitBlt_capture_failed");
++        long returned = Now(); AssertCurrent(); ct.ThrowIfCancellationRequested();
++        var rectangle = native.CaptureRect ?? throw new InvalidOperationException("actual_BitBlt_returned_capture_rectangle_missing");
++        var region = new Rect(rectangle.Left, rectangle.Top, rectangle.Width, rectangle.Height);
++        if (region != Binding.CaptureRectangle || native.Frame.Width != 1920 || native.Frame.Height != 1080
++            || region.Width != native.Frame.Width || region.Height != native.Frame.Height || native.Frame.Empty())
++            throw new InvalidOperationException("actual_BitBlt_frame_geometry_or_returned_rectangle_changed");
++        // Transfer a private Mat clone to CaptureContent; the original pooled frame is disposed.
++        var content = new CaptureContent(native.Frame.Clone(), 0, 0);
++        return new(content, new(started, returned, region, native.Frame.Width, native.Frame.Height,
++            native.Frame.Type().ToString(), Binding));
++    }
++}
++internal sealed class CapturedInventoryNativeImage(CaptureContent content, InventorySyncCaptureProof proof) : IDisposable
++{
++    public ImageRegion Image => content.CaptureRectArea;
++    public InventorySyncCaptureProof Proof { get; } = proof;
++    public InspectionPrivateCapture? RetainedPrivateCapture { get; internal set; }
++    public void Dispose() => content.Dispose();
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+@@ -0,0 +1,57 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: native-only actual inventory capture factory, no consumption registration.
++using System;
++using System.IO;
++using System.Linq;
++using System.Threading;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++using Newtonsoft.Json.Serialization;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++internal static class InventoryCaptureFactory
++{
++    private static readonly JsonSerializer Camel=JsonSerializer.Create(new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
++    internal static InventoryCaptureSource Create()
++    {
++        var bound=new BoundBitBltInventoryCapture();
++        void AssertOwner(){if(!TaskRunner.HasOwnedSemaphore)throw new InvalidOperationException("bound_inventory_solo_owner_scope_ended");bound.AssertCurrent();}
++        var directory=Path.Combine(Global.Absolute(@"log\named-inventory-native-frames"),Guid.NewGuid().ToString("N"));
++        InventoryCapturedImage Capture(CancellationToken ct)
++        {
++            AssertOwner();var shot=bound.Capture(ct);
++            try
++            {
++                AssertOwner();
++                var world=InventoryWorldEvidence.Read(shot.Image,shot.Proof.CallReturnedAt);
++                bool known=InventoryWorldEvidence.Verified(world);
++                if(!known&&world.Anchors.Skip(1).All(a=>a.Match==new BackpackRect(0,0,0,0)))
++                {
++                    var region=WeeklyConversionInventoryEvidence.HeaderRect(shot.Image.Width);
++                    using var crop=shot.Image.DeriveCrop(region.ToRect());
++                    var rows=StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r=>{
++                        var b=r.Rect.BoundingRect();return new BackpackOcrRow(r.Text,b.X+region.X,b.Y+region.Y,b.Width,b.Height);}).ToArray();
++                    known=new[]{"characterDevelopmentItems","preciousItems"}.Any(category=>{
++                        using var tab=shot.Image.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category)+"Checked",shot.Image));
++                        return tab.IsExist()&&WeeklyConversionInventoryEvidence.HeaderVerified(rows,region,category);});
++                }
++                // Unknown layers, authentication and external menus are never retained or used for input.
++                if(!known)throw new InvalidOperationException("bound_inventory_capture_unreviewed_page_no_private_png");
++                var encoded=InspectionNativeFrameEncoding.Encode(shot.Image.SrcMat);Directory.CreateDirectory(directory);
++                var path=Path.Combine(directory,Guid.NewGuid().ToString("N")+".png");
++                using(var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough))
++                {stream.Write(encoded.Png);stream.Flush(flushToDisk:true);}
++                if(!File.ReadAllBytes(path).SequenceEqual(encoded.Png))throw new IOException("inventory_private_native_png_readback_failed");
++                var pixels=new InspectionPrivateCapture(shot.Proof.CallReturnedAt,shot.Image.Width,shot.Image.Height,shot.Image.SrcMat.Type().ToString(),
++                    path,encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize");
++                return new(shot.Image,shot,JObject.FromObject(shot.Proof,Camel),pixels){WorldEvidence=world};
++            }
++            catch{shot.Dispose();throw;}
++        }
++        return new(Capture,AssertOwner,JObject.FromObject(bound.Binding,Camel),bound.CaptureSession);
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs
+@@ -0,0 +1,97 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: actual synchronous inventory capture contracts; no consumption dependencies.
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Threading;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Newtonsoft.Json.Linq;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++/// <summary>Borrowed actual frame. The provider owns actual acquisition and native lifecycle checks.</summary>
++internal sealed class InventoryCapturedImage(ImageRegion image, IDisposable owner, JObject actualCapture,
++    InspectionPrivateCapture originalPixels) : IDisposable
++{
++    public ImageRegion Image { get; } = image;
++    public JObject ActualCapture { get; } = (JObject)actualCapture.DeepClone();
++    public InspectionPrivateCapture OriginalPixels { get; } = originalPixels;
++    internal InventoryWorldProof? WorldEvidence { get; set; }
++    public long ObservedAt => ActualCapture.Value<long>("callReturnedAt");
++    public void Dispose() => owner.Dispose();
++}
++
++public sealed record InventoryBoundRawFrame(string Phase, long ObservedAt, JObject ActualCapture,
++    InspectionPrivateCapture PrivateCapture, JObject Recognized)
++{ public InventoryWorldProof? WorldEvidence { get; init; } }
++
++/// <summary>No default TaskControl/Now fallback. Passed only by trusted native construction.</summary>
++internal sealed class InventoryCaptureSource(Func<CancellationToken, InventoryCapturedImage> capture,
++    Action assertActualBinding, JObject actualBinding, string captureSession)
++{
++    public JObject Binding { get; } = (JObject)actualBinding.DeepClone();
++    public string CaptureSession { get; } = captureSession;
++    public void AssertCurrent() => assertActualBinding();
++    public void AssertFresh(long actualReturnedAt)
++    {
++        AssertCurrent();long now=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++        if(!InventoryCaptureEvidence.FreshForInput(actualReturnedAt,now))throw new InvalidOperationException("bound_inventory_page_capture_stale_before_input");
++    }
++    public InventoryCapturedImage Capture(CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested(); AssertCurrent(); var shot = capture(ct);
++        try
++        {
++            AssertCurrent(); ct.ThrowIfCancellationRequested();
++            if (shot.Image.Width != 1920 || shot.Image.Height != 1080 ||
++                !InventoryCaptureEvidence.Frame(shot.ActualCapture, shot.OriginalPixels, Binding, 0, long.MaxValue))
++                throw new InvalidOperationException("actual_synchronous_bound_inventory_capture_required");
++            return shot;
++        }
++        catch { shot.Dispose(); throw; }
++    }
++}
++
++public static class InventoryCaptureEvidence
++{
++    public static bool FreshForInput(long actualReturnedAt,long now)=>actualReturnedAt>=0&&now>=actualReturnedAt&&now-actualReturnedAt<=1500;
++    private static long? Integer(JToken? token) => token?.Type == JTokenType.Integer ? token.Value<long>() : null;
++    public static bool Frame(JObject proof, InspectionPrivateCapture pixels, JObject actualBinding, long start, long finish)
++    {
++        var began = Integer(proof["callStartedAt"]); var returned = Integer(proof["callReturnedAt"]);
++        var rectangle = actualBinding["captureRectangle"] as JObject;
++        return start >= 0 && finish >= start && began.HasValue && returned.HasValue && began >= start && returned >= began
++            && returned <= finish && returned - began <= 5000 && pixels.ObservedAt == returned
++            && Integer(proof["nativeWidth"]) == 1920 && Integer(proof["nativeHeight"]) == 1080
++            && pixels.Width == 1920 && pixels.Height == 1080 && pixels.PixelType == "CV_8UC3"
++            && proof.Value<string>("pixelType") == "CV_8UC3"
++            && proof.Value<string>("freshnessSource") == "BitBltSession.GetImage_executes_BitBlt_GdiFlush_new_buffer_each_call"
++            && actualBinding.Value<string>("captureMethod") == "actual_synchronous_BitBltCapture"
++            && Integer(actualBinding["processId"]) > 0 && Integer(actualBinding["windowHandle"]) > 0
++            && actualBinding["processStartedUtcTicks"]?.Type==JTokenType.String&&long.TryParse(actualBinding.Value<string>("processStartedUtcTicks"),out var startedTicks)&&startedTicks>0 && rectangle is not null
++            && actualBinding["backendGeneration"]?.Type==JTokenType.String&&long.TryParse(actualBinding.Value<string>("backendGeneration"),out var generation)&&generation>0
++            && Guid.TryParseExact(actualBinding.Value<string>("systemInfoGeneration"),"N",out _)
++            && Guid.TryParseExact(actualBinding.Value<string>("backendAssemblyMvid"),"N",out _)
++            && !string.IsNullOrWhiteSpace(actualBinding.Value<string>("executablePath"))
++            && Integer(rectangle["width"]) == 1920 && Integer(rectangle["height"]) == 1080
++            && JToken.DeepEquals(proof["binding"], actualBinding)
++            && JToken.DeepEquals(proof["returnedRectangle"], actualBinding["captureRectangle"])
++            && pixels.Source == "diagnostic_only_lossless_native_srcmat_no_resize"
++            && !string.IsNullOrWhiteSpace(pixels.Path)
++            && new[] { pixels.PngSha256, pixels.NativePixelsSha256 }.All(s => s.Length == 64 && s.All(Uri.IsHexDigit));
++    }
++    public static bool Timeline(IReadOnlyList<InventoryBoundRawFrame> frames, JObject binding, long start, long finish)
++    {
++        if (frames.Count is < 1 or > 2048) return false;
++        long previousReturn = -1;
++        foreach (var frame in frames)
++        {
++            if (!Frame(frame.ActualCapture, frame.PrivateCapture, binding, start, finish)
++                || frame.ObservedAt != Integer(frame.ActualCapture["callReturnedAt"])
++                || frame.ObservedAt <= previousReturn || Integer(frame.ActualCapture["callStartedAt"]) < previousReturn) return false;
++            previousReturn = frame.ObservedAt;
++        }
++        return true;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryWorldEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryWorldEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryWorldEvidence.cs
+@@ -0,0 +1,67 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: actual same-image world anchor descriptors for independent private PNG verification.
++using System;
++using System.IO;
++using System.Linq;
++using System.Security.Cryptography;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Recognition;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed record InventoryWorldAnchor(string Task,string ObjectName,string RelativeTemplatePath,string FileSha256,
++    string RelativeDefinitionPath,string DefinitionSha256,BackpackRect SearchRegion,double Threshold,bool UseThreeChannels,
++    string MatchMode,bool UseMask,string TemplatePngBase64,string TemplatePngSha256,string TemplatePixelsSha256,BackpackRect Match);
++public sealed record InventoryWorldProof(long ObservedAt,int Width,int Height,InventoryWorldAnchor[] Anchors);
++
++public static class InventoryWorldEvidence
++{
++    private static readonly (string Task,string Name,string File)[] Definitions=[
++        (@"Common\Element","PaimonMenu","paimon_menu.png"),(@"Common\Element","InDomain","in_domain.png"),
++        (@"Common\Element","PromptDialogLeftBottomStar","prompt_dialog_left_bottom_star.png"),
++        (@"Common\Element","BtnBlackConfirm","btn_black_confirm.png"),(@"AutoFight","Confirm","confirm.png"),
++        (@"QuickTeleport","MapCloseButton","MapCloseButton.png")];
++    internal static InventoryWorldProof For(InventoryCapturedImage shot)=>shot.WorldEvidence??=Read(shot.Image,shot.ObservedAt);
++    public static bool Verified(InventoryWorldProof? proof)
++    {
++        if(proof is null||proof.Width!=1920||proof.Height!=1080||proof.ObservedAt<0||proof.Anchors.Length!=Definitions.Length)return false;
++        for(int i=0;i<Definitions.Length;i++)
++        {
++            var a=proof.Anchors[i];var d=Definitions[i];var task=d.Task.Replace('\\','/');
++            if(a.Task!=task||a.ObjectName!=d.Name||a.RelativeTemplatePath!=$"GameTask/{task}/Assets/1920x1080/{d.File}"||
++                a.RelativeDefinitionPath!=$"GameTask/{task}/Assets/Recognition.json"||a.UseMask||a.MatchMode!="CCoeffNormed"||
++                !double.IsFinite(a.Threshold)||a.Threshold is <.7 or >1||string.IsNullOrWhiteSpace(a.TemplatePngBase64)||
++                new[]{a.FileSha256,a.DefinitionSha256,a.TemplatePngSha256,a.TemplatePixelsSha256}.Any(s=>s.Length!=64||!s.All(Uri.IsHexDigit)))return false;
++            if(i==0? a.Match.Width<=0||a.Match.Height<=0 : a.Match!=new BackpackRect(0,0,0,0))return false;
++        }
++        return true;
++    }
++    internal static InventoryWorldProof Read(ImageRegion image,long at)
++    {
++        var anchors=Definitions.Select(d=>{
++            var relative=$"GameTask/{d.Task.Replace('\\','/')}/Assets/1920x1080/{d.File}";
++            var definition=$"GameTask/{d.Task.Replace('\\','/')}/Assets/Recognition.json";
++            var path=Global.Absolute(relative);var configPath=Global.Absolute(definition);
++            using var assetPin=File.Open(path,FileMode.Open,FileAccess.Read,FileShare.Read);
++            using var configPin=File.Open(configPath,FileMode.Open,FileAccess.Read,FileShare.Read);
++            var fileHash=Convert.ToHexString(SHA256.HashData(assetPin));assetPin.Position=0;
++            var definitionHash=Convert.ToHexString(SHA256.HashData(configPin));configPin.Position=0;
++            var ro=RecognitionObjectJsonLoader.LoadFromFile(configPath,d.Name,new(){CaptureWidth=image.Width,CaptureHeight=image.Height,
++                TemplateLoader=(name,mode)=>name==d.File?Mat.FromStream(assetPin,mode):throw new InvalidOperationException("unreviewed_world_template")});
++            try
++            {
++                var mat=ro.TemplateImageMat??throw new InvalidOperationException("actual_world_template_missing");
++                var encoded=InspectionNativeFrameEncoding.Encode(mat);using var match=image.Find(ro);
++                return new InventoryWorldAnchor(d.Task.Replace('\\','/'),d.Name,relative,fileHash,
++                    definition,definitionHash,BackpackRect.From(ro.RegionOfInterest),ro.Threshold,
++                    ro.Use3Channels,ro.TemplateMatchMode.ToString(),ro.UseMask,Convert.ToBase64String(encoded.Png),encoded.PngSha256,
++                    encoded.NativePixelsSha256,match.IsExist()?new(match.X,match.Y,match.Width,match.Height):new(0,0,0,0));
++            }
++            finally {ro.MaskMat?.Dispose();ro.TemplateImageGreyMat?.Dispose();ro.TemplateImageMat?.Dispose();}
++        }).ToArray();
++        return new(at,image.Width,image.Height,anchors);
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs
+@@ -0,0 +1,239 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: exact named inventory and retained raw evidence contracts.
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Text;
++using System.Text.RegularExpressions;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++using Newtonsoft.Json.Serialization;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed class NamedCultivationInventoryRequest
++{
++    public string RunId { get; set; } = "";
++    public string StepId { get; set; } = "";
++    public string Phase { get; set; } = "diagnostic";
++    public BackpackMaterial[] Materials { get; set; } = [];
++    public void ValidateShape()
++    {
++        if (!Regex.IsMatch(RunId ?? "", @"\A[A-Za-z0-9][A-Za-z0-9_-]{0,79}\z")
++            || string.IsNullOrWhiteSpace(StepId) || StepId.Length > 128 || StepId != StepId.Trim() || StepId.Any(char.IsControl)
++            || Phase is not ("before" or "after" or "diagnostic") || Materials is not { Length: > 0 and <= 8 }
++            || Materials.Any(m => m is null || !Regex.IsMatch(m.MaterialId ?? "", @"\A(?:104|112|113|114)[0-9]{3}\z")
++                || string.IsNullOrWhiteSpace(m.MaterialName) || m.MaterialName != m.MaterialName.Trim()
++                || m.MaterialName.Length > 80 || m.MaterialName.Any(char.IsControl))
++            || Materials.Select(m => m.MaterialId).Distinct(StringComparer.Ordinal).Count() != Materials.Length
++            || Materials.Select(m => m.MaterialName).Distinct(StringComparer.Ordinal).Count() != Materials.Length)
++            throw new ArgumentException("named_inventory_requires_one_to_eight_distinct_exact_cultivation_pairs_and_run_step_phase");
++    }
++    public NamedCultivationInventoryRequest Freeze() => new() { RunId = RunId, StepId = StepId, Phase = Phase,
++        Materials = Materials.Select(m => new BackpackMaterial { MaterialId = m.MaterialId, MaterialName = m.MaterialName }).ToArray() };
++}
++public sealed record NamedInventoryObservation(ResolvedNamedMaterial Material,
++    WeeklyInventoryObservation Pair, string Reason);
++public sealed class NamedCultivationInventoryResult
++{
++    public StrictInventoryModelEvidence? StrictModels{get;set;}
++    public int SchemaVersion { get; init; } = 1;
++    public string Source { get; init; } = "named_cultivation_backpack_selected_stack";
++    public bool ReadOnly { get; init; } = true;
++    public bool ConfirmationSubmitted { get; init; }
++    public bool TargetReached { get; init; }
++    public int CompletedUpgrades { get; init; }
++    public string RunId { get; init; } = "";
++    public string StepId { get; init; } = "";
++    public string Phase { get; init; } = "";
++    public string Status { get; set; } = "unknown";
++    public string PrimaryReason { get; set; } = "unverified";
++    public string CleanupReason { get; set; } = "not_started";
++    public long StartedAt { get; init; }
++    public long FinishedAt { get; set; }
++    public long? ObservedAt { get; set; }
++    public bool MainUiRestored { get; set; }
++    public bool CleanupCompleted { get; set; }
++    public RuntimeCatalogVersion? CatalogVersion { get; set; }
++    public ResolvedNamedMaterial[] RequestedMaterials { get; set; } = [];
++    public Dictionary<string, int?> Inventory { get; init; } = new(StringComparer.Ordinal);
++    public Dictionary<string, NamedInventoryObservation> Observations { get; init; } = new(StringComparer.Ordinal);
++    public Dictionary<string, List<NamedInventoryObservation>> RejectedObservations { get; init; } = new(StringComparer.Ordinal);
++    public List<WeeklyInventoryWorldFrame> EntryWorldFrames { get; init; } = [];
++    public List<WeeklyInventoryWorldFrame> WorldFrames { get; init; } = [];
++    public string? RawReportPath { get; set; }
++    public string CaptureSession { get; set; } = "";
++    public JObject? GameBinding { get; set; }
++    public NamedCountModelEvidence? CountModels { get; set; }
++    public List<InventoryBoundRawFrame> RawFrames { get; init; } = [];
++}
++
++public static class NamedCultivationInventoryEvidence
++{
++    private static string Text(string value) => string.Concat(value.Normalize(NormalizationForm.FormKC).Where(c => !char.IsWhiteSpace(c)));
++    private static bool Inside(BackpackRect a, int w, int h) => a.Width > 0 && a.Height > 0 && a.X >= 0 && a.Y >= 0 && (long)a.X + a.Width <= w && (long)a.Y + a.Height <= h;
++    private static bool Away(BackpackOcrRow row, BackpackRect box, double margin) => row.Width > 0 && row.Height > 0
++        && (long)row.X - box.X >= margin && (long)row.Y - box.Y >= margin && (long)box.X + box.Width - row.X - row.Width >= margin
++        && (long)box.Y + box.Height - row.Y - row.Height >= margin;
++    private static int? Frame(WeeklyInventoryFrameEvidence f, ResolvedNamedMaterial target, BackpackSelection selection)
++    {
++        if (f.Width is < 800 or > 4096 || f.Height is < 450 or > 2160 || f.Width * 9 != f.Height * 16
++            || !f.GameActive || f.PromptVisible || !f.TabVerified || f.Category != target.Category
++            || f.IconName != target.MaterialName || !double.IsFinite(f.IconScore) || f.IconScore is < .75 or > 1)
++            return null;
++        var item = selection.ItemRect; var s = f.Stack; double margin = 2 * f.Width / 1920d;
++        int? refinedValue = null;
++        if (f.CountReading is { } refined)
++        {
++            var initial = f.InitialStack;
++            refinedValue = NamedStackCountReader.Exact(refined, item.ToRect(), f.Width);
++            if (initial is null || !refinedValue.HasValue || !NamedCountModelPin.Verified(refined.ModelEvidence)
++                || refined.RawPaddleReadback != 8 || initial.ObservedAt != s.ObservedAt
++                || initial.SelectedItemRect != s.SelectedItemRect || initial.SelectedItemVerified != s.SelectedItemVerified
++                || !Equals(initial.SelectionEvidence, s.SelectionEvidence)
++                || initial.NameRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(f.Width))
++                || initial.CountRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(item.ToRect()))
++                || initial.CountMethod != "raw_ocr_without_detector" || initial.RawCountText is null
++                || initial.NameRows is null || initial.CountRows is null
++                || initial.NameRows.Any(r => !RowInside(r, initial.NameRegion))
++                || initial.CountRows.Any(r => !RowInside(r, initial.CountRegion))
++                || s.RawCountText != refined.Raw || !s.CountRows.SequenceEqual(refined.SourceRows)) return null;
++            // A bad initial crop remains raw. A complete independent initial reading must agree.
++            var old = Frame(f with { Stack = initial, InitialStack = null, CountReading = null }, target, selection);
++            if (old.HasValue && old != refinedValue) return null;
++        }
++        else if (f.InitialStack is not null) return null;
++        var expectedIcon = new BackpackRect(item.X, item.Y, item.Width, (int)Math.Round(item.Height * 125d / 153));
++        var aliases = WeeklyInventoryCatalog.Headers(target.Category);
++        if (!Inside(item, f.Width, f.Height) || f.IconRegion != expectedIcon || f.IconMethod != "cell_resize_125x153_top_125x125"
++            || f.HeaderRegion != WeeklyConversionInventoryEvidence.HeaderRect(f.Width)
++            || !WeeklyConversionInventoryEvidence.HeaderVerified(f.HeaderRows, f.HeaderRegion, target.Category)
++            || f.HeaderRows.Where(r => aliases.Contains(Text(r.Text), StringComparer.Ordinal)).Any(r => !Away(r, f.HeaderRegion, margin))
++            || s.NameRegion != BackpackRect.From(f.CountReading is null ? BackpackInventoryEvidenceSafety.NameRect(f.Width) : NamedStackCountReader.NameRect(f.Width))
++            || s.CountRegion != BackpackRect.From(f.CountReading is null ? BackpackInventoryEvidenceSafety.RawCountRect(item.ToRect()) : NamedStackCountReader.SourceRect(item.ToRect()))
++            || !Inside(s.NameRegion, f.Width, f.Height) || s.SelectedItemRect != item || !s.SelectedItemVerified
++            || s.NameRows.Length != 1 || Text(s.NameRows[0].Text) != Text(target.MaterialName)
++            || !Away(s.NameRows[0], s.NameRegion, margin) || s.CountRows.Length != 1
++            || !Away(s.CountRows[0], s.CountRegion, margin)
++            || s.CountMethod != (f.CountReading is null ? "raw_ocr_without_detector" : "grid_hsv_foreground_exact_dual_ocr")
++            || Text(s.RawCountText) != Text(s.CountRows[0].Text) || !Regex.IsMatch(Text(s.RawCountText), @"\A(?:0|[1-9][0-9]{0,8})\z")
++            || !Border(s.SelectionEvidence as BackpackBorderEvidence, item, f.Width, f.Height)) return null;
++        return int.TryParse(Text(s.RawCountText), out var value) && value <= 999999999
++            && (!refinedValue.HasValue || refinedValue == value) ? value : null;
++    }
++    private static bool RowInside(BackpackOcrRow r, BackpackRect region) => r.Width > 0 && r.Height > 0
++        && r.X >= region.X && r.Y >= region.Y && (long)r.X + r.Width <= (long)region.X + region.Width
++        && (long)r.Y + r.Height <= (long)region.Y + region.Height;
++    public static bool Border(BackpackBorderEvidence? proof, BackpackRect item, int w, int h)
++    {
++        if (proof is not { Verified: true, Method: "four_side_neutral_outline", MinimumChannel: 225, MaximumSpread: 35 }
++            || proof.MinimumFraction != .9 || proof.Sides.Length != 4) return false;
++        int radius = Math.Max(3, (int)Math.Round(item.Width * 8d / 125));
++        for (int index = 0; index < 4; index++)
++        {
++            var side = proof.Sides[index]; bool vertical = index < 2;
++            int edge = index switch { 0 => item.X, 1 => item.X + item.Width - 1, 2 => item.Y, _ => item.Y + item.Height - 1 };
++            int begin = vertical ? item.Y + (int)(item.Height * .2) : item.X + (int)(item.Width * .12);
++            int end = vertical ? item.Y + (int)(item.Height * .75) : item.X + (int)(item.Width * .55);
++            int stride = Math.Max(1, (end - begin) / 12);
++            var positions = Enumerable.Range(0, Math.Max(0, end - begin)).Where(i => i % stride == 0).Select(i => begin + i).ToArray();
++            if (side.Axis != (vertical ? "x" : "y") || Math.Abs(side.Coordinate - edge) > radius
++                || side.SampleCount != end - begin || side.SampleCount <= 0 || side.NeutralCount < 0 || side.NeutralCount > side.SampleCount
++                || side.NeutralCount / (double)side.SampleCount < .9 || side.Samples.Length != positions.Length || positions.Length == 0)
++                return false;
++            int neutral = 0;
++            for (int i = 0; i < positions.Length; i++)
++            {
++                var pixel = side.Samples[i];
++                if (pixel.X < 0 || pixel.Y < 0 || pixel.X >= w || pixel.Y >= h
++                    || (vertical ? pixel.X : pixel.Y) != side.Coordinate || (vertical ? pixel.Y : pixel.X) != positions[i]
++                    || pixel.B is < 0 or > 255 || pixel.G is < 0 or > 255 || pixel.R is < 0 or > 255) return false;
++                int minimum = Math.Min(pixel.B, Math.Min(pixel.G, pixel.R)), maximum = Math.Max(pixel.B, Math.Max(pixel.G, pixel.R));
++                if (minimum >= 225 && maximum - minimum <= 35) neutral++;
++            }
++            if (neutral / (double)positions.Length < .9 || neutral > side.NeutralCount
++                || side.NeutralCount - neutral > side.SampleCount - positions.Length) return false;
++        }
++        return true;
++    }
++    public static int? Count(NamedInventoryObservation observation, RuntimeCultivationCatalog catalog, long start, long finish)
++    {
++        var target = observation.Material;
++        ResolvedNamedMaterial resolved;
++        try { resolved = catalog.Resolve(new() { MaterialId = target.MaterialId, MaterialName = target.MaterialName }); }
++        catch (ArgumentException) { return null; }
++        if (resolved != target) return null; // Actual runtime CSV row, category and asset hashes must agree.
++        var pair = observation.Pair; var click = pair.Selection; var a = pair.First; var b = pair.Second;
++        if (start < 0 || finish < start || ReferenceEquals(a, b) || a.Width != b.Width || a.Height != b.Height
++            || !double.IsFinite(click.X) || !double.IsFinite(click.Y)
++            || click.X < click.ItemRect.X || click.X > click.ItemRect.X + click.ItemRect.Width
++            || click.Y < click.ItemRect.Y || click.Y > click.ItemRect.Y + click.ItemRect.Height
++            || click.ClickedAt < start || a.Stack.ObservedAt > finish || b.Stack.ObservedAt > finish
++            || a.Stack.ObservedAt - click.ClickedAt is < 100 or > 5000 || b.Stack.ObservedAt - a.Stack.ObservedAt is < 100 or > 5000
++            || a.Stack.NameRegion != b.Stack.NameRegion || a.Stack.CountRegion != b.Stack.CountRegion
++            || (a.CountReading is null) != (b.CountReading is null)
++            || a.CountReading is not null && !SameModels(a.CountReading.ModelEvidence, b.CountReading!.ModelEvidence)) return null;
++        var first = Frame(a, target, click); var second = Frame(b, target, click);
++        return first.HasValue && first == second ? second : null;
++    }
++    public static bool CanPublish(NamedCultivationInventoryResult result, NamedCultivationInventoryRequest request,
++        RuntimeCultivationCatalog catalog, long now)
++    {
++        if (result.SchemaVersion != 1 || result.Source != "named_cultivation_backpack_selected_stack" || !result.ReadOnly
++            || result.ConfirmationSubmitted || result.CompletedUpgrades != 0 || result.TargetReached
++            || result.RunId != request.RunId || result.StepId != request.StepId || result.Phase != request.Phase
++            || result.CatalogVersion != catalog.Version || !result.MainUiRestored || !result.CleanupCompleted
++            || result.GameBinding is null || result.CaptureSession.Length is < 32 or > 160 || result.CaptureSession.Any(char.IsWhiteSpace)
++            || !NamedCountModelPin.Verified(result.CountModels)
++            || !StrictInventoryModelValidation.Verified(result.StrictModels)||!SameModels(result.CountModels,result.StrictModels?.CountModels)
++            || !InventoryCaptureEvidence.Timeline(result.RawFrames, result.GameBinding, result.StartedAt, result.FinishedAt)
++            || result.StartedAt < 0 || result.FinishedAt < result.StartedAt || result.FinishedAt - result.StartedAt > 180000
++            || result.EntryWorldFrames.Count != 2 || !WeeklyConversionInventoryEvidence.WorldPair(result.EntryWorldFrames[0], result.EntryWorldFrames[1])
++            || result.WorldFrames.Count < 2 || !WeeklyConversionInventoryEvidence.WorldPair(result.WorldFrames[^2], result.WorldFrames[^1])
++            || now < result.WorldFrames[^1].ObservedAt || now - result.WorldFrames[^1].ObservedAt > 1500
++            || request.Materials.Length is < 1 or > 8 || result.RequestedMaterials.Length != request.Materials.Length
++            || result.Observations.Count != request.Materials.Length
++            || result.RejectedObservations.Any(p => !request.Materials.Any(m => m.MaterialId == p.Key) || p.Value.Count > 2)
++            || !result.Inventory.Keys.Order().SequenceEqual(request.Materials.Select(m => m.MaterialId).Order())) return false;
++        int w = result.EntryWorldFrames[0].Width, h = result.EntryWorldFrames[0].Height;
++        long previous = result.StartedAt;
++        foreach (var world in result.EntryWorldFrames)
++        { if (world.Width != w || world.Height != h || world.ObservedAt < previous || world.ObservedAt > result.FinishedAt || !Original(result, world, world.ObservedAt)) return false; previous = world.ObservedAt; }
++        var intervals = new List<(long Click, long Finished)>();
++        foreach (var asked in request.Materials)
++        {
++            var target = catalog.Resolve(asked);
++            if (!result.RequestedMaterials.Contains(target) || !result.Observations.TryGetValue(asked.MaterialId, out var observed)
++                || observed.Material != target || observed.Pair.First.Width != w || observed.Pair.First.Height != h
++                || observed.Pair.Selection.ClickedAt <= previous || !result.Inventory[asked.MaterialId].HasValue
++                || observed.Pair.First.CountReading is null || observed.Pair.Second.CountReading is null
++                || !SameModels(observed.Pair.First.CountReading.ModelEvidence, result.CountModels)
++                || !Original(result, observed.Pair.First, observed.Pair.First.Stack.ObservedAt)
++                || !Original(result, observed.Pair.Second, observed.Pair.Second.Stack.ObservedAt)
++                || Count(observed, catalog, result.StartedAt, result.FinishedAt) != result.Inventory[asked.MaterialId]) return false;
++            intervals.Add((observed.Pair.Selection.ClickedAt, observed.Pair.Second.Stack.ObservedAt));
++        }
++        intervals.Sort((a, b) => a.Click.CompareTo(b.Click));
++        for (int i = 1; i < intervals.Count; i++) if (intervals[i].Click <= intervals[i - 1].Finished) return false;
++        if (result.ObservedAt != intervals.Max(v => v.Finished)) return false;
++        previous = intervals[^1].Finished;
++        foreach (var world in result.WorldFrames)
++        {
++            if (world.Width != w || world.Height != h || world.ObservedAt <= previous || world.ObservedAt > result.FinishedAt || !Original(result, world, world.ObservedAt)) return false;
++            previous = world.ObservedAt;
++        }
++        var last = result.WorldFrames.TakeLast(2);
++        return last.All(f => f.Focused && f.World && !f.Prompt && !f.KnownBag && !f.EscapeRequested);
++    }
++    private static readonly JsonSerializer Camel = JsonSerializer.Create(new JsonSerializerSettings {
++        ContractResolver = new CamelCasePropertyNamesContractResolver() });
++    private static bool SameModels(NamedCountModelEvidence? a, NamedCountModelEvidence? b) => a is not null && b is not null
++        && JToken.DeepEquals(JObject.FromObject(a, Camel), JObject.FromObject(b, Camel));
++    private static bool Original(NamedCultivationInventoryResult result, object recognized, long at)
++    {
++        var raw = JObject.FromObject(recognized, Camel);
++        return result.RawFrames.Count(f => f.ObservedAt == at && JToken.DeepEquals(f.Recognized, raw)
++            && (recognized is not WeeklyInventoryWorldFrame world || !world.World ||
++                f.WorldEvidence?.ObservedAt==at&&InventoryWorldEvidence.Verified(f.WorldEvidence))) == 1;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: thin image-only adapters; algorithms remain in existing shared readers.
++using System.Threading;
++using BetterGenshinImpact.Core.Recognition.OCR;
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++internal static class Native20InventoryImageReader
++{
++    internal static WeeklyInventoryFrameEvidence Named(InventoryCapturedImage shot,BackpackSelection selection,
++        string category,ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin pin)=>
++        ReadWeeklyConversionInventoryTask.ReadFrame(shot.Image,shot.ObservedAt,selection,category,recognizer,ct,fixedCountDetector,pin,false,StrictInventoryOcrSession.Current)
++            with{PrivateCapture=shot.OriginalPixels};
++    internal static MoraFrameEvidence Mora(InventoryCapturedImage shot,MoraSnapshotRequest request,ItemRecognizer recognizer,CancellationToken ct)=>
++        ReadMoraSnapshotTask.ReadFrame(shot.Image,shot.ObservedAt,request,recognizer,ct,StrictInventoryOcrSession.Current);
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs
+@@ -0,0 +1,229 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: bound read-only Mora snapshots using shared image-only OCR.
++using System;
++using System.Collections.Concurrent;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Text;
++using System.Threading;
++using System.Threading.Tasks;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Simulator;
++using BetterGenshinImpact.Core.Simulator.Extensions;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++using Newtonsoft.Json.Serialization;
++using Vanara.PInvoke;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++internal sealed class ReadBoundMoraSnapshotTask(InventoryCaptureSource captures)
++{
++    private readonly List<InventoryBoundRawFrame> rawFrames = [];
++    private readonly JsonSerializer serializer = JsonSerializer.Create(new JsonSerializerSettings {
++        ContractResolver = new CamelCasePropertyNamesContractResolver() });
++    private InventoryCapturedImage Capture(CancellationToken ct)
++    {
++        var shot = captures.Capture(ct);
++        try { Remember("capture_only_uninterpreted", shot, new { observedAt = shot.ObservedAt, width = shot.Image.Width, height = shot.Image.Height }); return shot; }
++        catch { shot.Dispose(); throw; }
++    }
++    private void Remember(string phase, InventoryCapturedImage shot, object recognized)
++    {
++        var frame = new InventoryBoundRawFrame(phase, shot.ObservedAt, (JObject)shot.ActualCapture.DeepClone(),
++            shot.OriginalPixels, JObject.FromObject(recognized, serializer))
++            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null };
++        if (rawFrames.Count > 0 && rawFrames[^1].ObservedAt == shot.ObservedAt) rawFrames[^1] = frame;
++        else { if (rawFrames.Count >= 64) throw new InvalidOperationException("bound_Mora_frame_limit"); rawFrames.Add(frame); }
++    }
++    private static bool Prompt(ImageRegion image)
++    {using var confirm=image.Find(ElementRecognition.Get("BtnBlackConfirm",image));return Bv.IsInPromptDialog(image)||Bv.IsInRevivePrompt(image)||confirm.IsExist();}
++    private static bool Header(ImageRegion image,string category)
++    {
++        var box=WeeklyConversionInventoryEvidence.HeaderRect(image.Width);using var crop=image.DeriveCrop(box.ToRect());
++        var rows=StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r=>{
++            var b=r.Rect.BoundingRect();return new BackpackOcrRow(r.Text,b.X+box.X,b.Y+box.Y,b.Width,b.Height);}).ToArray();
++        return WeeklyConversionInventoryEvidence.HeaderVerified(rows,box,category);
++    }
++    private static bool Page(ImageRegion image)
++    {
++        using var selected = image.Find(ElementRecognition.Get("BagPreciousItemChecked", image));
++        return selected.IsExist()&&SystemControl.IsGenshinImpactActiveByProcess()&&!Prompt(image)&&Header(image,"preciousItems");
++    }
++    private static WeeklyInventoryWorldFrame World(InventoryCapturedImage shot, bool knownBag = false, bool escape = false)
++    {
++        bool active = SystemControl.IsGenshinImpactActiveByProcess(); var image = shot.Image;
++        return new(shot.ObservedAt, image.Width, image.Height, active,
++            active && InventoryWorldEvidence.Verified(InventoryWorldEvidence.For(shot)), Prompt(image), knownBag, escape);
++    }
++    public async Task<string> Start(MoraSnapshotRequest request, CancellationToken ct)
++    {
++        request.Validate(); rawFrames.Clear(); long start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++        bool opened = false, restored = false; int? balance = null;
++        string reason = "unverified"; var readings = new List<MoraFrameEvidence>(); var entry = new List<WeeklyInventoryWorldFrame>(); var cleanup = new List<WeeklyInventoryWorldFrame>();
++        PinnedRuntimeCultivationCatalog? itemPin=null;StrictInventoryOcrSession? strictOcr=null;
++        var saved = new ConcurrentDictionary<string, ITaskTrigger>(GameTaskManager.TriggerDictionary ?? new());
++        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(20));
++        try
++        {
++            itemPin=PinnedRuntimeCultivationCatalog.Open();itemPin.Catalog.ResolveMora();strictOcr=new StrictInventoryOcrSession();
++            TaskTriggerDispatcher.Instance().ClearTriggers(); Simulation.ReleaseAllKey();
++            for (int i = 0; i < 2; i++)
++            {
++                using var shot = Capture(deadline.Token); var world = World(shot); Remember("world_entry", shot, world); entry.Add(world);
++                if (!world.Focused || !world.World || world.Prompt) throw new InvalidOperationException("bound_Mora_world_entry_required");
++                if (i == 0) await Task.Delay(200, deadline.Token);
++            }
++            if (!WeeklyConversionInventoryEvidence.WorldPair(entry[0], entry[1])) throw new InvalidOperationException("bound_Mora_world_pair_required");
++            captures.AssertFresh(entry[^1].ObservedAt); deadline.Token.ThrowIfCancellationRequested();
++            Simulation.SendInput.SimulateAction(GIActions.OpenInventory); opened = true; await Task.Delay(800, deadline.Token);
++            bool selected = false;
++            for (int i = 0; i < 8; i++)
++            {
++                using var shot = Capture(deadline.Token); var image = shot.Image; Remember("precious_tab_navigation", shot, World(shot));
++                if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(image)) throw new InvalidOperationException("bound_Mora_unknown_page_or_focus");
++                if (Page(image)) { selected = true; break; }
++                using var development=image.Find(ElementRecognition.Get("BagCharacterDevelopmentItemChecked",image));
++                if(!development.IsExist()||!Header(image,"characterDevelopmentItems"))
++                    throw new InvalidOperationException("bound_Mora_current_known_bag_required_before_tab_input");
++                using var tab = image.Find(ElementRecognition.Get("BagPreciousItemUnchecked", image));
++                if (tab.IsExist()) { captures.AssertFresh(shot.ObservedAt); deadline.Token.ThrowIfCancellationRequested(); tab.Click(); }
++                await Task.Delay(250, deadline.Token);
++            }
++            if (!selected) throw new InvalidOperationException("bound_Mora_precious_tab_missing");
++            using var recognizer = new ItemRecognizer();
++            using (var shot = Capture(deadline.Token))
++            {
++                if (!Page(shot.Image)) throw new InvalidOperationException("bound_Mora_page_before_move_required");
++                captures.AssertFresh(shot.ObservedAt); shot.Image.MoveTo(shot.Image.Width / 2, shot.Image.Height - 40);
++            }
++            await Task.Delay(200, deadline.Token);
++            for (int i = 0; i < 5; i++)
++            {
++                using var shot = Capture(deadline.Token);
++                var read = Native20InventoryImageReader.Mora(shot, request, recognizer, deadline.Token);
++                Remember("actual_Mora_balance", shot, read); readings.Add(read);
++                balance = readings.Count >= 2 ? BoundMoraRawEvidence.Pair(readings[^2], readings[^1], request, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) : null;
++                if (balance.HasValue) { reason = "actual_bound_Mora_model_and_dual_integer_pair"; break; }
++                if (i < 4) await Task.Delay(250, deadline.Token);
++            }
++        }
++        catch (Exception error) { balance = null; reason = error is OperationCanceledException ? "cancelled_or_deadline" : error.Message; }
++        finally
++        {
++            try { restored = await Restore(opened, cleanup); }
++            catch (Exception error) { restored = false; reason += ";cleanup:" + error.GetType().Name; }
++            try
++            {
++                captures.AssertCurrent();
++                Simulation.ReleaseAllKey(); TaskTriggerDispatcher.Instance().ClearTriggers(); GameTaskManager.TriggerDictionary = saved;
++                TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t => t.Priority).ToList());
++            }
++            catch (Exception error) { restored = false; reason += ";trigger_restore:" + error.GetType().Name; }
++        }
++        long finish = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++        try
++        {
++            captures.AssertCurrent();
++            strictOcr?.CountPin.Readback();
++            if (ct.IsCancellationRequested || !restored || !InventoryCaptureEvidence.Timeline(rawFrames, captures.Binding, start, finish)
++                || !StrictInventoryModelValidation.Verified(strictOcr?.Evidence)
++                || !WorldRaw(entry)||!WorldRaw(cleanup.TakeLast(2).ToArray())) balance = null;
++        }
++        catch (Exception error) { balance = null; reason += ";actual_binding:" + error.GetType().Name; }
++        var result = JObject.FromObject(new { schemaVersion = 1, source = "bound_precious_items_bottom_mora", readOnly = true,
++            confirmationSubmitted = false, completedUpgrades = 0, targetReached = false, status = balance.HasValue ? "verified" : "unknown",
++            materialId = "202", materialName = "摩拉", balance, captureSession = captures.CaptureSession, gameBinding = captures.Binding,
++            startedAt = start, finishedAt = finish, request, readings, rawFrames, entryWorldFrames = entry, worldFrames = cleanup,
++            catalogVersion=itemPin?.Catalog.Version,strictModels=strictOcr?.Evidence,
++            mainUiRestored = restored, cleanupCompleted = restored, reason }, serializer);
++        try { strictOcr?.Dispose(); }
++        catch(Exception error) { result["status"]="unknown";result["balance"]=JValue.CreateNull();result["reason"]=reason+";ocr_dispose:"+error.GetType().Name; }
++        finally
++        {
++            try { itemPin?.Dispose(); }
++            catch(Exception error) { result["status"]="unknown";result["balance"]=JValue.CreateNull();result["reason"]=result.Value<string>("reason")+";item_pin_dispose:"+error.GetType().Name; }
++        }
++        return Save(result);
++    }
++    private bool WorldRaw(IReadOnlyList<WeeklyInventoryWorldFrame> frames)=>frames.Count==2&&WeeklyConversionInventoryEvidence.WorldPair(frames[0],frames[1])&&
++        frames.All(w=>rawFrames.Count(f=>f.ObservedAt==w.ObservedAt&&JToken.DeepEquals(f.Recognized,JObject.FromObject(w,serializer))&&
++            f.WorldEvidence?.ObservedAt==w.ObservedAt&&InventoryWorldEvidence.Verified(f.WorldEvidence))==1);
++    private async Task<bool> Restore(bool opened, List<WeeklyInventoryWorldFrame> worldFrames)
++    {
++        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6)); WeeklyInventoryWorldFrame? previous = null; bool escaped = false; int bagPairs = 0;
++        for (int i = 0; i < 20; i++)
++        {
++            using var shot = Capture(timeout.Token); var current = World(shot);
++            bool bag = opened && current.Focused && !current.World && !current.Prompt && Page(shot.Image);
++            var headerRegion = WeeklyConversionInventoryEvidence.HeaderRect(shot.Image.Width);
++            using var headerCrop = shot.Image.DeriveCrop(headerRegion.ToRect());
++            var headerRows = StrictInventoryOcrSession.Current.OcrResult(headerCrop.SrcMat).Regions.Select(r => {
++                var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + headerRegion.X, b.Y + headerRegion.Y, b.Width, b.Height);
++            }).ToArray();
++            bag &= WeeklyConversionInventoryEvidence.HeaderVerified(headerRows, headerRegion, "preciousItems");
++            current = current with { KnownBag = bag };
++            if (!current.Focused) { Remember("world_restore", shot, current); worldFrames.Add(current); return false; }
++            if (current.World)
++            {
++                if (previous is not null && WeeklyConversionInventoryEvidence.WorldPair(previous, current))
++                { Remember("world_restore", shot, current); worldFrames.Add(current); return true; }
++                previous = current; bagPairs = 0;
++            }
++            else
++            {
++                previous = null; bagPairs = bag ? bagPairs + 1 : 0;
++                if (bagPairs >= 2 && !escaped)
++                {
++                    captures.AssertFresh(shot.ObservedAt); timeout.Token.ThrowIfCancellationRequested(); Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
++                    escaped = true; current = current with { EscapeRequested = true };
++                }
++            }
++            Remember("world_restore", shot, current); worldFrames.Add(current); await Task.Delay(200, timeout.Token);
++        }
++        return false;
++    }
++    private static string Save(JObject result)
++    {
++        var folder = Global.Absolute(@"log\bound-Mora-snapshot");
++        var path = Path.Combine(folder, DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff") + "-" + Guid.NewGuid().ToString("N") + ".json");
++        result["rawReportPath"] = path;
++        try
++        {
++            Directory.CreateDirectory(folder); var bytes = new UTF8Encoding(false).GetBytes(result.ToString(Formatting.None));
++            using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough)) { file.Write(bytes); file.Flush(true); }
++            if (!File.ReadAllBytes(path).SequenceEqual(bytes)) throw new IOException("bound_Mora_report_readback_failed");
++        }
++        catch (Exception error) { result["status"] = "unknown"; result["balance"] = JValue.CreateNull(); result["reason"] = result.Value<string>("reason") + ";raw_report:" + error.GetType().Name; }
++        return result.ToString(Formatting.None);
++    }
++}
++
++public static class BoundMoraRawEvidence
++{
++    private static bool Away(BackpackOcrRow row, BackpackRect box, double margin) => row.Width > 0 && row.Height > 0
++        && row.X - box.X >= margin && row.Y - box.Y >= margin && box.X + box.Width - row.X - row.Width >= margin
++        && box.Y + box.Height - row.Y - row.Height >= margin;
++    public static int? Pair(MoraFrameEvidence a, MoraFrameEvidence b, MoraSnapshotRequest request, long now)
++    {
++        var count = MoraSnapshotEvidence.Pair(a, b, now); if (!count.HasValue) return null;
++        foreach (var frame in new[] { a, b })
++        {
++            double margin = 2 * frame.Width / 1920d;
++            string raw=string.Concat(frame.RawBalanceText.Where(c=>!char.IsWhiteSpace(c)));
++            if(!Regex.IsMatch(raw,@"\A(?:0|[1-9][0-9]{0,9})\z")||frame.BalanceRows.Length!=1||
++                raw!=string.Concat(frame.BalanceRows[0].Text.Where(c=>!char.IsWhiteSpace(c))))return null;
++            if (frame.IconScore > 1 || frame.IconRegion != BackpackRect.From(MoraSnapshotRequest.Scale(request.IconRegion, frame.Width))
++                || frame.BalanceRegion != BackpackRect.From(MoraSnapshotRequest.Scale(request.BalanceRegion, frame.Width))
++                || frame.BalanceRows.Length != 1 || !Away(frame.BalanceRows[0], frame.BalanceRegion, margin)
++                || !WeeklyConversionInventoryEvidence.HeaderVerified(frame.HeaderRows, WeeklyConversionInventoryEvidence.HeaderRect(frame.Width), "preciousItems")) return null;
++        }
++        return count;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+@@ -0,0 +1,316 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: bounded read-only named stack navigation and actual capture evidence.
++using System;
++using System.Collections.Concurrent;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using System.Text;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Simulator;
++using BetterGenshinImpact.Core.Simulator.Extensions;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Microsoft.Extensions.Logging;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using Newtonsoft.Json.Linq;
++using OpenCvSharp;
++using Vanara.PInvoke;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++/// <summary>No consume/use/upgrade/conversion/crafting/confirmation method exists.</summary>
++internal sealed class ReadNamedCultivationInventoryTask
++{
++    private readonly NamedCultivationInventoryRequest request;
++    private readonly InventoryCaptureSource captures;
++    private NamedCultivationInventoryResult activeResult = null!;
++    private readonly ILogger logger = App.GetLogger<ReadNamedCultivationInventoryTask>();
++    private static readonly JsonSerializerSettings Settings = new() {
++        ContractResolver = new CamelCasePropertyNamesContractResolver(), MissingMemberHandling = MissingMemberHandling.Error };
++    private static long Now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++    public ReadNamedCultivationInventoryTask(NamedCultivationInventoryRequest request, InventoryCaptureSource captures)
++    { request.ValidateShape(); this.request = request.Freeze(); this.captures = captures; }
++    private InventoryCapturedImage Capture(CancellationToken ct)
++    {
++        var shot = captures.Capture(ct);
++        try { Remember("capture_only_uninterpreted", shot, new { observedAt = shot.ObservedAt, width = shot.Image.Width, height = shot.Image.Height }); return shot; }
++        catch { shot.Dispose(); throw; }
++    }
++    private void Remember(string phase, InventoryCapturedImage shot, object recognized)
++    {
++        var camel = JsonSerializer.Create(Settings);
++        var raw = new InventoryBoundRawFrame(phase, shot.ObservedAt, (JObject)shot.ActualCapture.DeepClone(),
++            shot.OriginalPixels, JObject.FromObject(recognized, camel))
++            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null };
++        if (activeResult.RawFrames.Count > 0 && activeResult.RawFrames[^1].ObservedAt == shot.ObservedAt)
++            activeResult.RawFrames[^1] = raw;
++        else { if (activeResult.RawFrames.Count >= 2048) throw new InvalidOperationException("named_inventory_raw_frame_limit"); activeResult.RawFrames.Add(raw); }
++    }
++    public static NamedCultivationInventoryRequest ParseRequest(string json)
++    {
++        if (json.Length > 8192) throw new ArgumentException("named_inventory_request_unbounded");
++        var parsed = JsonConvert.DeserializeObject<NamedCultivationInventoryRequest>(json, Settings)
++            ?? throw new ArgumentException("named_inventory_request_missing");
++        parsed.ValidateShape(); return parsed;
++    }
++    private static bool Prompt(ImageRegion image)
++    {
++        using var confirm = image.Find(ElementRecognition.Get("BtnBlackConfirm", image));
++        return Bv.IsInPromptDialog(image) || Bv.IsInRevivePrompt(image) || confirm.IsExist();
++    }
++    private static bool Tab(ImageRegion image, string category, string suffix)
++    {
++        using var tab = image.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + suffix, image));
++        return tab.IsExist();
++    }
++    private static BackpackOcrRow[] Rows(ImageRegion image, BackpackRect rectangle)
++    {
++        using var crop = image.DeriveCrop(rectangle.ToRect());
++        return StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r => {
++            var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + rectangle.X, b.Y + rectangle.Y, b.Width, b.Height);
++        }).ToArray();
++    }
++    private static bool Header(ImageRegion image, string category)
++    {
++        var rectangle = WeeklyConversionInventoryEvidence.HeaderRect(image.Width);
++        return WeeklyConversionInventoryEvidence.HeaderVerified(Rows(image, rectangle), rectangle, category);
++    }
++    private static void RequirePage(ImageRegion image, string category, CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested();
++        if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(image) || !Tab(image, category, "Checked") || !Header(image, category))
++            throw new InvalidOperationException("named_inventory_fresh_page_header_focus_unverified");
++    }
++    private async Task SelectTab(string category, CancellationToken ct)
++    {
++        // Only the two reviewed enum routes are accepted. Current actual title/header,
++        // not CSV's empty material_type or a caller Boolean, confirms the selected tab.
++        _ = WeeklyInventoryCatalog.Headers(category);
++        for (int i = 0; i < 8; i++)
++        {
++            ct.ThrowIfCancellationRequested(); using var shot = Capture(ct); var image = shot.Image;
++            Remember("tab_navigation", shot, WorldFrame(shot));
++            if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(image))
++                throw new InvalidOperationException("named_inventory_tab_navigation_blocked");
++            if (Tab(image, category, "Checked") && Header(image, category)) return;
++            if(!new[]{"characterDevelopmentItems","preciousItems"}.Any(c=>Tab(image,c,"Checked")&&Header(image,c)))
++                throw new InvalidOperationException("named_inventory_current_known_bag_required_before_tab_input");
++            using var uncheckedTab = image.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + "Unchecked", image));
++            if (uncheckedTab.IsExist()) { captures.AssertFresh(shot.ObservedAt); ct.ThrowIfCancellationRequested(); uncheckedTab.Click(); }
++            await Task.Delay(250, ct);
++        }
++        throw new InvalidOperationException("named_inventory_reviewed_tab_or_complete_header_not_found");
++    }
++    private static WeeklyInventoryWorldFrame WorldFrame(InventoryCapturedImage shot, bool bag = false, bool escape = false)
++    {
++        var image = shot.Image;
++        bool active = SystemControl.IsGenshinImpactActiveByProcess(), prompt = Prompt(image);
++        return new(shot.ObservedAt, image.Width, image.Height, active,
++            active && InventoryWorldEvidence.Verified(InventoryWorldEvidence.For(shot)), prompt, bag, escape);
++    }
++    public async Task<string> Start(CancellationToken ct)
++    {
++        var result = new NamedCultivationInventoryResult { RunId = request.RunId, StepId = request.StepId,
++            Phase = request.Phase, StartedAt = Now(), CaptureSession = captures.CaptureSession,
++            GameBinding = (JObject)captures.Binding.DeepClone() };
++        activeResult = result;
++        foreach (var material in request.Materials) result.Inventory.Add(material.MaterialId, null);
++        bool opened = false, completed = false; PinnedRuntimeCultivationCatalog? pinned = null;
++        NamedCountModelPin? countModelPin = null;
++        StrictInventoryOcrSession? strictOcr=null;
++        var saved = new ConcurrentDictionary<string, ITaskTrigger>(GameTaskManager.TriggerDictionary ?? new());
++        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
++        deadline.CancelAfter(TimeSpan.FromSeconds(174)); // Six seconds reserved for independent cleanup.
++        try
++        {
++            ct.ThrowIfCancellationRequested();
++            // Resolve all actual CSV pairs before ANY game input. Handles remain pinned
++            // through ItemRecognizer construction and all frames; it reopens these same paths.
++            pinned = PinnedRuntimeCultivationCatalog.Open();
++            result.CatalogVersion = pinned.Catalog.Version;
++            result.RequestedMaterials = request.Materials.Select(pinned.Catalog.Resolve).ToArray();
++            // Model pin/config must be established before any game input.
++            strictOcr=new StrictInventoryOcrSession();countModelPin=strictOcr.CountPin;result.CountModels=countModelPin.Evidence;result.StrictModels=strictOcr.Evidence;
++            TaskTriggerDispatcher.Instance().ClearTriggers(); Simulation.ReleaseAllKey();
++            for (int i = 0; i < 2; i++)
++            {
++                deadline.Token.ThrowIfCancellationRequested(); using var shot = Capture(deadline.Token);
++                var world = WorldFrame(shot); Remember("world_entry", shot, world); result.EntryWorldFrames.Add(world);
++                if (!world.Focused || !world.World || world.Prompt) throw new InvalidOperationException("named_inventory_world_entry_pair_required");
++                if (i == 0) await Task.Delay(200, deadline.Token);
++            }
++            if (!WeeklyConversionInventoryEvidence.WorldPair(result.EntryWorldFrames[0], result.EntryWorldFrames[1]))
++                throw new InvalidOperationException("named_inventory_independent_entry_world_pair_required");
++            deadline.Token.ThrowIfCancellationRequested(); captures.AssertFresh(result.EntryWorldFrames[^1].ObservedAt);
++            Simulation.SendInput.SimulateAction(GIActions.OpenInventory); opened = true;
++            await Task.Delay(800, deadline.Token);
++            using var recognizer = new ItemRecognizer();
++            var fixedCountDetector = strictOcr.Detector;
++            var attempts = new Dictionary<string, int>(StringComparer.Ordinal);
++            foreach (var group in result.RequestedMaterials.GroupBy(m => m.Category))
++            {
++                await SelectTab(group.Key, deadline.Token);
++                var gridParameters = GridParams.Templates[WeeklyInventoryCatalog.Grid(group.Key)];
++                var grid = new GridScreen(gridParameters, logger, deadline.Token); int pages = 0;
++                grid.BeforeInputGuard=()=>{
++                    using var shot=Capture(deadline.Token);RequirePage(shot.Image,group.Key,deadline.Token);
++                    Remember("grid_input_guard",shot,WorldFrame(shot,bag:true));captures.AssertFresh(shot.ObservedAt);
++                };
++                grid.OnBeforeScroll = () => {
++                    using var shot = Capture(deadline.Token); RequirePage(shot.Image, group.Key, deadline.Token);
++                    Remember("before_grid_scroll", shot, WorldFrame(shot, bag: true)); captures.AssertFresh(shot.ObservedAt);
++                };
++                grid.OnAfterTurnToNewPage = _ => {
++                    deadline.Token.ThrowIfCancellationRequested();
++                    if (++pages > 30) throw new InvalidOperationException("named_inventory_bounded_30_page_limit");
++                };
++                await foreach (var (page, itemRectangle) in grid)
++                {
++                    deadline.Token.ThrowIfCancellationRequested();
++                    using var cell = page.DeriveCrop(itemRectangle); using var icon = cell.SrcMat.GetGridIcon();
++                    var candidate = recognizer.Match(icon);
++                    // CSV name must identify exactly this one material class/ID. The
++                    // generic icon's bottom quantity is NEVER published as inventory.
++                    var target = group.FirstOrDefault(m => m.MaterialName == candidate.Name
++                        && double.IsFinite(candidate.Score) && candidate.Score is >= .75 and <= 1
++                        && !result.Observations.ContainsKey(m.MaterialId) && attempts.GetValueOrDefault(m.MaterialId) < 2);
++                    if (target is null) continue;
++                    var rectangle = new Rect(itemRectangle.X + gridParameters.Roi.X, itemRectangle.Y + gridParameters.Roi.Y,
++                        itemRectangle.Width, itemRectangle.Height);
++                    BackpackSelection selected;
++                    using (var shot = Capture(deadline.Token))
++                    {
++                        var fresh = shot.Image;
++                        RequirePage(fresh, group.Key, deadline.Token);
++                        using var currentCell = fresh.DeriveCrop(rectangle); using var currentIcon = currentCell.SrcMat.GetGridIcon();
++                        var current = recognizer.Match(currentIcon);
++                        if (current.Name != target.MaterialName || !double.IsFinite(current.Score) || current.Score is < .75 or > 1) continue;
++                        attempts[target.MaterialId] = attempts.GetValueOrDefault(target.MaterialId) + 1;
++                        Remember("fresh_candidate_before_selection", shot, WorldFrame(shot, bag: true));
++                        captures.AssertCurrent();
++                        selected = ReadBackpackInventoryTask.SelectCell(BackpackRect.From(rectangle), () => { captures.AssertFresh(shot.ObservedAt); currentCell.Click(); },
++                            () => {using var hover=Capture(deadline.Token);RequirePage(hover.Image,group.Key,deadline.Token);
++                                Remember("selection_hover_guard",hover,WorldFrame(hover,bag:true));captures.AssertFresh(hover.ObservedAt);
++                                hover.Image.MoveTo(hover.Image.Width/2,hover.Image.Height-40);}, Now, deadline.Token);
++                    }
++                    var rawPair = await ReadWeeklyConversionInventoryTask.ObservePair(selected,
++                        (s, token) => {
++                            using var shot = Capture(token);
++                            var read = Native20InventoryImageReader.Named(shot, s, group.Key, recognizer, token, fixedCountDetector, countModelPin);
++                            Remember("named_selected_stack", shot, read); return read;
++                        },
++                        (milliseconds, token) => Task.Delay(milliseconds, token), deadline.Token);
++                    var observation = new NamedInventoryObservation(target, rawPair, "same_frame_model_header_full_title_raw_quantity_border_pair");
++                    var count = NamedCultivationInventoryEvidence.Count(observation, pinned.Catalog, result.StartedAt, Now());
++                    if (count.HasValue)
++                    { result.Observations.Add(target.MaterialId, observation); result.Inventory[target.MaterialId] = count; }
++                    else
++                    {
++                        if (!result.RejectedObservations.TryGetValue(target.MaterialId, out var rejected))
++                            result.RejectedObservations[target.MaterialId] = rejected = [];
++                        if (rejected.Count < 2) rejected.Add(observation with { Reason = "raw_pair_not_verified_count_remains_null" });
++                    }
++                    if (group.All(m => result.Observations.ContainsKey(m.MaterialId))) break;
++                }
++            }
++            completed = true;
++            result.PrimaryReason = result.Inventory.Values.All(v => v.HasValue) ? "all_named_raw_pairs_observed" : "missing_or_unverified_stack_is_not_zero";
++        }
++        catch (Exception ex)
++        { result.PrimaryReason = ex is OperationCanceledException ? "read_cancelled_or_deadline" : ex.Message; }
++        finally
++        {
++            try
++            {
++                result.MainUiRestored = await Restore(opened, result);
++                result.CleanupCompleted = result.MainUiRestored;
++                result.CleanupReason = result.MainUiRestored ? "focused_independent_world_pair" : "world_restoration_not_verified";
++            }
++            catch (Exception ex) { result.CleanupReason = "cleanup_failed:" + ex.GetType().Name; }
++            try
++            {
++                captures.AssertCurrent();
++                Simulation.ReleaseAllKey(); TaskTriggerDispatcher.Instance().ClearTriggers(); GameTaskManager.TriggerDictionary = saved;
++                TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t => t.Priority).ToList());
++            }
++            catch (Exception ex) { result.MainUiRestored = false; result.CleanupCompleted = false; result.CleanupReason += ";triggers:" + ex.GetType().Name; }
++        }
++        result.FinishedAt = Now();
++        result.ObservedAt = result.Observations.Count == 0 ? null : result.Observations.Values.Max(o => o.Pair.Second.Stack.ObservedAt);
++        if (ct.IsCancellationRequested) { completed = false; result.PrimaryReason += ";caller_cancelled"; }
++        try
++        {
++            captures.AssertCurrent(); countModelPin?.Readback();
++            result.Status = completed && pinned is not null && NamedCultivationInventoryEvidence.CanPublish(result, request, pinned.Catalog, Now())
++                ? "verified" : "unknown";
++        }
++        catch (Exception ex) { result.Status = "unknown"; result.PrimaryReason += ";final_raw_validation:" + ex.GetType().Name; }
++        if (!result.MainUiRestored) foreach (var id in result.Inventory.Keys.ToArray()) result.Inventory[id] = null;
++        try { pinned?.Dispose(); } // No asset update may race either recognition or raw verification.
++        catch (Exception ex) { result.Status = "unknown"; result.PrimaryReason += ";asset_pin_dispose:" + ex.GetType().Name; }
++        try { strictOcr?.Dispose(); }
++        catch (Exception ex) { result.Status = "unknown"; result.PrimaryReason += ";count_model_pin_dispose:" + ex.GetType().Name; }
++        // Cancellation has already become an explicit unknown result; retain raw evidence
++        // before returning. Do not discard observations with a final ThrowIfCancellationRequested.
++        return SaveReport(result);
++    }
++    private async Task<bool> Restore(bool opened, NamedCultivationInventoryResult result)
++    {
++        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
++        WeeklyInventoryWorldFrame? previous = null; bool escaped = false; int knownBagFrames = 0;
++        for (int i = 0; i < 20; i++)
++        {
++            timeout.Token.ThrowIfCancellationRequested(); using var shot = Capture(timeout.Token); var image = shot.Image;
++            var current = WorldFrame(shot);
++            bool bag = current.Focused && !current.World && !current.Prompt && opened
++                && new[] { "characterDevelopmentItems", "preciousItems" }.Any(c => Tab(image, c, "Checked") && Header(image, c));
++            current = current with { KnownBag = bag }; result.WorldFrames.Add(current);
++            if (!current.Focused) return false;
++            if (current.World)
++            {
++                if (previous is not null && WeeklyConversionInventoryEvidence.WorldPair(previous, current))
++                { Remember("world_restore", shot, current); return true; }
++                previous = current; knownBagFrames = 0;
++            }
++            else
++            {
++                previous = null; knownBagFrames = bag ? knownBagFrames + 1 : 0;
++                if (knownBagFrames >= 2 && BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened, bag, current.Prompt, escaped))
++                {
++                    captures.AssertFresh(shot.ObservedAt); timeout.Token.ThrowIfCancellationRequested(); Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE); escaped = true;
++                    current = current with { EscapeRequested = true }; result.WorldFrames[^1] = current;
++                }
++            }
++            Remember("world_restore", shot, current);
++            // Unknown layers and transitions only wait; no ReturnMainUiTask or blind Esc.
++            await Task.Delay(200, timeout.Token);
++        }
++        return false;
++    }
++    private string SaveReport(NamedCultivationInventoryResult result)
++    {
++        var folder = Global.Absolute(@"log\named-cultivation-inventory");
++        result.RawReportPath = Path.Combine(folder, DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff") + "-" + Guid.NewGuid().ToString("N") + ".json");
++        var serialized = JsonConvert.SerializeObject(result, Settings);
++        try
++        {
++            Directory.CreateDirectory(folder); byte[] bytes = new UTF8Encoding(false).GetBytes(serialized);
++            using (var stream = new FileStream(result.RawReportPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
++            { stream.Write(bytes); stream.Flush(flushToDisk: true); }
++            if (!File.ReadAllBytes(result.RawReportPath).SequenceEqual(bytes)) throw new IOException("named_inventory_raw_report_readback_failed");
++        }
++        catch (Exception ex)
++        {
++            result.Status = "unknown"; result.PrimaryReason += ";private_raw_report_write_failed:" + ex.GetType().Name;
++            serialized = JsonConvert.SerializeObject(result, Settings);
++        }
++        return serialized;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/RuntimeCultivationCatalog.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/RuntimeCultivationCatalog.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/RuntimeCultivationCatalog.cs
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: bounded read-only runtime catalog and exact named material inventory.
++using System;
++using System.Collections.Generic;
++using System.Globalization;
++using System.IO;
++using System.Linq;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.Core.Config;
++using Microsoft.VisualBasic.FileIO;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed record RuntimeCatalogAsset(string RelativePath, long ByteLength, string Sha256);
++public sealed record RuntimeCatalogVersion(RuntimeCatalogAsset Csv, RuntimeCatalogAsset Model,
++    string ParserVersion = "named-cultivation-catalog-1");
++public sealed record RuntimeMaterialRow(int CsvRowNumber, string VariantId, string ItemClassId,
++    string MaterialId, string FullName, string MaterialType, int QualityLevel, string RowSha256,
++    int EmbeddingByteLength);
++public sealed record ResolvedNamedMaterial(string MaterialId, string MaterialName, string Category,
++    string Purpose, RuntimeMaterialRow CsvRow, RuntimeCatalogVersion CatalogVersion);
++
++/// <summary>Actual CSV pairs admit names/IDs; prefixes alone never admit a request.</summary>
++public sealed class RuntimeCultivationCatalog
++{
++    private readonly RuntimeMaterialRow[] rows;
++    public RuntimeCatalogVersion Version { get; }
++    internal RuntimeCultivationCatalog(RuntimeMaterialRow[] rows, RuntimeCatalogVersion version)
++    { this.rows = rows; Version = version; }
++    internal RuntimeMaterialRow ResolveMora()
++    {
++        var matched=rows.Where(r=>r.ItemClassId=="material:202"&&r.FullName=="摩拉").ToArray();
++        if(matched.Length==0||rows.Any(r=>r.FullName=="摩拉"&&r.ItemClassId!="material:202")||
++            matched.Any(r=>r.EmbeddingByteLength<=0))throw new InvalidDataException("actual_runtime_mora_material202_identity_unverified");
++        return matched[0];
++    }
++
++    public ResolvedNamedMaterial Resolve(BackpackMaterial requested)
++    {
++        if (requested is null || !Regex.IsMatch(requested.MaterialId ?? "", @"\A(?:104|112|113|114)[0-9]{3}\z")
++            || string.IsNullOrWhiteSpace(requested.MaterialName) || requested.MaterialName != requested.MaterialName.Trim()
++            || requested.MaterialName.Length > 80 || requested.MaterialName.Any(char.IsControl))
++            throw new ArgumentException("bounded_exact_cultivation_ID_and_full_name_required");
++        var classId = "material:" + requested.MaterialId;
++        var matched = rows.Where(r => r.ItemClassId == classId).ToArray();
++        if (matched.Length == 0 || matched.Any(r => r.FullName != requested.MaterialName)
++            || matched.Select(r => (r.FullName, r.MaterialType, r.QualityLevel)).Distinct().Count() != 1)
++            throw new ArgumentException("runtime_CSV_material_ID_full_name_pair_missing_or_conflicting");
++        // ItemRecognizer currently groups by Name. Reject any global CSV cross-class/ID
++        // collision, so its name-only candidate cannot masquerade as the requested ID.
++        if (rows.Any(r => r.FullName == requested.MaterialName && r.ItemClassId != classId))
++            throw new ArgumentException("runtime_CSV_name_ambiguous_across_material_ID_or_item_class");
++        var row = matched[0];
++        if (row.EmbeddingByteLength <= 0 || row.QualityLevel is < 1 or > 5)
++            throw new ArgumentException("runtime_CSV_recognizer_material_prototype_missing");
++        string purpose = requested.MaterialId[..3] switch {
++            "104" when row.MaterialType == "角色天赋素材" => "talentBookOrCrown",
++            "112" when row.MaterialType is "角色与武器培养素材" or "" => "developmentMaterialNamespace",
++            "114" when row.MaterialType == "武器突破素材" => "weaponAscensionMaterial",
++            // Empty metadata is not a guessed weeklyBoss classification. Ordinary bag
++            // observation later proves the *actual* selected tab/header, or remains null.
++            "113" when row.MaterialId == "113021" => "fixedDreamSolventRoute",
++            "113" when row.MaterialType is "" or "角色突破素材" => "developmentMaterialNamespace",
++            _ => throw new ArgumentException("runtime_CSV_material_namespace_or_type_not_allowed")
++        };
++        string category = row.MaterialId == "113021" ? "preciousItems" : "characterDevelopmentItems";
++        return new(row.MaterialId, row.FullName, category, purpose, row, Version);
++    }
++
++    internal static RuntimeCultivationCatalog ParseRows(string[] headers, IEnumerable<string[]> source,
++        RuntimeCatalogVersion version)
++    {
++        int Column(string name)
++        {
++            var positions = headers.Select((v, i) => (Value: v.Trim().TrimStart('\uFEFF'), Index: i))
++                .Where(p => p.Value == name).ToArray();
++            return positions.Length == 1 ? positions[0].Index : throw new InvalidDataException("required_CSV_column_missing_or_duplicated:" + name);
++        }
++        int variant = Column("variant_id"), itemClass = Column("item_class_id"), itemName = Column("item_name"),
++            kind = Column("material_type"), quality = Column("quality_level"), embedding = Column("embedding");
++        var rows = new List<RuntimeMaterialRow>(); int number = 1;
++        foreach (var fields in source)
++        {
++            if (++number > 50001 || fields.Length != headers.Length)
++                throw new InvalidDataException("runtime_CSV_row_count_or_column_shape_invalid");
++            string classId = fields[itemClass].Trim(), name = fields[itemName].Trim();
++            if (classId.Length is < 1 or > 160 || name.Length is < 1 or > 160 || classId.Any(char.IsControl) || name.Any(char.IsControl))
++                throw new InvalidDataException("runtime_CSV_identity_text_invalid");
++            int level = int.TryParse(fields[quality], NumberStyles.None, CultureInfo.InvariantCulture, out var parsed) ? parsed : -1;
++            int bytes;
++            try { bytes = Convert.FromBase64String(fields[embedding]).Length; }
++            catch (FormatException ex) { throw new InvalidDataException("runtime_CSV_embedding_encoding_invalid", ex); }
++            if (bytes <= 0 || bytes % sizeof(float) != 0 || bytes > 65536)
++                throw new InvalidDataException("runtime_CSV_embedding_shape_invalid");
++            string id = Regex.Match(classId, @"\Amaterial:([1-9][0-9]{0,8})\z") is { Success: true } match ? match.Groups[1].Value : "";
++            // Hash full actual source fields, including embedding, but never retain/export vectors.
++            string rowHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
++                Newtonsoft.Json.JsonConvert.SerializeObject(fields)))).ToLowerInvariant();
++            rows.Add(new(number, fields[variant].Trim(), classId, id, name, fields[kind].Trim(), level, rowHash, bytes));
++        }
++        if (rows.Count == 0) throw new InvalidDataException("runtime_CSV_empty");
++        return new(rows.ToArray(), version);
++    }
++}
++
++/// <summary>Pin the exact actual runtime CSV/model files against writes for the read session.</summary>
++public sealed class PinnedRuntimeCultivationCatalog : IDisposable
++{
++    private readonly List<FileStream> pins = [];
++    public RuntimeCultivationCatalog Catalog { get; private set; } = null!;
++    private PinnedRuntimeCultivationCatalog() { }
++    public static PinnedRuntimeCultivationCatalog Open()
++    {
++        var result = new PinnedRuntimeCultivationCatalog();
++        try
++        {
++            var csv = result.Pin(@"Assets\Model\ItemV2\item.csv", 20_000_000);
++            var model = result.Pin(@"Assets\Model\ItemV2\item.onnx", 100_000_000);
++            using var parser = new TextFieldParser(csv.Stream, new UTF8Encoding(false, true),
++                detectEncoding: true, leaveOpen: true) { TextFieldType = FieldType.Delimited,
++                HasFieldsEnclosedInQuotes = true, TrimWhiteSpace = false };
++            parser.SetDelimiters(",");
++            var headers = parser.ReadFields() ?? throw new InvalidDataException("runtime_CSV_header_missing");
++            IEnumerable<string[]> ReadRows()
++            {
++                while (!parser.EndOfData) yield return parser.ReadFields() ?? throw new InvalidDataException("runtime_CSV_row_missing");
++            }
++            result.Catalog = RuntimeCultivationCatalog.ParseRows(headers, ReadRows(),
++                new(csv.Asset, model.Asset));
++            return result;
++        }
++        catch { result.Dispose(); throw; }
++    }
++    private (FileStream Stream, RuntimeCatalogAsset Asset) Pin(string relative, long maximum)
++    {
++        string absolute = Path.GetFullPath(Global.Absolute(relative));
++        var stream = new FileStream(absolute, FileMode.Open, FileAccess.Read, FileShare.Read);
++        pins.Add(stream);
++        if (stream.Length is <= 0 || stream.Length > maximum) throw new InvalidDataException("runtime_asset_size_invalid");
++        string hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant(); stream.Position = 0;
++        return (stream, new(relative.Replace('\\', '/'), stream.Length, hash));
++    }
++    public void Dispose() { foreach (var pin in pins) pin.Dispose(); pins.Clear(); }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/StrictInventoryOcrSession.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/StrictInventoryOcrSession.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/StrictInventoryOcrSession.cs
+@@ -0,0 +1,55 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: fresh CPU sessions from actual pinned original OCR assets, no singleton/cache reuse.
++using System;
++using System.IO;
++using System.Security.Cryptography;
++using System.Threading;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed record StrictInventoryModelEvidence(string LoadMethod,string Provider,string RawModel,string DetectorModel,
++    NamedCountModelEvidence CountModels,NamedOcrModelAsset RawDetectorAsset);
++
++public static class StrictInventoryModelValidation
++{
++    public static bool Verified(StrictInventoryModelEvidence? e)=>e is not null&&
++        e.LoadMethod=="new_cpu_uncached_original_onnx_and_labels_under_read_pins"&&e.Provider=="Cpu"&&e.RawModel=="V6"&&e.DetectorModel=="V4"&&
++        NamedCountModelPin.Verified(e.CountModels)&&e.RawDetectorAsset.ModelName==BgiOnnxModel.PaddleOcrDetV6.Name&&
++        e.RawDetectorAsset.RelativePath==BgiOnnxModel.PaddleOcrDetV6.ModelRelativePath.Replace('\\','/')&&
++        e.RawDetectorAsset.Length>0&&e.RawDetectorAsset.Sha256.Length==64&&System.Linq.Enumerable.All(e.RawDetectorAsset.Sha256,Uri.IsHexDigit);
++}
++
++internal sealed class StrictInventoryOcrSession:IDisposable
++{
++    private static readonly AsyncLocal<StrictInventoryOcrSession?> Ambient=new();
++    internal static IOcrService Current=>Ambient.Value is {disposed:false} current?current.Raw:
++        throw new InvalidOperationException("actual_pinned_inventory_ocr_session_required");
++    internal NamedCountModelPin CountPin{get;}
++    internal PaddleOcrService Raw{get;}internal PaddleOcrService Detector{get;}
++    internal StrictInventoryModelEvidence Evidence{get;}
++    private readonly FileStream extra;private bool disposed;
++    internal StrictInventoryOcrSession()
++    {
++        if(Ambient.Value is {disposed:false})throw new InvalidOperationException("nested_strict_inventory_ocr_scope_not_allowed");
++        CountPin=new NamedCountModelPin();
++        FileStream? opened=null;PaddleOcrService? raw=null,detector=null;
++        try
++        {
++            var model=BgiOnnxModel.PaddleOcrDetV6;
++            opened=File.Open(model.ModalPath,FileMode.Open,FileAccess.Read,FileShare.Read);
++            var proof=new NamedOcrModelAsset(model.Name,model.ModelRelativePath.Replace('\\','/'),Convert.ToHexString(SHA256.HashData(opened)),opened.Length);opened.Position=0;
++            var factory=new BgiOnnxFactory(App.GetLogger<BgiOnnxFactory>(),true);
++            raw=new PaddleOcrService(factory,PaddleOcrService.PaddleOcrModelType.V6);
++            detector=new PaddleOcrService(factory,PaddleOcrService.PaddleOcrModelType.V4);
++            Raw=raw;Detector=detector;extra=opened;
++            Evidence=new("new_cpu_uncached_original_onnx_and_labels_under_read_pins","Cpu","V6","V4",CountPin.Evidence,proof);
++            Ambient.Value=this;
++        }
++        catch{try{detector?.Dispose();}finally{try{raw?.Dispose();}finally{try{opened?.Dispose();}finally{CountPin.Dispose();}}}throw;}
++    }
++    public void Dispose(){if(disposed)return;disposed=true;if(ReferenceEquals(Ambient.Value,this))Ambient.Value=null;
++        try{Raw.Dispose();}finally{try{Detector.Dispose();}finally{try{extra.Dispose();}finally{CountPin.Dispose();}}}}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs
+@@ -0,0 +1,291 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: anonymous pure catalog, raw-pair and actual acquisition contracts.
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++using Newtonsoft.Json.Serialization;
++using Xunit;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public sealed class NamedCultivationInventoryPureTests
++{
++    private static readonly string[] Headers = ["variant_id", "item_class_id", "item_name", "material_type", "quality_level", "embedding"];
++    private static RuntimeCatalogVersion Version() => new(new("Assets/Model/ItemV2/item.csv", 100, new string('a', 64)),
++        new("Assets/Model/ItemV2/item.onnx", 100, new string('b', 64)));
++    private static string[] Row(string classId = "material:104301", string name = "教材原阶", string kind = "角色天赋素材", string quality = "2")
++        => [classId, classId, name, kind, quality, Convert.ToBase64String(BitConverter.GetBytes(1f))];
++    private static RuntimeCultivationCatalog Catalog(params string[][] rows) => RuntimeCultivationCatalog.ParseRows(Headers, rows.Length == 0 ? [Row()] : rows, Version());
++    private static BackpackMaterial Ask(string id = "104301", string name = "教材原阶") => new() { MaterialId = id, MaterialName = name };
++    private static NamedCultivationInventoryRequest Request(BackpackMaterial[]? materials = null) => new() { RunId = "anonymous-run", StepId = "anonymous-run:talent-1", Phase = "after", Materials = materials ?? [Ask()] };
++
++    [Fact] public void ActualCsvExactPairAndVersionAdmitReadOnlyRequest()
++    {
++        var target = Catalog().Resolve(Ask());
++        Assert.Equal("material:104301", target.CsvRow.ItemClassId); Assert.Equal("教材原阶", target.MaterialName);
++        Assert.Equal("characterDevelopmentItems", target.Category); Assert.Equal(Version(), target.CatalogVersion);
++    }
++    [Fact] public void NameOnlyModelCannotOverrideMissingCsvPairWrongNameOrCrossClassCollision()
++    {
++        Assert.Throws<ArgumentException>(() => Catalog().Resolve(Ask("104302")));
++        Assert.Throws<ArgumentException>(() => Catalog().Resolve(Ask(name: "教材")));
++        Assert.Throws<ArgumentException>(() => Catalog(Row(), Row("weapon:11111", "教材原阶", "", "2")).Resolve(Ask()));
++        Assert.Throws<ArgumentException>(() => Catalog(Row(), Row("material:104302", "教材原阶")).Resolve(Ask()));
++    }
++    [Fact] public void PremiumWeaponArtifactAndExperienceNamespacesCannotBeRequested()
++    {
++        foreach (var id in new[] { "201", "202", "101016", "11111", "15001", "100001" })
++            Assert.Throws<ArgumentException>(() => Catalog(Row("material:" + id, "测试名")).Resolve(Ask(id, "测试名")));
++        Assert.Throws<ArgumentException>(() => Catalog(Row("material:104001", "测试经验", "消耗品")).Resolve(Ask("104001", "测试经验")));
++    }
++    [Fact] public void Blank113MetadataDoesNotBecomeGuessedWeeklyPlanningAndSolventUsesReviewedPreciousRoute()
++    {
++        var catalog = Catalog(Row("material:113999", "虚构培养材料", "", "4"), Row("material:113021", "异梦溶媒", "消耗品", "4"));
++        Assert.Equal("developmentMaterialNamespace", catalog.Resolve(Ask("113999", "虚构培养材料")).Purpose);
++        Assert.Equal("characterDevelopmentItems", catalog.Resolve(Ask("113999", "虚构培养材料")).Category);
++        Assert.Equal("preciousItems", catalog.Resolve(Ask("113021", "异梦溶媒")).Category);
++        Assert.Throws<ArgumentException>(() => catalog.Resolve(Ask("113021", "虚构培养材料")));
++    }
++    [Fact] public void CsvMalformedHeadersRowsAndMissingRecognizerEmbeddingsAreRejected()
++    {
++        Assert.Throws<InvalidDataException>(() => RuntimeCultivationCatalog.ParseRows(["item_name"], [new[] { "教材原阶" }], Version()));
++        Assert.Throws<InvalidDataException>(() => RuntimeCultivationCatalog.ParseRows([.. Headers, "item_name"], [Row()], Version()));
++        Assert.Throws<InvalidDataException>(() => RuntimeCultivationCatalog.ParseRows(Headers, [new[] { "material:104301" }], Version()));
++        var row = Row(); row[^1] = "not-base64"; Assert.Throws<InvalidDataException>(() => Catalog(row));
++    }
++    [Fact] public void AtMostEightDistinctFullPairsAreFrozenBeforeAnyAwait()
++    {
++        var source = Request(); source.ValidateShape(); var frozen = source.Freeze(); source.Materials[0].MaterialName = "篡改";
++        Assert.Equal("教材原阶", frozen.Materials[0].MaterialName);
++        Assert.Throws<ArgumentException>(() => Request([Ask(), Ask()]).ValidateShape());
++        Assert.Throws<ArgumentException>(() => Request(Enumerable.Range(1, 9).Select(i => Ask("104" + i.ToString("D3"), "教材" + i)).ToArray()).ValidateShape());
++        Assert.Throws<ArgumentException>(() => Request([]).ValidateShape());
++    }
++    [Fact] public void OldBookGradeIsReadFromItsOwnNamedStackIndependentOfNewGradePopup()
++    {
++        var catalog = Catalog(Row(), Row("material:104302", "教材新阶"));
++        var old = catalog.Resolve(Ask()); var observation = Observe(old, 37);
++        Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observation, catalog, 1000, 4000));
++        Assert.Throws<ArgumentException>(() => catalog.Resolve(Ask("104301", "教材新阶")));
++    }
++    [Fact] public void RawDetectorModelFullTitleCropAndAllFourBorderPixelsAreMandatory()
++    {
++        var catalog = Catalog(); var target = catalog.Resolve(Ask());
++        Assert.Equal(37, NamedCultivationInventoryEvidence.Count(Observe(target, 37), catalog, 1000, 4000));
++        var weak = Observe(target, 37); weak = weak with { Pair = weak.Pair with { Second = weak.Pair.Second with { IconScore = .739 } } };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(weak, catalog, 1000, 4000));
++        var detector = Observe(target, 37); detector.Pair.Second.Stack.CountRows[0] = detector.Pair.Second.Stack.CountRows[0] with { Text = "137" };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(detector, catalog, 1000, 4000));
++        var clipped = Observe(target, 37); clipped.Pair.Second.Stack.CountRows[0] = clipped.Pair.Second.Stack.CountRows[0] with { X = clipped.Pair.Second.Stack.CountRegion.X + 1 };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(clipped, catalog, 1000, 4000));
++        var pixels = Observe(target, 37); var proof = (BackpackBorderEvidence)pixels.Pair.Second.Stack.SelectionEvidence!;
++        foreach (var side in proof.Sides) for (int i = 0; i < side.Samples.Length; i++) side.Samples[i] = side.Samples[i] with { B = 0, G = 0, R = 0 };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(pixels, catalog, 1000, 4000));
++    }
++    [Theory] [InlineData("角色培养道具")] [InlineData("养成道具")]
++    public void OnlyExactReviewedCompleteHeaderAliasesPass(string label)
++    {
++        var catalog = Catalog(); var observed = Observe(catalog.Resolve(Ask()), 37);
++        foreach (var f in new[] { observed.Pair.First, observed.Pair.Second }) f.HeaderRows[0] = f.HeaderRows[0] with { Text = label };
++        Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
++        observed.Pair.Second.HeaderRows[0] = observed.Pair.Second.HeaderRows[0] with { Text = "培养道具" };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
++    }
++    [Fact] public void MissingStackNeverDefaultsToZeroButTwoExplicitFullZeroCropsCanProveZero()
++    {
++        var catalog = Catalog(); var target = catalog.Resolve(Ask()); var result = new NamedCultivationInventoryResult();
++        result.Inventory.Add(target.MaterialId, null); Assert.Null(result.Inventory[target.MaterialId]);
++        Assert.Equal(0, NamedCultivationInventoryEvidence.Count(Observe(target, 0), catalog, 1000, 4000));
++    }
++    [Fact] public void DuplicateStaleFramesAndDifferentAssetVersionCannotBeReused()
++    {
++        var catalog = Catalog(); var target = catalog.Resolve(Ask()); var observed = Observe(target, 37);
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed with { Pair = observed.Pair with { Second = observed.Pair.First } }, catalog, 1000, 4000));
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed, catalog, 2000, 4000));
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed with { Pair = observed.Pair with { Selection = observed.Pair.Selection with { X = double.NaN } } }, catalog, 1000, 4000));
++        var other = RuntimeCultivationCatalog.ParseRows(Headers, [Row()], Version() with { Model = new("Assets/Model/ItemV2/item.onnx", 100, new string('c', 64)) });
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed, other, 1000, 4000));
++    }
++    [Fact] public void SameRunCompleteRawPairsAndIndependentFocusedWorldRestorationAreRequired()
++    {
++        var catalog = Catalog(); var request = Request(); var target = catalog.Resolve(Ask()); var observed = Observe20(target, 37);
++        var result = new NamedCultivationInventoryResult { RunId = request.RunId, StepId = request.StepId, Phase = request.Phase,
++            StartedAt = 500, FinishedAt = 3500, ObservedAt = 1550, CatalogVersion = catalog.Version, RequestedMaterials = [target],
++            MainUiRestored = true, CleanupCompleted = true, CountModels = CountModels(),StrictModels=StrictModels(),
++            CaptureSession = "anonymous-synthetic-binding-token-for-pure-tests", GameBinding = Binding() };
++        result.EntryWorldFrames.AddRange([World(600), World(800)]); result.WorldFrames.AddRange([World(3000), World(3300)]);
++        result.Inventory.Add(target.MaterialId, 37); result.Observations.Add(target.MaterialId, observed);
++        foreach (var w in result.EntryWorldFrames) result.RawFrames.Add(Raw(w, w.ObservedAt));
++        result.RawFrames.Add(Raw(observed.Pair.First, 1300)); result.RawFrames.Add(Raw(observed.Pair.Second, 1550));
++        foreach (var w in result.WorldFrames) result.RawFrames.Add(Raw(w, w.ObservedAt));
++        Assert.True(NamedCultivationInventoryEvidence.CanPublish(result, request, catalog, 3500));
++        result.WorldFrames[^1] = result.WorldFrames[^1] with { Focused = false };
++        Assert.False(NamedCultivationInventoryEvidence.CanPublish(result, request, catalog, 3500));
++        result.WorldFrames[^1] = World(3300);
++        Assert.False(NamedCultivationInventoryEvidence.CanPublish(result, WithPhase("before"), catalog, 3500));
++        NamedCultivationInventoryRequest WithPhase(string phase) { var r = request.Freeze(); r.Phase = phase; return r; }
++    }
++
++    [Fact] public void Native20ExpandedNameAndFixedV4CurrentV6CountWithBadInitialAreVerifiedFromRaw()
++    {
++        var catalog = Catalog(); var target = catalog.Resolve(Ask()); var observed = Observe20(target, 37);
++        Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
++        foreach (var f in new[] { observed.Pair.First, observed.Pair.Second })
++        {
++            f.InitialStack!.NameRows[0] = f.InitialStack.NameRows[0] with { Text = "不完整旧标题" };
++            f.InitialStack.CountRows[0] = f.InitialStack.CountRows[0] with { X = f.InitialStack.CountRegion.X };
++        }
++        Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
++        Assert.Equal("不完整旧标题", observed.Pair.First.InitialStack!.NameRows[0].Text);
++        var missing = observed with { Pair = observed.Pair with { Second = observed.Pair.Second with { InitialStack = null } } };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(missing, catalog, 1000, 4000));
++    }
++    [Fact] public void Native20ModelReadbackAssetsSourceShapeAndInitialConflictsCannotPass()
++    {
++        var catalog = Catalog(); var target = catalog.Resolve(Ask());
++        foreach (var mutation in new Func<NamedStackCountReading, NamedStackCountReading>[] {
++            r => r with { RawPaddleReadback = 7 }, r => r with { DetectorModel = "configured" },
++            r => r with { ModelEvidence = r.ModelEvidence! with { RawPaddleConfig = 7 } },
++            r => r with { SourceRegion = r.SourceRegion with { Y = r.SourceRegion.Y + 1 } },
++            r => r with { Raw = "137" } })
++        {
++            var observed = Observe20(target, 37); observed = observed with { Pair = observed.Pair with {
++                Second = observed.Pair.Second with { CountReading = mutation(observed.Pair.Second.CountReading!) } } };
++            Assert.Null(NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
++        }
++        var conflict = Observe20(target, 37); var initial = conflict.Pair.Second.InitialStack!;
++        initial.CountRows[0] = initial.CountRows[0] with { Text = "137" };
++        conflict = conflict with { Pair = conflict.Pair with { Second = conflict.Pair.Second with { InitialStack = Clone(initial,raw:"137") } } };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(conflict, catalog, 1000, 4000));
++        var different = Observe20(target, 37); var model = different.Pair.Second.CountReading!.ModelEvidence!;
++        model.Assets[0] = model.Assets[0] with { Sha256 = new string('c', 64) };
++        // Each frame has independent model evidence; distinct pinned versions reject a pair.
++        Assert.Null(NamedCultivationInventoryEvidence.Count(different, catalog, 1000, 4000));
++    }
++    [Fact] public void ActualCaptureIntervalRectangleBindingAndRawCorrespondenceRejectInventedFreshness()
++    {
++        var frame = Raw(World(1300), 1300); var binding = Binding();
++        Assert.True(InventoryCaptureEvidence.Timeline([frame], binding, 1000, 1400));
++        var bad = frame with { ActualCapture = (JObject)frame.ActualCapture.DeepClone() }; bad.ActualCapture["callStartedAt"] = 1301;
++        Assert.False(InventoryCaptureEvidence.Timeline([bad], binding, 1000, 1400));
++        bad = frame with { ActualCapture = (JObject)frame.ActualCapture.DeepClone() }; bad.ActualCapture["freshnessSource"] = "local_now_fake_source_sequence";
++        Assert.False(InventoryCaptureEvidence.Timeline([bad], binding, 1000, 1400));
++        bad = frame with { ActualCapture = (JObject)frame.ActualCapture.DeepClone() }; bad.ActualCapture["returnedRectangle"]!["width"] = 1536;
++        Assert.False(InventoryCaptureEvidence.Timeline([bad], binding, 1000, 1400));
++        var changed = (JObject)binding.DeepClone(); changed["processId"] = 124;
++        Assert.False(InventoryCaptureEvidence.Timeline([frame], changed, 1000, 1400));
++        Assert.False(InventoryCaptureEvidence.Timeline([frame, frame], binding, 1000, 1400));
++        var precision=(JObject)binding.DeepClone();precision["processStartedUtcTicks"]=639000000000000000L;
++        var numeric=frame with{ActualCapture=(JObject)frame.ActualCapture.DeepClone()};numeric.ActualCapture["binding"]=precision;
++        Assert.False(InventoryCaptureEvidence.Timeline([numeric],precision,1000,1400));
++        precision["processStartedUtcTicks"]="639000000000000000";numeric.ActualCapture["binding"]=precision;
++        Assert.True(InventoryCaptureEvidence.Timeline([numeric],precision,1000,1400));
++    }
++    [Fact] public void MoraUsesActualFixedRegionsModelDualRawAndFourEdgeMargin()
++    {
++        var request = new MoraSnapshotRequest();
++        MoraFrameEvidence Frame(long at) => new(at, 1920, 1080, true, false,
++            [new("贵重道具", 120, 20, 120, 30)], "摩拉", .92, request.IconRegion, request.BalanceRegion,
++            [new("37", request.BalanceRegion.X + 12, request.BalanceRegion.Y + 10, 30, 18)], "37");
++        var a = Frame(1300); var b = Frame(1550);
++        Assert.Equal(37, BoundMoraRawEvidence.Pair(a, b, request, 1600));
++        Assert.Null(BoundMoraRawEvidence.Pair(a, b with { RawBalanceText = "137" }, request, 1600));
++        Assert.Null(BoundMoraRawEvidence.Pair(a, b with { IconScore = .739 }, request, 1600));
++        var fullwidth=Frame(1550);fullwidth.BalanceRows[0]=fullwidth.BalanceRows[0] with{Text="３７"};
++        Assert.Null(BoundMoraRawEvidence.Pair(a,fullwidth with{RawBalanceText="３７"},request,1600));
++        var edge = Frame(1550); edge.BalanceRows[0] = edge.BalanceRows[0] with { Y = edge.BalanceRegion.Y + 1 };
++        Assert.Null(BoundMoraRawEvidence.Pair(a, edge, request, 1600));
++        Assert.Null(BoundMoraRawEvidence.Pair(a, b with { BalanceRegion = b.BalanceRegion with { Width = b.BalanceRegion.Width + 1 } }, request, 1600));
++    }
++
++    private static NamedCountModelEvidence CountModels() => new(8, "V6", 7, "V4", "actual_bundled_open_read_sha256_hold_session",
++        NamedCountModelPin.ExpectedAssets().Select(a => new NamedOcrModelAsset(a.Name, a.Path, new string('a', 64), 100)).ToArray());
++    private static readonly JsonSerializer Camel = JsonSerializer.Create(new JsonSerializerSettings { ContractResolver = new CamelCasePropertyNamesContractResolver() });
++    private static JObject Binding() => JObject.FromObject(new { processId = 123, windowHandle = 456, processStartedUtcTicks = "100",
++        executablePath = "anonymous-synthetic.exe", systemInfoGeneration = new string('a',32), backendGeneration = "1",
++        backendAssemblyMvid = new string('b',32), captureRectangle = new OpenCvSharp.Rect(100, 100, 1920, 1080), captureMethod = "actual_synchronous_BitBltCapture" }, Camel);
++    private static InventoryBoundRawFrame Raw(object recognized, long at)
++    {
++        var binding = Binding(); var proof = JObject.FromObject(new { callStartedAt = at - 5, callReturnedAt = at, returnedRectangle = binding["captureRectangle"],
++            nativeWidth = 1920, nativeHeight = 1080, pixelType = "CV_8UC3", binding,
++            freshnessSource = "BitBltSession.GetImage_executes_BitBlt_GdiFlush_new_buffer_each_call" }, Camel);
++        return new("anonymous_synthetic_raw", at, proof,
++            new(at, 1920, 1080, "CV_8UC3", "anonymous-synthetic.png", new string('a', 64), new string('b', 64),
++                "diagnostic_only_lossless_native_srcmat_no_resize"), JObject.FromObject(recognized, Camel))
++                { WorldEvidence=recognized is WeeklyInventoryWorldFrame ? WorldProof(at):null };
++    }
++    internal static StrictInventoryModelEvidence StrictModels()=>new("new_cpu_uncached_original_onnx_and_labels_under_read_pins","Cpu","V6","V4",CountModels(),
++        new("PpOcrDetV6","Assets/Model/PaddleOCR/Det/V6/PP-OCRv6_small_det_infer/slim.onnx",new string('a',64),100));
++    internal static InventoryWorldProof WorldProof(long at)
++    {
++        var definitions=new[]{("Common/Element","PaimonMenu","paimon_menu.png"),("Common/Element","InDomain","in_domain.png"),
++            ("Common/Element","PromptDialogLeftBottomStar","prompt_dialog_left_bottom_star.png"),("Common/Element","BtnBlackConfirm","btn_black_confirm.png"),
++            ("AutoFight","Confirm","confirm.png"),("QuickTeleport","MapCloseButton","MapCloseButton.png")};
++        return new(at,1920,1080,definitions.Select((d,i)=>new InventoryWorldAnchor(d.Item1,d.Item2,$"GameTask/{d.Item1}/Assets/1920x1080/{d.Item3}",
++            new string('a',64),$"GameTask/{d.Item1}/Assets/Recognition.json",new string('b',64),new(0,0,1920,1080),.8,false,"CCoeffNormed",false,
++            "anonymous_synthetic_template",new string('c',64),new string('d',64),i==0?new(10,10,12,12):new(0,0,0,0))).ToArray());
++    }
++    private static NamedInventoryObservation Observe20(ResolvedNamedMaterial target, int count)
++    {
++        var old = Observe(target, count); var item = old.Pair.Selection.ItemRect;
++        WeeklyInventoryFrameEvidence Refine(WeeklyInventoryFrameEvidence frame)
++        {
++            var source = BackpackRect.From(NamedStackCountReader.SourceRect(item.ToRect()));
++            var foreground = new BackpackRect(42, 45, 90, 54); int glyphWidth = 80;
++            var row = new BackpackOcrRow(count.ToString(), 25, 25, 78, 46);
++            int x = source.X + (int)Math.Floor((foreground.X + (row.X - 24) * foreground.Width / (double)glyphWidth) / 3);
++            int y = source.Y + (int)Math.Floor((foreground.Y + (row.Y - 24) * foreground.Height / 48d) / 3);
++            int right = source.X + (int)Math.Ceiling((foreground.X + (row.X + row.Width - 24) * foreground.Width / (double)glyphWidth) / 3);
++            int bottom = source.Y + (int)Math.Ceiling((foreground.Y + (row.Y + row.Height - 24) * foreground.Height / 48d) / 3);
++            var projected = new BackpackOcrRow(row.Text, x, y, right - x, bottom - y);
++            var reading = new NamedStackCountReading(source, [foreground], [foreground], foreground,
++                new(source.X + 14, source.Y + 15, 30, 18), 128, 96, glyphWidth, count.ToString(), [row], [projected],
++                new string('a', 64), new string('b', 64), new string('c', 64)) {
++                OcrInputPixelsSha256 = new string('c', 64), ModelEvidence = CountModels(), RawPaddleReadback = 8 };
++            Assert.Equal(count,NamedStackCountReader.Exact(reading,item.ToRect(),1920)); Assert.True(NamedCountModelPin.Verified(reading.ModelEvidence));
++            var stack = Clone(frame.Stack,nameRegion:BackpackRect.From(NamedStackCountReader.NameRect(1920)),countRegion:source,rows:[projected],raw:count.ToString(),method:"grid_hsv_foreground_exact_dual_ocr");
++            return frame with { Stack = stack, InitialStack = frame.Stack, CountReading = reading };
++        }
++        return old with { Pair = old.Pair with { First = Refine(old.Pair.First), Second = Refine(old.Pair.Second) } };
++    }
++
++    private static BackpackFrameEvidence Clone(BackpackFrameEvidence f,BackpackRect? nameRegion=null,BackpackRect? countRegion=null,BackpackOcrRow[]? rows=null,string? raw=null,string? method=null)=>new(){ObservedAt=f.ObservedAt,NameRegion=nameRegion??f.NameRegion,NameRows=f.NameRows.ToArray(),CountRegion=countRegion??f.CountRegion,CountRows=rows??f.CountRows.ToArray(),RawCountText=raw??f.RawCountText,CountMethod=method??f.CountMethod,SelectedItemVerified=f.SelectedItemVerified,SelectedItemRect=f.SelectedItemRect,SelectionEvidence=f.SelectionEvidence};
++    private static WeeklyInventoryWorldFrame World(long at) => new(at, 1920, 1080, true, true, false, false, false);
++    private static NamedInventoryObservation Observe(ResolvedNamedMaterial material, int count)
++    {
++        var selected = new BackpackSelection(new(150, 400, 125, 153), 210, 450, 1000);
++        WeeklyInventoryFrameEvidence Frame(long at)
++        {
++            var name = BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920));
++            var amount = BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(selected.ItemRect.ToRect()));
++            var stack = new BackpackFrameEvidence { ObservedAt = at, NameRegion = name,
++                NameRows = [new(material.MaterialName, 1340, 130, 160, 20)], CountRegion = amount,
++                CountRows = [new(count.ToString(), 170, 533, 30, 12)], RawCountText = count.ToString(),
++                CountMethod = "raw_ocr_without_detector", SelectedItemVerified = true, SelectedItemRect = selected.ItemRect,
++                SelectionEvidence = Border(selected.ItemRect) };
++            return new(stack, 1920, 1080, material.Category, true, false, true, new(100, 0, 350, 100),
++                [new(material.Category == "preciousItems" ? "贵重道具" : "养成道具", 120, 20, 200, 30)],
++                material.MaterialName, .92, new(150, 400, 125, 125));
++        }
++        return new(material, new(selected, Frame(1300), Frame(1550)), "anonymous_synthetic_raw_fixture");
++    }
++    private static BackpackBorderEvidence Border(BackpackRect item)
++    {
++        var sides = new List<BackpackBorderSide>();
++        for (int index = 0; index < 4; index++)
++        {
++            bool vertical = index < 2; int edge = index switch { 0 => item.X, 1 => item.X + item.Width - 1, 2 => item.Y, _ => item.Y + item.Height - 1 };
++            int begin = vertical ? item.Y + (int)(item.Height * .2) : item.X + (int)(item.Width * .12);
++            int end = vertical ? item.Y + (int)(item.Height * .75) : item.X + (int)(item.Width * .55), stride = Math.Max(1, (end - begin) / 12);
++            var pixels = Enumerable.Range(0, end - begin).Where(p => p % stride == 0).Select(p => new BackpackBorderPixel(vertical ? edge : begin + p, vertical ? begin + p : edge, 240, 240, 240)).ToArray();
++            sides.Add(new(vertical ? "x" : "y", edge, end - begin, end - begin, pixels));
++        }
++        return new(true, "four_side_neutral_outline", 225, 35, .9, sides.ToArray());
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InventoryBindingLifecycleTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InventoryBindingLifecycleTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InventoryBindingLifecycleTests.cs
+@@ -0,0 +1,60 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: independent lifecycle and fixed-model contract regressions; no game capture or UI input.
++using System;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.GameTask;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using Microsoft.Extensions.Logging.Abstractions;
++using Fischless.GameCapture.BitBlt;
++using Xunit;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++public sealed class InventoryBindingLifecycleTests
++{
++    [Fact] public void InputUsesActualReturnedCaptureAgeAndRejectsFutureOrLateObservation()
++    {
++        Assert.True(InventoryCaptureEvidence.FreshForInput(1000,2500));
++        Assert.False(InventoryCaptureEvidence.FreshForInput(1000,2501));
++        Assert.False(InventoryCaptureEvidence.FreshForInput(1001,1000));
++        Assert.False(InventoryCaptureEvidence.FreshForInput(-1,1000));
++    }
++    [Fact] public async Task ChildExecutionContextCannotRetainInvalidatedOwnerLease()
++    {
++        var ambient=new AsyncLocal<TaskRunner.OwnedScope?>();var owner=new TaskRunner.OwnedScope();ambient.Value=owner;
++        var go=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var child=Task.Run(async()=>{await go.Task;return ambient.Value!.IsActive;});
++        owner.Invalidate();ambient.Value=null;go.SetResult();Assert.False(await child);Assert.False(owner.IsActive);
++    }
++    [Fact] public void ActualBackendStopInvalidatesSameObjectSessionGeneration()
++    {
++        using var backend=new BitBltCapture();long original=backend.SessionGeneration;
++        backend.Stop();long stopped=backend.SessionGeneration;Assert.True(stopped>original);
++        backend.Stop();Assert.True(backend.SessionGeneration>stopped);Assert.False(backend.IsCapturing);
++    }
++    [Fact] public void StrictFactoryCannotUseGlobalAcceleratorOrOptimizedCache()
++    {
++        var factory=new BgiOnnxFactory(NullLogger<BgiOnnxFactory>.Instance,true);
++        Assert.Equal(new[]{ProviderType.Cpu},factory.ProviderTypes);Assert.True(factory.CpuOcr);
++        Assert.False(factory.EnableCache);Assert.False(factory.OptimizedModel);Assert.False(factory.TrtUseEmbedMode);Assert.False(factory.OpenVinoCache);
++    }
++    [Fact] public void FreshPinnedOriginalModelProofRejectsSingletonAndMissingSixthDetector()
++    {
++        var proof=NamedCultivationInventoryPureTests.StrictModels();Assert.True(StrictInventoryModelValidation.Verified(proof));
++        Assert.False(StrictInventoryModelValidation.Verified(proof with{LoadMethod="configured_cached_singleton"}));
++        Assert.False(StrictInventoryModelValidation.Verified(proof with{Provider="TensorRt"}));
++        Assert.False(StrictInventoryModelValidation.Verified(proof with{RawDetectorAsset=proof.RawDetectorAsset with{Sha256=""}}));
++        Assert.False(StrictInventoryModelValidation.Verified(proof with{RawDetectorAsset=proof.RawDetectorAsset with{RelativePath="untrusted.onnx"}}));
++    }
++    [Fact] public void PositiveWorldRequiresAllSixPinnedAnchorsAndNoNegativeMatch()
++    {
++        var proof=NamedCultivationInventoryPureTests.WorldProof(1000);Assert.True(InventoryWorldEvidence.Verified(proof));
++        var absent=proof with{Anchors=proof.Anchors[..5]};Assert.False(InventoryWorldEvidence.Verified(absent));
++        for(int i=1;i<6;i++)
++        {var a=proof.Anchors.ToArray();a[i]=a[i] with{Match=new(100,100,20,20)};Assert.False(InventoryWorldEvidence.Verified(proof with{Anchors=a}));}
++        var noWorld=proof.Anchors.ToArray();noWorld[0]=noWorld[0] with{Match=new(0,0,0,0)};
++        Assert.False(InventoryWorldEvidence.Verified(proof with{Anchors=noWorld}));
++    }
++}

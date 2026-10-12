@@ -7,5 +7,9 @@
   {"name":"resourceDiagnosticOnly","type":"checkbox","label":"只读摩拉与武器矿覆盖诊断","default":false},
   {"name":"weeklyInventoryOnly","type":"checkbox","label":"只读周本三材料与异梦溶媒库存","default":false},
   {"name":"talentPreviewOnly","type":"checkbox","label":"只读单天赋下一等级成本预览","default":false},
-  {"name":"talentPreviewType","type":"input-text","label":"只读天赋类型（普通攻击/元素战技/元素爆发）","default":"元素战技"}
+  {"name":"talentPreviewType","type":"input-text","label":"只读天赋类型（普通攻击/元素战技/元素爆发）","default":"元素战技"},
+  {"name":"namedInventoryOnly","type":"checkbox","label":"只读具名材料原图诊断","default":false},
+  {"name":"boundMoraOnly","type":"checkbox","label":"只读绑定摩拉原图诊断","default":false},
+  {"name":"namedInventoryScopeJson","type":"input-text","label":"材料范围（由工作流填写）","default":"{}"},
+  {"name":"namedInventoryStepId","type":"input-text","label":"诊断步骤（由工作流填写）","default":""}
 ]

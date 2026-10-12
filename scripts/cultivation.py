@@ -621,7 +621,8 @@ def _crafting_evidence(step: dict, plugin: Path, policy: dict, ids: set[str], de
         raise ValueError("unobserved Mora cost cannot be verified")
 
 
-def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target, run_directory, *, expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False) -> dict:
+def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target, run_directory, *, expected_policy=None, expected_talent_type=None, expected_weekly_inventory=False,
+                             expected_named_request=None,expected_bound_mora=False,trusted_game_context=None,trusted_workflow_root=None) -> dict:
     """Validate the actual plugin report without writing or declaring target completion."""
     unknown = {"status": "unknown", "reason": "cultivation report unverified", "cultivation": None, "report": None}
     try:
@@ -724,6 +725,25 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
         resource_diagnostic = _object(raw.get('metadata', {}), 'metadata').get('diagnostic') == 'resource-coverage-only'
         talent_diagnostic = _object(raw.get('metadata',{}),'metadata').get('diagnostic') == 'talent-upgrade-preview-only'
         weekly_diagnostic = _object(raw.get('metadata',{}),'metadata').get('diagnostic') == 'weekly-conversion-inventory-only'
+        named_diagnostic=_object(raw.get('metadata',{}),'metadata').get('diagnostic')=='named-inventory-only'
+        bound_mora_diagnostic=_object(raw.get('metadata',{}),'metadata').get('diagnostic')=='bound-mora-only'
+        if (type(expected_bound_mora) is not bool or named_diagnostic is not (expected_named_request is not None) or bound_mora_diagnostic is not expected_bound_mora
+                or ('namedInventory' in raw) is not named_diagnostic or ('boundMora' in raw) is not bound_mora_diagnostic):
+            raise ValueError('named/Mora readonly diagnostic differs from runner scope')
+        if named_diagnostic or bound_mora_diagnostic:
+            if (mode!='scan' or profile is not None or plan is not None or inventory or steps or required_scan_ids or manual_ids
+                    or expected_talent_type is not None or expected_weekly_inventory or validated_policy['originalResinBudget']!=0
+                    or validated_policy['condensedResinBudget']!=0 or validated_policy['maxMinutes']>3
+                    or any(validated_policy[k] for k in ('allowDomain','allowBoss','allowCrafting','allowRoutes','allowWeekly'))):
+                raise ValueError('named/Mora diagnostic requires isolated zero-budget scan')
+            if __package__:from .named_inventory import verify_named_inventory,verify_bound_mora
+            else:from named_inventory import verify_named_inventory,verify_bound_mora
+            verified_snapshot=(verify_named_inventory(raw.get('namedInventory'),expected_named_request,raw.get('startedAt'),raw.get('finishedAt'),
+                trusted_runtime_root=root,trusted_game_context=trusted_game_context,trusted_workflow_root=trusted_workflow_root) if named_diagnostic else
+                verify_bound_mora(raw.get('boundMora'),raw.get('startedAt'),raw.get('finishedAt'),trusted_runtime_root=root,
+                    trusted_game_context=trusted_game_context,trusted_workflow_root=trusted_workflow_root))
+            status=verified_snapshot['status'];reason=verified_snapshot.get('reason','verified readonly original pixels/runtime identities; no consumer or Session After')
+            raw['hostBoundSnapshotVerification']=verified_snapshot
         if type(expected_weekly_inventory) is not bool or expected_weekly_inventory is not weekly_diagnostic:
             raise ValueError('weekly four-inventory diagnostic differs from exact current-run request')
         if ('weeklyInventory' in raw) is not weekly_diagnostic:
@@ -777,7 +797,7 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
                 status, reason = 'success', 'verified read-only Mora/weapon-ore coverage; full upgrade budget not asserted'
         if mode == "scan" and steps:
             raise ValueError("read-only scan contains execution steps")
-        if not resource_diagnostic and not talent_diagnostic and not weekly_diagnostic and (claimed == "success" or mode == "execute" and steps):
+        if not resource_diagnostic and not talent_diagnostic and not weekly_diagnostic and not named_diagnostic and not bound_mora_diagnostic and (claimed == "success" or mode == "execute" and steps):
             if profile is None or plan is None:
                 raise ValueError("scan success or execution steps require profile and plan evidence")
             if mode == "scan":
