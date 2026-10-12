@@ -644,7 +644,7 @@ class CultivationWorkflowTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         for name in ("run_cultivation.ps1", "workflow.py", "plan_resin.py", "analyze_run.py",
-                     "performance.py", "checkin_hoyolab.py", "cultivation.py", "weapon_guide_evidence.py", "backpack_inventory_evidence.py"):
+                     "performance.py", "checkin_hoyolab.py", "hoyolab_credentials.py", "cultivation.py", "weapon_guide_evidence.py", "backpack_inventory_evidence.py"):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
         self.cfg.update(pythonExe=sys.executable, maximumRunMinutes=30,
             bettergiProcessNames=["FakeNeverRealBettergi"], gameProcessNames=["FakeNeverRealGenshin"],

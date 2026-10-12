@@ -6,6 +6,8 @@ config/book-progress.json
 config/last-plan.json
 config/next-task.txt
 config/hoyolab.json
+config/.hoyolab-*.tmp
+config/.hoyolab-credential-quarantine/
 config/cultivation.json
 config/material-route.json
 config/material-route-session.json
