@@ -32,8 +32,43 @@ const rowText=(rows,box,s,full=true,projected=false)=>{
 };
 const pair=(a,b)=>{if(a.width!==b.width||a.height!==b.height||number(b.observedAt)-number(a.observedAt)<=0||b.observedAt-a.observedAt>5000)fail('talent_fresh_pair_missing');};
 const digits=raw=>/^(0|[1-9][0-9]{0,9})$/.test(clean(raw))?integer(Number(clean(raw))):fail('talent_complete_integer_missing');
+const PINNED_SPLIT_METHOD='pinned_v6_v4_slash_integer_split';
+const SPLIT_METADATA=['splitRawModel','splitDetectorModel','splitModelEvidence','splitRawPaddleReadback'];
+const SPLIT_ASSETS=[
+  ['PpOcrDetV4','Assets/Model/PaddleOCR/Det/V4/PP-OCRv4_mobile_det_infer/slim.onnx'],
+  ['PpOcrRecV4','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/slim.onnx'],
+  ['PpOcrRecV6','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/slim.onnx'],
+  ['PpOcrRecV4-labels','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/inference.yml'],
+  ['PpOcrRecV6-labels','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/inference.yml'],
+  ['PpOcrDetV6','Assets/Model/PaddleOCR/Det/V6/PP-OCRv6_small_det_infer/slim.onnx']
+];
+const modernSplit=q=>q&&typeof q==='object'&&!Array.isArray(q)?SPLIT_METADATA.some(key=>q[key]!=null):fail('talent_quantity_json_object_required');
+const quantityChainModern=q=>modernSplit(q)||(q.initialReading!=null&&modernSplit(q.initialReading));
+const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+function splitModelShape(q){
+  if(!modernSplit(q))return false;
+  if(q.splitRawModel!=='V6'||q.splitDetectorModel!=='V4'||q.splitRawPaddleReadback!==8||q.slashPixelVerified!==true
+      ||q.splitRegionMethod!=='slash_vertical_band'||q.splitOcrScale!==4||q.splitVerticalPaddingReference!==6||(q.prefix??'')!=='')fail('talent_pinned_split_metadata_incomplete');
+  const proof=q.splitModelEvidence;
+  if(!exactKeys(proof,['loadMethod','provider','rawModel','detectorModel','countModels','rawDetectorAsset'])
+      ||proof.loadMethod!=='new_cpu_uncached_original_onnx_and_labels_under_read_pins'||proof.provider!=='Cpu'
+      ||proof.rawModel!=='V6'||proof.detectorModel!=='V4')fail('talent_strict_model_evidence_incomplete');
+  const models=proof.countModels;
+  if(!exactKeys(models,['rawPaddleConfig','rawPaddleName','fixedDetectorConfig','fixedDetectorName','pinMethod','assets'])
+      ||models.rawPaddleConfig!==8||models.rawPaddleName!=='V6'||models.fixedDetectorConfig!==7||models.fixedDetectorName!=='V4'
+      ||models.pinMethod!=='actual_bundled_open_read_sha256_hold_session'||!Array.isArray(models.assets)||models.assets.length!==5)fail('talent_original_count_model_pins_incomplete');
+  for(const [i,asset] of [...models.assets,proof.rawDetectorAsset].entries()){
+    if(!exactKeys(asset,['modelName','relativePath','sha256','length'])||asset.modelName!==SPLIT_ASSETS[i][0]||asset.relativePath!==SPLIT_ASSETS[i][1]
+        ||typeof asset.sha256!=='string'||!/^[0-9a-fA-F]{64}$/.test(asset.sha256)||!Number.isInteger(asset.length)||asset.length<=0||asset.length>1024*1024*1024)fail('talent_fixed_six_model_asset_proof_invalid');
+  }
+  // JavaScript verifies protocol shape only. Host independently hashes the trusted runtime files.
+  return true;
+}
+function costMethod(value){const marker=value.costQuantityMethod;if(marker!=null&&!['legacy_observed_ratio',PINNED_SPLIT_METHOD].includes(marker))fail('talent_cost_quantity_method_unreviewed');return marker??'legacy_observed_ratio';}
+function previewMaterials(p){if(!Array.isArray(p.materials)||p.materials.length<1||p.materials.length>4||p.materials.some(item=>!item||typeof item!=='object'||!item.quantity||typeof item.quantity!=='object'||Array.isArray(item.quantity)))fail('talent_native_material_quantity_objects_missing');return p.materials;}
 export function verifyTalentQuantity(q,start,finish,prefix=''){
   const s=dimensions(q,start,finish),box=rect(q.bounds),owned=integer(q.owned),required=integer(q.required,prefix?0:1);
+  splitModelShape(q);
   if(q.complete!==true||(q.prefix??'')!==prefix||!inside(box,{x:0,y:0,width:q.width,height:q.height}))fail('talent_complete_ratio_missing');
   if(q.slashPixelVerified===true){
     const slash=rect(q.slashBounds),left=rect(q.numeratorRegion),right=rect(q.denominatorRegion);
@@ -63,6 +98,7 @@ const roundEven=v=>{const floor=Math.floor(v);return v-floor===.5?(floor%2?floor
 const rectSame=(a,b)=>['x','y','width','height'].every(k=>a[k]===b[k]);
 function retainedInitial(q,parent,start,finish){
   const initial=q.initialReading;dimensions(initial,start,finish);
+  splitModelShape(initial);
   if(initial.observedAt!==parent.observedAt||initial.width!==parent.width||initial.height!==parent.height
       ||typeof initial.complete!=='boolean'||typeof initial.raw!=='string'||typeof initial.detectorRaw!=='string'||!Array.isArray(initial.ocrRows)
       ||initial.initialReading!=null||(initial.prefix??'')!=='')fail('talent_initial_raw_frame_missing');
@@ -220,7 +256,9 @@ function preview(p,current,start,finish){
       ||clean(p.currentLevelRaw)!==`等级${current}`||clean(p.nextLevelRaw)!==`等级${current+1}`)fail('talent_next_level_raw_mismatch');
   rowText(p.rows,region(p,'markerRegion',[420,235,1100,750]),s,false);const labels=p.rows.map(row=>clean(row.text));
   if(['属性变更','所需材料','取消','确认'].some(label=>labels.filter(value=>value===label).length!==1))fail('talent_popup_markers_missing');
-  if(!Array.isArray(p.materials)||p.materials.length<1||p.materials.length>4)fail('talent_material_cards_missing');
+  previewMaterials(p);
+  const method=costMethod(p);
+  if(method===PINNED_SPLIT_METHOD?p.materials.some(item=>!modernSplit(item.quantity)):p.materials.some(item=>quantityChainModern(item.quantity)))fail('talent_popup_method_split_proof_mismatch');
   const materials=p.materials.map(item=>{
     const name=canonical(item.name),card=rect(item.card),icon=rect(item.iconRegion);
     if(!name||number(item.iconScore)<.75||item.iconScore>1||!inside(card,{x:p.width*.2,y:p.height*.5,width:p.width*.6,height:p.height*.25})||!inside(icon,card)
@@ -229,6 +267,7 @@ function preview(p,current,start,finish){
     return {name,...quantity(item.quantity,start,finish)};
   });
   if(new Set(materials.map(item=>item.name)).size!==materials.length)fail('talent_duplicate_material');
+  if(quantityChainModern(p.mora))fail('talent_material_model_proof_cannot_authenticate_mora');
   coinIdentity(p);moraCrop(p.mora,p,start,finish);
   if(p.mora.observedAt!==p.observedAt)fail('talent_actual_mora_identity_missing');
   return {materials,mora:quantity(p.mora,start,finish)};
@@ -250,6 +289,15 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   if(['talentEntryObservationMethod','talentEntryObservationLimitMs','talentEntryObservationPollMs'].some(k=>k in e)||'talentEntryIdentitySource' in e||'characterIdentityMethod' in e||'twoPickedEntryFrames' in e||'entryClickFrame' in e||frames.some(f=>f.phase==='talent_entry_observation'))entryBinding(e,frames,character,type,start,finish,names,details);
   const previews=frames.filter(f=>'materials' in f&&'current' in f);
   if(previews.length<2||previews.length%2||previews[0].observedAt<=details[1].observedAt||!same(e.preview,previews.at(-1)))fail('talent_popup_pair_missing');let costs;
+  if(previews.some(p=>costMethod(p)!==costMethod(raw)))fail('talent_payload_popup_quantity_method_mismatch');
+  let pinnedProof=null;
+  for(const p of previews)for(const item of previewMaterials(p))for(const reading of [item.quantity,item.quantity.initialReading])if(reading!=null&&modernSplit(reading)){
+    splitModelShape(reading);
+    // Asset field order is fixed here; JSON object property order carries no provenance.
+    const identity=[...reading.splitModelEvidence.countModels.assets,reading.splitModelEvidence.rawDetectorAsset].map(a=>[a.modelName,a.relativePath,a.sha256,a.length]);
+    if(pinnedProof!=null&&!same(pinnedProof,identity))fail('talent_all_material_popup_model_proofs_must_match');
+    pinnedProof=identity;
+  }
   for(let i=0;i<previews.length;i+=2){pair(previews[i],previews[i+1]);for(const p of previews.slice(i,i+2)){const actual=preview(p,b.base,start,finish);if(costs&&!same(costs,actual))fail('talent_costs_changed');costs=actual;}}
   if(e.materialTooltips?.length!==costs.materials.length)fail('talent_fullnamed_tooltips_missing');
   for(const [i,two] of e.materialTooltips.entries()){

@@ -776,7 +776,7 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
             else:
                 from talent_preview import verify_talent_preview
             preview_verified=verify_talent_preview(raw.get('talentPreview'),target['characterName'],expected_talent_type,
-                raw.get('startedAt'),raw.get('finishedAt'))
+                raw.get('startedAt'),raw.get('finishedAt'),trusted_runtime_root=root)
             if claimed=='success' and not preview_verified:
                 raise ValueError('talent preview success contradicts unknown raw evidence')
             if claimed=='success':

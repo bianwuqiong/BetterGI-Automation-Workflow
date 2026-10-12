@@ -1,0 +1,368 @@
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -3,6 +3,7 @@
+ using System.Text.RegularExpressions;
+ using BetterGenshinImpact.Core.Recognition.OCR;
+ using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ using BetterGenshinImpact.GameTask.Model.Area;
+ using OpenCvSharp;
+ 
+@@ -74,7 +75,8 @@
+         var names=rows.Select(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)).ToArray();
+         return new[]{"属性变更","所需材料","取消","确认"}.All(n=>names.Count(t=>t==n)==1);
+     }
+-    internal static UpgradePreviewRatio ReadRatio(ImageRegion frame,Rect box,IOcrService ocr,long at,string prefix="",bool requirePixelSplit=false)
++    internal static UpgradePreviewRatio ReadRatio(ImageRegion frame,Rect box,IOcrService ocr,long at,string prefix="",bool requirePixelSplit=false,
++        IOcrService? integerDetector=null,StrictInventoryModelEvidence? splitModelEvidence=null,int? splitRawPaddleReadback=null)
+     {
+         using var crop=frame.DeriveCrop(box);
+         var rows=ocr.OcrResult(crop.SrcMat).Regions;
+@@ -106,7 +108,9 @@
+                 (string Raw,int? Value,bool Full,UpgradePreviewRow[] Rows) ReadInteger(Mat original,Rect absolute)
+                 {
+                     using var large=original.Resize(new Size(original.Width*4,original.Height*4),0,0,InterpolationFlags.Cubic);
+-                    var integerRows=ocr.OcrResult(large).Regions;
++                    // Opt-in only: the actual V6 recognizer stays independent of the fixed V4 detector.
++                    // Legacy callers continue to use their original service and emit no pinned proof.
++                    var integerRows=(integerDetector??ocr).OcrResult(large).Regions;
+                     var integerRaw=TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(large));
+                     bool fullInteger=integerRows.Length==1&&integerRaw==TalentUpgradePreviewEvidence.Normalize(integerRows[0].Text);
+                     if(fullInteger){var b=integerRows[0].Rect.BoundingRect();double margin=2*frame.Width/1920d*4;
+@@ -117,11 +121,14 @@
+                 var denominatorBox=new Rect(box.X+slash.Bounds.Right+1,box.Y+bandTop,right.Width,right.Height);
+                 var numerator=ReadInteger(left,numeratorBox);var denominator=ReadInteger(right,denominatorBox);
+                 bool splitComplete=numerator.Full&&denominator.Full&&numerator.Value.HasValue&&denominator.Value.HasValue;
++                bool pinned=integerDetector is not null&&splitRawPaddleReadback==8&&StrictInventoryModelValidation.Verified(splitModelEvidence);
+                 return new(at,raw,box,splitComplete?numerator.Value:null,splitComplete?denominator.Value:null,splitComplete,true,numerator.Raw,denominator.Raw){
+                         Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix,
+                         SlashBounds=new(slash.Bounds.X+box.X,slash.Bounds.Y+box.Y,slash.Bounds.Width,slash.Bounds.Height),SlashCorrelation=slash.Correlation,SlashInkPixels=slash.InkPixels,
+                         NumeratorRegion=numeratorBox,DenominatorRegion=denominatorBox,NumeratorRows=numerator.Rows,DenominatorRows=denominator.Rows,SplitOcrScale=4,
+-                        SplitRegionMethod="slash_vertical_band",SplitVerticalPaddingReference=6};
++                        SplitRegionMethod="slash_vertical_band",SplitVerticalPaddingReference=6,
++                        SplitRawModel=pinned?"V6":null,SplitDetectorModel=pinned?"V4":null,
++                        SplitModelEvidence=pinned?splitModelEvidence:null,SplitRawPaddleReadback=pinned?splitRawPaddleReadback:null};
+             }
+         }
+         return new(at,raw,box,complete?parsed.Owned:null,complete?parsed.Required:null,complete){Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix};
+@@ -140,8 +147,12 @@
+         using var crop=frame.DeriveCrop(box);using var normalized=crop.SrcMat.Resize(new Size(125,125));
+         var candidate=recognizer.Match(normalized);return(candidate.Name,candidate.Score);
+     }
+-    internal static UpgradePreviewFrame Preview(ImageRegion frame,IOcrService ocr,ItemRecognizer recognizer,long at)
+-    {
++    internal static UpgradePreviewFrame Preview(ImageRegion frame,IOcrService ocr,ItemRecognizer recognizer,long at,
++        StrictInventoryOcrSession? quantityModels=null)
++    {
++        if(quantityModels is not null&&(!ReferenceEquals(ocr,quantityModels.Raw)||quantityModels.CountPin.Readback()!=8||
++            !StrictInventoryModelValidation.Verified(quantityModels.Evidence)))
++            throw new InvalidOperationException("actual_pinned_talent_quantity_ocr_session_required");
+         var rows=Rows(frame,new(420,235,1100,750),ocr);bool page=PreviewPage(rows);
+         if(!page)return new(at,false,null,null,[],new(at,"",default,null,null,false),"",0,[]){Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width)};
+         var countsBox=Scale(new(440,690,1040,100),frame.Width);
+@@ -151,13 +162,16 @@
+         var materials=countRows.Select(row=>{
+             var initialBox=new Rect(row.Bounds.X-(int)Math.Round(8*s),row.Bounds.Y-(int)Math.Round(5*s),
+                 row.Bounds.Width+(int)Math.Round(16*s),row.Bounds.Height+(int)Math.Round(10*s));
+-            var initial=ReadRatio(frame,initialBox,ocr,at);
++            var initial=ReadRatio(frame,initialBox,ocr,at,requirePixelSplit:quantityModels is not null,
++                integerDetector:quantityModels?.Detector,splitModelEvidence:quantityModels?.Evidence,splitRawPaddleReadback:quantityModels?.CountPin.Readback());
+             var center=row.Bounds.X+row.Bounds.Width/2;
+             var card=new Rect(center-(int)Math.Round(58*s),row.Bounds.Bottom-(int)Math.Round(138*s),(int)Math.Round(116*s),(int)Math.Round(146*s));
+             var box=TalentUpgradePreviewEvidence.MaterialQuantityCrop(row.Bounds,card,frame.Width);
+             var imageBox=new Rect(card.X,card.Y,card.Width,(int)Math.Round(112*s));
+             var icon=Icon(frame,imageBox,recognizer);
+-            var quantity=ReadRatio(frame,box,ocr,at) with{InitialReading=initial,CropMethod="source_count_row_pad20x5_intersect_card",SourceCountRow=row};
++            var quantity=ReadRatio(frame,box,ocr,at,requirePixelSplit:quantityModels is not null,
++                integerDetector:quantityModels?.Detector,splitModelEvidence:quantityModels?.Evidence,splitRawPaddleReadback:quantityModels?.CountPin.Readback())
++                with{InitialReading=initial,CropMethod="source_count_row_pad20x5_intersect_card",SourceCountRow=row};
+             return new UpgradePreviewMaterial(icon.Name,icon.Score,card,quantity){IconRegion=imageBox};
+         }).ToArray();
+         var initialCoin=Icon(frame,Scale(new(853,799,37,37),frame.Width),recognizer);
+@@ -182,7 +196,8 @@
+                 Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width),CoinRegion=Scale(new(845,791,53,53),frame.Width),
+                 CoinVariant="real_background_padding_8_reference_53",InitialCoinName=initialCoin.Name,InitialCoinScore=initialCoin.Score,InitialCoinRegion=Scale(new(853,799,37,37),frame.Width),
+                 CurrentLevelRegion=Scale(new(760,245,160,65),frame.Width),NextLevelRegion=Scale(new(1000,245,170,65),frame.Width),
+-                CurrentLevelRows=current.Rows,NextLevelRows=next.Rows,CurrentLevelRaw=current.Raw,NextLevelRaw=next.Raw};
++                CurrentLevelRows=current.Rows,NextLevelRows=next.Rows,CurrentLevelRaw=current.Raw,NextLevelRaw=next.Raw,
++                CostQuantityMethod=quantityModels is null?"legacy_observed_ratio":TalentUpgradePreviewEvidence.PinnedCostQuantityMethod};
+     }
+     internal static UpgradePreviewTooltip Tooltip(ImageRegion frame,IOcrService ocr,long at,string? expectedMaterialName=null)
+     {
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -2,6 +2,7 @@
+ using System.Linq;
+ using System.Text;
+ using System.Text.RegularExpressions;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ using OpenCvSharp;
+ 
+ namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
+@@ -19,6 +20,8 @@
+     public UpgradePreviewRatio? InitialReading{get;init;}
+     public string CropMethod{get;init;}="fixed_or_initial";public UpgradePreviewRow? SourceCountRow{get;init;}
+     public string SplitRegionMethod{get;init;}="none";public int SplitVerticalPaddingReference{get;init;}
++    public string? SplitRawModel{get;init;}public string? SplitDetectorModel{get;init;}
++    public StrictInventoryModelEvidence? SplitModelEvidence{get;init;}public int? SplitRawPaddleReadback{get;init;}
+ }
+ public sealed record UpgradePreviewMaterial(string Name,double IconScore,Rect Card,UpgradePreviewRatio Quantity)
+ {public Rect IconRegion{get;init;}}
+@@ -40,6 +43,7 @@
+     public string CurrentLevelRaw{get;init;}="";public string NextLevelRaw{get;init;}="";
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
+     public string CoinVariant{get;init;}="tight_37";public string? InitialCoinName{get;init;}public double? InitialCoinScore{get;init;}public Rect? InitialCoinRegion{get;init;}
++    public string CostQuantityMethod{get;init;}="legacy_observed_ratio";
+ }
+ public sealed record InspectionPrivateCapture(long ObservedAt,int Width,int Height,string PixelType,
+     string Path,string PngSha256,string NativePixelsSha256,string Source);
+@@ -63,6 +67,7 @@
+ /// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
+ public static class TalentUpgradePreviewEvidence
+ {
++    public const string PinnedCostQuantityMethod="pinned_v6_v4_slash_integer_split";
+     public static readonly Rect InspectionNameReference=new(1420,110,360,68);
+     public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
+     public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
+@@ -111,8 +116,40 @@
+         a.DisplayLevel==b.DisplayLevel&&a.BaseLevel is >=1 and <=9&&a.BaseLevel==b.BaseLevel&&Fresh(a.ObservedAt,b.ObservedAt,now);
+     public static bool QuantityPair(UpgradePreviewRatio a,UpgradePreviewRatio b,long now)=>a.Complete&&b.Complete&&
+         a.Owned is >=0&&a.Required is >0&&a.Owned==b.Owned&&a.Required==b.Required&&Fresh(a.ObservedAt,b.ObservedAt,now);
++    public static bool PinnedSplitQuantity(UpgradePreviewRatio q)
++    {
++        if(!q.Complete||!q.SlashPixelVerified||q.Prefix.Length!=0||q.SplitRawModel!="V6"||q.SplitDetectorModel!="V4"||
++            q.SplitRawPaddleReadback!=8||!StrictInventoryModelValidation.Verified(q.SplitModelEvidence)||
++            q.Width<800||q.Width*9!=q.Height*16||q.SplitOcrScale!=4||q.SplitRegionMethod!="slash_vertical_band"||
++            q.SplitVerticalPaddingReference!=6||q.SlashBounds is not Rect slash||q.NumeratorRegion is not Rect left||
++            q.DenominatorRegion is not Rect right||q.NumeratorRows.Length!=1||q.DenominatorRows.Length!=1||
++            q.Owned is not >=0||q.Required is not >0||Integer(q.NumeratorRaw)!=q.Owned||Integer(q.DenominatorRaw)!=q.Required)return false;
++        double scale=q.Width/1920d;var box=q.Bounds;
++        bool Inside(Rect r)=>r.Width>0&&r.Height>0&&r.Left>=box.Left&&r.Right<=box.Right&&r.Top>=box.Top&&r.Bottom<=box.Bottom;
++        if(!Inside(slash)||box.Width>=200*scale||slash.Width<2||slash.Height<6||slash.Height/(double)slash.Width is <1.5 or >5||
++            q.SlashCorrelation is < -1 or > -.75||!double.IsFinite(q.SlashCorrelation)||q.SlashInkPixels<6||
++            q.SlashInkPixels>slash.Width*slash.Height||slash.Left-box.Left<=8||box.Right-slash.Right<=8||
++            slash.Left-box.Left<box.Width*.2||slash.Right-box.Left>box.Width*.85)return false;
++        int pad=Math.Max(3,(int)Math.Round(6*scale)),top=Math.Max(box.Top,slash.Top-pad),bottom=Math.Min(box.Bottom,slash.Bottom+pad);
++        if(left!=new Rect(box.Left,top,slash.Left-box.Left-1,bottom-top)||
++            right!=new Rect(slash.Right+1,top,box.Right-slash.Right-1,bottom-top))return false;
++        bool FullInteger(UpgradePreviewRow row,Rect crop,string raw)=>row.Bounds.Width>0&&row.Bounds.Height>0&&Normalize(row.Text)==raw&&
++            row.Bounds.Left-crop.Left>=2*scale&&row.Bounds.Top-crop.Top>=2*scale&&crop.Right-row.Bounds.Right>=2*scale&&crop.Bottom-row.Bounds.Bottom>=2*scale;
++        return FullInteger(q.NumeratorRows[0],left,q.NumeratorRaw)&&FullInteger(q.DenominatorRows[0],right,q.DenominatorRaw);
++    }
++    private static bool PinnedCostsPair(UpgradePreviewFrame a,UpgradePreviewFrame b)
++    {
++        bool claimed(UpgradePreviewRatio q)=>q.SplitRawModel is not null||q.SplitDetectorModel is not null||q.SplitModelEvidence is not null||q.SplitRawPaddleReadback.HasValue;
++        if(claimed(a.Mora)||claimed(b.Mora))return false; // Currency whole crops never claim the material integer method.
++        if(a.CostQuantityMethod=="legacy_observed_ratio"&&b.CostQuantityMethod=="legacy_observed_ratio")
++            return !a.Materials.Concat(b.Materials).Any(m=>claimed(m.Quantity)||m.Quantity.InitialReading is { } initial&&claimed(initial));
++        return a.CostQuantityMethod==PinnedCostQuantityMethod&&b.CostQuantityMethod==PinnedCostQuantityMethod&&
++            a.Materials.All(m=>PinnedSplitQuantity(m.Quantity))&&b.Materials.All(m=>PinnedSplitQuantity(m.Quantity))&&
++            a.Materials.Zip(b.Materials).All(p=>p.First.Quantity.SplitModelEvidence!.RawDetectorAsset==p.Second.Quantity.SplitModelEvidence!.RawDetectorAsset&&
++                p.First.Quantity.SplitModelEvidence.CountModels.Assets.SequenceEqual(p.Second.Quantity.SplitModelEvidence.CountModels.Assets));
++    }
+     public static bool PreviewPair(UpgradePreviewFrame a,UpgradePreviewFrame b,int current,long now)=>
+-        a.Page&&b.Page&&!ConflictingCoin(a)&&!ConflictingCoin(b)&&a.Current==current&&b.Current==current&&a.Next==current+1&&b.Next==current+1&&current is >=1 and <=9&&
++        a.Page&&b.Page&&PinnedCostsPair(a,b)&&!ConflictingCoin(a)&&!ConflictingCoin(b)&&a.Current==current&&b.Current==current&&a.Next==current+1&&b.Next==current+1&&current is >=1 and <=9&&
+         Fresh(a.ObservedAt,b.ObservedAt,now)&&a.Materials.Length is >=1 and <=4&&a.Materials.Length==b.Materials.Length&&
+         a.Materials.Select(m=>m.Name).Distinct().Count()==a.Materials.Length &&
+         a.Materials.Zip(b.Materials).All(p=>QuantityInsideCard(p.First)&&QuantityInsideCard(p.Second)&&p.First.Name.Length>0&&p.First.Name==p.Second.Name&&double.IsFinite(p.First.IconScore)&&double.IsFinite(p.Second.IconScore)&&p.First.IconScore>=.75&&p.Second.IconScore>=.75&&
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -10,6 +10,7 @@
+ using BetterGenshinImpact.Core.Simulator;
+ using BetterGenshinImpact.GameTask.Common.BgiVision;
+ using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ using BetterGenshinImpact.GameTask.Model.Area;
+ using Microsoft.Extensions.Logging;
+ using Newtonsoft.Json;
+@@ -59,9 +60,9 @@
+         if(!TalentUpgradePreviewEvidence.DetailPair(first,second,type,Now()))throw new InvalidOperationException("detail_identity_pair_unverified");
+         return(first,second);
+     }
+-    private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level)
+-    {
+-        UpgradePreviewFrame Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,recognizer,at);
++    private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level,StrictInventoryOcrSession quantityModels)
++    {
++        UpgradePreviewFrame Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Preview(frame,quantityModels.Raw,recognizer,at,quantityModels);
+             if(read.Page)read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};frames.Add(read);return read;}
+         var first=Read();await Delay();var second=Read();
+         if(!TalentUpgradePreviewEvidence.PreviewPair(first,second,level,Now()))throw new InvalidOperationException("upgrade_preview_pair_unverified");
+@@ -259,16 +260,17 @@
+             inspectionPhase="preview_navigation";
+             await ClickKnownText("升级",new(0,975,560,100));
+             inspectionPhase="preview_read";
+-            using var recognizer=new ItemRecognizer();var preview=await PreviewPair(recognizer,detailReceipt.BaseLevel!.Value);previewReceipt=preview.Second;
++            using var quantityModels=new StrictInventoryOcrSession();
++            using var recognizer=new ItemRecognizer();var preview=await PreviewPair(recognizer,detailReceipt.BaseLevel!.Value,quantityModels);previewReceipt=preview.Second;
+             foreach(var material in previewReceipt.Materials)
+             {
+-                var fresh=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
++                var fresh=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value,quantityModels);
+                 if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,fresh.Second))throw new InvalidOperationException("preview_costs_changed");
+                 inspectionPhase="material_tooltip";
+                 tooltips.Add(await Tooltip(fresh.Second.Materials.Single(m=>m.Name==material.Name)));
+             }
+             inspectionPhase="final_preview_read";
+-            var final=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
++            var final=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value,quantityModels);
+             if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,final.Second))throw new InvalidOperationException("final_preview_costs_changed");
+             previewReceipt=final.Second;verified=true;primaryReason="verified_read_only_preview";
+         }
+@@ -286,6 +288,7 @@
+         var reportPath=System.IO.Path.Combine(reportFolder,DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".json");
+         var payload=JsonConvert.SerializeObject(new{
+             schemaVersion=1,task="talent-upgrade-inspection",status=verified?"success":"unknown",readOnly=true,
++            costQuantityMethod=TalentUpgradePreviewEvidence.PinnedCostQuantityMethod,
+             rawReportPath=reportPath,
+             characterName=official,talentType=type,talentName=verified?detailReceipt?.Title:null,
+             currentBaseLevel=verified?previewReceipt?.Current:null,nextBaseLevel=verified?previewReceipt?.Next:null,
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewPinnedIntegerTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewPinnedIntegerTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentPreviewPinnedIntegerTests.cs
+@@ -0,0 +1,140 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: strict anonymous quantity evidence and explicit private source-model replay.
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.Service;
++using Newtonsoft.Json.Linq;
++using OpenCvSharp;
++using System.Security.Cryptography;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentPreviewPinnedIntegerTests
++{
++    private static StrictInventoryModelEvidence Proof()=>new("new_cpu_uncached_original_onnx_and_labels_under_read_pins","Cpu","V6","V4",
++        new(8,"V6",7,"V4","actual_bundled_open_read_sha256_hold_session",NamedCountModelPin.ExpectedAssets()
++            .Select(a=>new NamedOcrModelAsset(a.Name,a.Path,new string('A',64),1)).ToArray()),
++        new(BgiOnnxModel.PaddleOcrDetV6.Name,BgiOnnxModel.PaddleOcrDetV6.ModelRelativePath.Replace('\\','/'),new string('B',64),1));
++    private static UpgradePreviewRatio Quantity(long at=100)=>new(at,"1213",new(844,737,104,33),12,3,true,true,"12","3"){
++        Width=1920,Height=1080,DetectorRaw="12/3",SplitRawModel="V6",SplitDetectorModel="V4",SplitModelEvidence=Proof(),SplitRawPaddleReadback=8,
++        SlashBounds=new(900,746,6,14),SlashCorrelation=-.9,SlashInkPixels=31,SplitOcrScale=4,SplitRegionMethod="slash_vertical_band",SplitVerticalPaddingReference=6,
++        NumeratorRegion=new(844,740,55,26),DenominatorRegion=new(907,740,41,26),
++        NumeratorRows=[new("12",new(867,744,28,18))],DenominatorRows=[new("3",new(910,744,15,18))]};
++    private static UpgradePreviewFrame Frame(long at)=>new(at,true,1,2,[new("材料甲",.9,new(838,627,116,146),Quantity(at))],
++        new(at,"200/10",new(900,800,275,55),200,10,true),"摩拉",.9,[]){CostQuantityMethod=TalentUpgradePreviewEvidence.PinnedCostQuantityMethod};
++
++    [Fact] public void PinnedSplitRequiresExactTwoIntegersAndUnchangedSourceGeometry()
++    {Assert.True(TalentUpgradePreviewEvidence.PinnedSplitQuantity(Quantity()));Assert.True(TalentUpgradePreviewEvidence.PreviewPair(Frame(100),Frame(400),1,400));}
++    [Theory] [InlineData("raw")] [InlineData("detector")] [InlineData("readback")] [InlineData("missing")] [InlineData("asset")] [InlineData("provider")]
++    public void FalseOrPartialModelClaimsCannotVerifyQuantity(string fault)
++    {
++        var q=Quantity();q=fault switch{
++            "raw"=>q with{SplitRawModel="V4"},"detector"=>q with{SplitDetectorModel="V6"},"readback"=>q with{SplitRawPaddleReadback=7},
++            "missing"=>q with{SplitModelEvidence=null},"provider"=>q with{SplitModelEvidence=q.SplitModelEvidence! with{Provider="Dml"}},
++            _=>q with{SplitModelEvidence=q.SplitModelEvidence! with{CountModels=q.SplitModelEvidence.CountModels with{Assets=[]}}}};
++        Assert.False(TalentUpgradePreviewEvidence.PinnedSplitQuantity(q));
++    }
++    [Theory] [InlineData("left")] [InlineData("top")] [InlineData("right")] [InlineData("bottom")]
++    public void DetectorBoundsStillNeedAllFourTwoPixelMargins(string edge)
++    {
++        var q=Quantity();var r=q.DenominatorRows[0];var b=r.Bounds;
++        b=edge switch{"left"=>new(906,b.Y,b.Width,b.Height),"top"=>new(b.X,739,b.Width,b.Height),
++            "right"=>new(935,b.Y,b.Width,b.Height),_=>new(b.X,750,b.Width,b.Height)};
++        Assert.False(TalentUpgradePreviewEvidence.PinnedSplitQuantity(q with{DenominatorRows=[r with{Bounds=b}]}));
++    }
++    [Theory] [InlineData("slash")] [InlineData("integer")] [InlineData("crop")] [InlineData("scale")] [InlineData("method")] [InlineData("failed")]
++    public void ModelProofNeverRepairsMissingSlashWrongDigitsOrRewrittenPixels(string fault)
++    {
++        var q=Quantity();q=fault switch{
++            "slash"=>q with{SlashPixelVerified=false},"integer"=>q with{DenominatorRaw="03"},"crop"=>q with{DenominatorRegion=new(906,740,42,26)},
++            "scale"=>q with{SplitOcrScale=3},"method"=>q with{SplitRegionMethod="guessed"},_=>q with{Complete=false,Owned=null,Required=null}};
++        Assert.False(TalentUpgradePreviewEvidence.PinnedSplitQuantity(q));
++    }
++    [Fact] public void LegacyCannotDowngradePinnedMetadataAndPairsKeepTheirActualModelAssets()
++    {
++        var a=Frame(100);var b=Frame(400);
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a with{CostQuantityMethod="legacy_observed_ratio"},b,1,400));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a with{CostQuantityMethod="legacy_observed_ratio"},b with{CostQuantityMethod="legacy_observed_ratio"},1,400));
++        var q=b.Materials[0].Quantity;var proof=q.SplitModelEvidence!;
++        q=q with{SplitModelEvidence=proof with{RawDetectorAsset=proof.RawDetectorAsset with{Sha256=new string('C',64)}}};
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Materials=[b.Materials[0] with{Quantity=q}]},1,400));
++    }
++    [Fact] public void WholeMoraCannotClaimTheMaterialsPinnedSplitMethod()
++    {
++        var a=Frame(100);var b=Frame(400);
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Mora=b.Mora with{SplitRawModel="V6"}},1,400));
++    }
++    [Fact] public void DetectorInjectionLeavesLegacyWholeReadingAndMoraMetadataUntouched()
++    {
++        using var image=new ImageRegion(new Mat(1080,1920,MatType.CV_8UC3,Scalar.White),0,0);
++        var raw=new WholeOcr();var detector=new WholeOcr();
++        var q=TalentUpgradePreviewReader.ReadRatio(image,new(844,737,104,33),raw,100,integerDetector:detector,splitModelEvidence:Proof(),splitRawPaddleReadback:8);
++        Assert.True(q.Complete);Assert.False(q.SlashPixelVerified);Assert.Null(q.SplitRawModel);Assert.Null(q.SplitDetectorModel);Assert.Null(q.SplitModelEvidence);Assert.Null(q.SplitRawPaddleReadback);
++        Assert.Equal(0,detector.Calls);
++    }
++    [Fact] public void ProductionPixelSplitCannotUseWholeOcrWhenRealSlashIsAbsent()
++    {
++        using var image=new ImageRegion(new Mat(1080,1920,MatType.CV_8UC3,Scalar.White),0,0);var ocr=new WholeOcr();
++        var q=TalentUpgradePreviewReader.ReadRatio(image,new(844,737,104,33),ocr,100,requirePixelSplit:true,integerDetector:ocr,splitModelEvidence:Proof(),splitRawPaddleReadback:8);
++        Assert.False(q.Complete);Assert.Null(q.Owned);Assert.Null(q.Required);Assert.Null(q.SplitModelEvidence);
++    }
++    private sealed class WholeOcr:IOcrService
++    {
++        public int Calls{get;private set;}
++        public string Ocr(Mat mat)=>OcrWithoutDetector(mat);
++        public string OcrWithoutDetector(Mat mat)=>"12/3";
++        public OcrResult OcrResult(Mat mat){Calls++;return new([new(new RotatedRect(new Point2f(35,16),new Size2f(40,16),0),"12/3",1)]);}
++    }
++}
++
++// The actual-model fixture runs alone because it temporarily selects an in-memory V6 configuration.
++// Missing private input fails explicitly; anonymous pure tests above never load a game or OCR models.
++[CollectionDefinition("PrivateTalentPinnedInteger",DisableParallelization=true)]
++public sealed class PrivateTalentPinnedIntegerCollection{}
++
++[Collection("PrivateTalentPinnedInteger")]
++public class TalentPreviewPinnedIntegerPrivateTests
++{
++    [Fact] [Trait("Fixture","PrivateTalentPinnedInteger")]
++    public void ActualRetainedSourceUsesPinnedV6RawAndV4DetectorWithoutChangingPixels()
++    {
++        string? manifest=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_PINNED_INTEGER_FIXTURE"),runtime=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_PINNED_INTEGER_RUNTIME"),output=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_PINNED_INTEGER_OUTPUT");
++        Assert.False(string.IsNullOrWhiteSpace(manifest));Assert.False(string.IsNullOrWhiteSpace(runtime));Assert.False(string.IsNullOrWhiteSpace(output));
++        var fixture=JObject.Parse(File.ReadAllText(manifest!));var samples=(JArray)fixture["samples"]!;Assert.NotEmpty(samples);
++        string priorPath=Global.StartUpPath;var priorConfig=ConfigService.Config;
++        try
++        {
++            Global.StartUpPath=runtime!;var config=new AllConfig();config.OtherConfig.OcrConfig.PaddleOcrModelConfig=BetterGenshinImpact.Core.Recognition.PaddleOcrModelConfig.V6;
++            typeof(ConfigService).GetProperty(nameof(ConfigService.Config))!.SetValue(null,config);
++            using var pin=new NamedCountModelPin();var model=BgiOnnxModel.PaddleOcrDetV6;
++            using var extra=File.Open(model.ModalPath,FileMode.Open,FileAccess.Read,FileShare.Read);
++            var extraProof=new NamedOcrModelAsset(model.Name,model.ModelRelativePath.Replace('\\','/'),Convert.ToHexString(SHA256.HashData(extra)),extra.Length);extra.Position=0;
++            var proof=new StrictInventoryModelEvidence("new_cpu_uncached_original_onnx_and_labels_under_read_pins","Cpu","V6","V4",pin.Evidence,extraProof);
++            Assert.True(StrictInventoryModelValidation.Verified(proof));var factory=new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>(),true);
++            using var raw=new PaddleOcrService(factory,PaddleOcrService.PaddleOcrModelType.V6 with{PreHeatImagePath=Global.Absolute("Assets/Model/PaddleOCR/test_pp_ocr.png")});
++            using var detector=new PaddleOcrService(factory,PaddleOcrService.PaddleOcrModelType.V4 with{PreHeatImagePath=Global.Absolute("Assets/Model/PaddleOCR/test_pp_ocr.png")});
++            var results=new List<object>();var accepted=new List<bool>();
++            foreach(var sample in samples.OfType<JObject>())
++            {
++                string imagePath=sample.Value<string>("image")!;using var mat=Cv2.ImRead(imagePath);Assert.Equal(new Size(1920,1080),mat.Size());
++                var native=InspectionNativeFrameEncoding.Encode(mat);
++                Assert.Equal(sample.Value<string>("pngSha256"),Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(imagePath))));Assert.Equal(sample.Value<string>("nativePixelsSha256"),native.NativePixelsSha256);
++                var b=((JArray)sample["quantityBounds"]!).Values<int>().ToArray();var box=new Rect(b[0],b[1],b[2],b[3]);long at=sample.Value<long>("observedAt");
++                using var image=new ImageRegion(mat.Clone(),0,0);var old=TalentUpgradePreviewReader.ReadRatio(image,box,raw,at);
++                var read=TalentUpgradePreviewReader.ReadRatio(image,box,raw,at,requirePixelSplit:true,integerDetector:detector,splitModelEvidence:proof,splitRawPaddleReadback:pin.Readback());
++                bool ok=TalentUpgradePreviewEvidence.PinnedSplitQuantity(read)&&read.NumeratorRaw==sample.Value<string>("expectedNumeratorRaw")&&read.DenominatorRaw==sample.Value<string>("expectedDenominatorRaw");
++                accepted.Add(ok);results.Add(new{source=imagePath,old,read,ok});
++                File.WriteAllText(output!,Newtonsoft.Json.JsonConvert.SerializeObject(new{liveAcceptance=false,results,proof}));
++                Assert.False(old.Complete);Assert.Null(old.Owned);Assert.Null(old.Required);
++            }
++            Assert.All(accepted,value=>Assert.True(value));
++        }
++        finally{Global.StartUpPath=priorPath;typeof(ConfigService).GetProperty(nameof(ConfigService.Config))!.SetValue(null,priorConfig);}
++    }
++}

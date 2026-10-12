@@ -131,6 +131,16 @@
       "order": 25,
       "path": "patches/local-known-backpack-navigation-2026-10-12.patch",
       "sha256": "df2137723872925ad54eb7370143ffd97eb0a5490aeef3c5266740eae1970517"
+    },
+    {
+      "order": 26,
+      "path": "patches/local-talent-pinned-integer-2026-10-12.patch",
+      "sha256": "1770b33fcb902d0d3d70456590a080cc613a65d5afcfa77cf9ea86eaf6e99415"
+    },
+    {
+      "order": 27,
+      "path": "patches/local-backpack-scene-policy-2026-10-12.patch",
+      "sha256": "7406a9ff18e578c5f983168fe8fd1190746ab573e2b0e623ee172ea643de9a32"
     }
   ],
   "offlineValidation": {
@@ -384,5 +394,55 @@
     "consumerSessionIncluded": false,
     "actualConversionOrUpgradeExecutorIncluded": false,
     "validationDocument": "docs/LOCAL_KNOWN_BACKPACK_NAVIGATION_2026-10-12.md"
+  },
+  "talentPinnedIntegerExtension": {
+    "costQuantityMethod": "pinned_v6_v4_slash_integer_split",
+    "rawModel": "V6",
+    "integerDetectorModel": "V4",
+    "actualPinnedAssets": 6,
+    "configuredPaddleReadback": 8,
+    "forcedUniqueActualSlash": true,
+    "splitOcrScale": 4,
+    "sourcePixelMargin": 2,
+    "legacyDefaultReaderUnchanged": true,
+    "actualLiveTalentPreviewVerified": false,
+    "consumerSessionIncluded": false,
+    "actualUpgradeExecutorIncluded": false,
+    "validationDocument": "docs/LOCAL_TALENT_PINNED_INTEGER_2026-10-12.md",
+    "formalBuildPerformed": true,
+    "formalTestsPerformed": true,
+    "newPureCases": 21,
+    "privateActualModelCases": 1,
+    "privateOriginalSourcesReplayed": 4,
+    "privateReplayIsNotLiveAcceptance": true,
+    "validationRecord": "docs/LOCAL_BACKPACK_SCENE_POLICY_2026-10-12.md"
+  },
+  "backpackScenePolicyExtension": {
+    "scenePolicy": "complete_header_unique_checked_canonical_bag_shared_icon_roles_v1",
+    "sharedConfirmRoleRegion": {
+      "x": 1560,
+      "y": 980,
+      "width": 100,
+      "height": 80
+    },
+    "sharedCloseRoleRegion": {
+      "x": 1813,
+      "y": 19,
+      "width": 58,
+      "height": 58
+    },
+    "originalSixAnchorWorldSuccessUnchanged": true,
+    "actualSameFrameWorldProofRequired": true,
+    "criticalSceneAndRevivalBlocksUnchanged": true,
+    "unknownPageDiagnosticContainsNoImageOrUnknownText": true,
+    "actualNamedInventoryVerified": false,
+    "actualBoundMoraVerified": false,
+    "consumerSessionIncluded": false,
+    "validationDocument": "docs/LOCAL_BACKPACK_SCENE_POLICY_2026-10-12.md",
+    "formalBuildPerformed": true,
+    "formalTestsPerformed": true,
+    "selectedPureTests": 209,
+    "newPureCases": 17,
+    "actualSceneRoleLiveVerified": false
   }
 }

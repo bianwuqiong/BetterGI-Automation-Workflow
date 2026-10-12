@@ -19,7 +19,7 @@
 | babalae/better-genshin-impact | `d533eab0295b9668daa0316fe18ffbc1f978af19` | 2026-10-12 06:32:42 | 全树路径；候选任务与脚本桥源码 |
 | babalae/bettergi-scripts-list | `3fc1ad12c4666482083bf37cf0e89d87604fbeef` | 2026-10-11 16:12:50 | 全树路径与JS插件目录；重点候选README/manifest/main |
 
-本项目保持 `NOTICE.md` 指定的 `d8c0aa238a949d7d74bfe5087f3a48e39771575a` 加 `SOURCE_PATCH_SEQUENCE_2026-10-11.json` 完整1..25。新增两层修复进程身份查询与已知背包页导航，没有整体换用新版引擎。新版官方代码已使用 `InputHub.Foreground`，本机固定源码仍使用其既有输入结构。不能把最新文件直接覆盖进本机分支而忽略完整补丁与输入依赖。
+本项目保持 `NOTICE.md` 指定的 `d8c0aa238a949d7d74bfe5087f3a48e39771575a` 加 `SOURCE_PATCH_SEQUENCE_2026-10-11.json` 的完整当前序列。进程身份查询、已知背包页导航和费用整数检测都在这个固定基线上修复；费用识别复用已有的双模型会话与资产读锁，没有整体换用新版引擎。新版官方代码已使用 `InputHub.Foreground`，本机固定源码仍使用其既有输入结构。不能把最新文件直接覆盖进本机分支而忽略完整补丁与输入依赖。
 
 ## 已经存在的材料合成链
 

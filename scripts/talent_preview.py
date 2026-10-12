@@ -1,13 +1,80 @@
-"""Recompute one read-only next-talent cost from the native raw UI evidence."""
+"""Recompute one read-only next-talent cost from the native raw UI evidence.
+
+Legacy fixtures remain diagnostic compatibility only. Neither legacy nor model-
+pinned costs authorize consumption or replace the unintegrated native final gate.
+"""
 import math
 import re
 import unicodedata
 try:
     from .backpack_inventory_evidence import _number,_rect,_inside,_time
+    from .named_count_model_assets import COUNT_MODEL_ASSETS
+    from .named_inventory import RAW_DETECTOR,strict_models
 except ImportError:
     from backpack_inventory_evidence import _number,_rect,_inside,_time
+    from named_count_model_assets import COUNT_MODEL_ASSETS
+    from named_inventory import RAW_DETECTOR,strict_models
 
 TYPES=('普通攻击','元素战技','元素爆发')
+PINNED_SPLIT_METHOD='pinned_v6_v4_slash_integer_split'
+SPLIT_METADATA=('splitRawModel','splitDetectorModel','splitModelEvidence','splitRawPaddleReadback')
+
+def modern_split(q):
+    if not isinstance(q,dict):raise ValueError('talent quantity must be a native JSON object')
+    return any(q.get(key) is not None for key in SPLIT_METADATA)
+
+def split_model_shape(q):
+    """Check native model provenance shape; it does not prove any local file bytes."""
+    if not modern_split(q):return False
+    if (q.get('splitRawModel')!='V6' or q.get('splitDetectorModel')!='V4'
+            or type(q.get('splitRawPaddleReadback')) is not int or q['splitRawPaddleReadback']!=8
+            or q.get('slashPixelVerified') is not True or q.get('splitRegionMethod')!='slash_vertical_band'
+            or type(q.get('splitOcrScale')) is not int or q['splitOcrScale']!=4
+            or type(q.get('splitVerticalPaddingReference')) is not int or q['splitVerticalPaddingReference']!=6
+            or q.get('prefix','')!=''):
+        raise ValueError('modern quantity requires complete pinned V6/V4 slash-band metadata')
+    proof=q.get('splitModelEvidence')
+    if (not isinstance(proof,dict) or set(proof)!={'loadMethod','provider','rawModel','detectorModel','countModels','rawDetectorAsset'}
+            or proof['loadMethod']!='new_cpu_uncached_original_onnx_and_labels_under_read_pins'
+            or proof['provider']!='Cpu' or proof['rawModel']!='V6' or proof['detectorModel']!='V4'):
+        raise ValueError('modern quantity strict model evidence incomplete')
+    models=proof['countModels']
+    expected={'rawPaddleConfig':8,'rawPaddleName':'V6','fixedDetectorConfig':7,'fixedDetectorName':'V4',
+        'pinMethod':'actual_bundled_open_read_sha256_hold_session'}
+    if (not isinstance(models,dict) or set(models)!={*expected,'assets'}
+            or any(type(models.get(key)) is not type(value) or models[key]!=value for key,value in expected.items())
+            or not isinstance(models['assets'],list) or len(models['assets'])!=5):
+        raise ValueError('modern quantity original count model pins incomplete')
+    for asset,(name,path) in zip([*models['assets'],proof['rawDetectorAsset']],
+            [*COUNT_MODEL_ASSETS,('PpOcrDetV6',RAW_DETECTOR)]):
+        if (not isinstance(asset,dict) or set(asset)!={'modelName','relativePath','sha256','length'}
+                or asset['modelName']!=name or asset['relativePath']!=path
+                or not isinstance(asset['sha256'],str) or not re.fullmatch('[0-9a-fA-F]{64}',asset['sha256'])
+                or type(asset['length']) is not int or not 0<asset['length']<=1024*1024*1024):
+            raise ValueError('modern quantity fixed six-model asset proof invalid')
+    return True
+
+def split_models(q,trusted_runtime_root):
+    if split_model_shape(q):
+        if trusted_runtime_root is None:raise ValueError('modern quantity requires trusted BetterGI runtime root')
+        # Fixed relative asset paths are independently hashed by the Host, never trusted from JSON.
+        strict_models(q['splitModelEvidence'],trusted_runtime_root)
+
+def cost_method(value):
+    marker=value.get('costQuantityMethod')
+    if marker not in (None,'legacy_observed_ratio',PINNED_SPLIT_METHOD):
+        raise ValueError('talent cost quantity method is not reviewed')
+    return marker or 'legacy_observed_ratio'
+
+def quantity_chain_modern(q):
+    return modern_split(q) or isinstance(q.get('initialReading'),dict) and modern_split(q['initialReading'])
+
+def preview_materials(p):
+    values=p.get('materials')
+    if (not isinstance(values,list) or not 1<=len(values)<=4
+            or any(not isinstance(item,dict) or not isinstance(item.get('quantity'),dict) for item in values)):
+        raise ValueError('preview bounded native material quantity objects missing')
+    return values
 def clean(value):
     return re.sub(r'\s+','',unicodedata.normalize('NFKC',value)) if isinstance(value,str) else ''
 def material_name(value): return clean(value).replace('[','「').replace(']','」')
@@ -41,8 +108,9 @@ def rows_text(rows,box,s,full=True,projected=False):
 def pair(a,b):
     if (a.get('width'),a.get('height'))!=(b.get('width'),b.get('height')) or not 0<_number(b.get('observedAt'))-_number(a.get('observedAt'))<=5000:
         raise ValueError('talent independent fresh frames required')
-def quantity(q,start,finish,prefix=''):
+def quantity(q,start,finish,prefix='',*,trusted_runtime_root=None):
     s=frame(q,start,finish);box=_rect(q.get('bounds'))
+    split_models(q,trusted_runtime_root)
     if not _inside(box,(0,0,q['width'],q['height'])) or q.get('complete') is not True or q.get('prefix','')!=prefix:
         raise ValueError('complete quantity crop/prefix proof missing')
     owned,required=integer(q.get('owned')),integer(q.get('required'),0 if prefix else 1)
@@ -80,9 +148,10 @@ def quantity(q,start,finish,prefix=''):
         if tuple(digits(part) for part in raw.split('/'))!=(owned,required): raise ValueError('raw quantity differs from declared integers')
     return owned,required
 
-def retained_initial(q,parent,start,finish):
+def retained_initial(q,parent,start,finish,*,trusted_runtime_root=None):
     initial=q.get('initialReading')
     frame(initial,start,finish)
+    split_models(initial,trusted_runtime_root)
     if (initial.get('observedAt')!=parent['observedAt'] or (initial['width'],initial['height'])!=(parent['width'],parent['height'])
             or type(initial.get('complete')) is not bool or not isinstance(initial.get('raw'),str)
             or not isinstance(initial.get('detectorRaw'),str) or not isinstance(initial.get('ocrRows'),list)
@@ -96,14 +165,14 @@ def retained_initial(q,parent,start,finish):
         raise ValueError('failed initial reading must retain nullable quantities')
     return initial
 
-def material_crop(item,parent,start,finish):
+def material_crop(item,parent,start,finish,*,trusted_runtime_root=None):
     q=item['quantity'];s=parent['width']/1920
     if q.get('initialReading') is None:
         if q.get('cropMethod','fixed_or_initial')!='fixed_or_initial' or q.get('sourceCountRow') is not None:
             raise ValueError('derived material crop has no actual initial reading')
         return
     if q.get('cropMethod')!='source_count_row_pad20x5_intersect_card':raise ValueError('unrecognized derived material crop method')
-    initial=retained_initial(q,parent,start,finish);source=q.get('sourceCountRow',{})
+    initial=retained_initial(q,parent,start,finish,trusted_runtime_root=trusted_runtime_root);source=q.get('sourceCountRow',{})
     box=_rect(source.get('bounds'));band=(440*s,690*s,1040*s,100*s)
     if not re.fullmatch(r'[0-9/]{2,20}',clean(source.get('text'))) or not _inside(box,band) or min(box[0]-band[0],band[0]+band[2]-box[0]-box[2])<2*s:
         raise ValueError('actual material source count row outside complete count band')
@@ -116,15 +185,15 @@ def material_crop(item,parent,start,finish):
     left=max(card[0],x-round(20*s));right=min(card[0]+card[2],x+w+round(20*s))
     top=max(card[1],y-round(5*s));bottom=min(card[1]+card[3],y+h+round(5*s))
     if _rect(q['bounds'])!=(left,top,right-left,bottom-top):raise ValueError('material padded crop is not exactly intersected with actual card')
-    if initial['complete'] and quantity(initial,start,finish)!=quantity(q,start,finish):raise ValueError('high-confidence initial material quantity conflicts with final actual crop')
+    if initial['complete'] and quantity(initial,start,finish,trusted_runtime_root=trusted_runtime_root)!=quantity(q,start,finish,trusted_runtime_root=trusted_runtime_root):raise ValueError('high-confidence initial material quantity conflicts with final actual crop')
 
-def mora_crop(q,parent,start,finish):
+def mora_crop(q,parent,start,finish,*,trusted_runtime_root=None):
     if q.get('initialReading') is None:
         if q.get('cropMethod','fixed_or_initial')!='fixed_or_initial' or q.get('sourceCountRow') is not None:
             raise ValueError('derived Mora crop has no actual initial reading')
         region(q,'bounds',(903,797,275,55));return
     if q.get('cropMethod')!='unique_initial_detector_row_pad12':raise ValueError('unrecognized derived Mora crop method')
-    initial=retained_initial(q,parent,start,finish);region(initial,'bounds',(903,797,275,55))
+    initial=retained_initial(q,parent,start,finish,trusted_runtime_root=trusted_runtime_root);region(initial,'bounds',(903,797,275,55))
     numeric=[row for row in initial['ocrRows'] if re.fullmatch(r'(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})',clean(row['text']))]
     if len(numeric)!=1 or q.get('sourceCountRow')!=numeric[0]:raise ValueError('Mora source is not the unique real initial complete ratio row')
     s=parent['width']/1920;row_box=_rect(numeric[0]['bounds'])
@@ -133,7 +202,7 @@ def mora_crop(q,parent,start,finish):
     if (_rect(q['bounds'])!=expected or expected[0]<parent['width']*.44 or expected[0]+expected[2]>parent['width']*.65
             or expected[1]<parent['height']*.7 or expected[1]+expected[3]>parent['height']*.81):
         raise ValueError('Mora derived box is not actual detector row plus bounded pad12')
-    if initial['complete'] and quantity(initial,start,finish)!=quantity(q,start,finish):raise ValueError('high-confidence initial Mora quantity conflicts with final actual crop')
+    if initial['complete'] and quantity(initial,start,finish,trusted_runtime_root=trusted_runtime_root)!=quantity(q,start,finish,trusted_runtime_root=trusted_runtime_root):raise ValueError('high-confidence initial Mora quantity conflicts with final actual crop')
 
 def coin_identity(p):
     variant=p.get('coinVariant','tight_37')
@@ -318,7 +387,7 @@ def detail(d,talent_type,start,finish):
     else: raise ValueError('talent glyph color/+3 evidence unverified')
     if d.get('hasFixedPlusThree') is not plus or base!=display-(3 if plus else 0): raise ValueError('base talent level/+3 mismatch')
     return title,base,display,plus
-def preview(p,current,start,finish):
+def preview(p,current,start,finish,*,trusted_runtime_root=None):
     s=frame(p,start,finish)
     if p.get('page') is not True or p.get('current')!=current or p.get('next')!=current+1: raise ValueError('preview next basic level mismatch')
     for key,value,ref in (('currentLevelRows',current,(760,245,160,65)),('nextLevelRows',current+1,(1000,245,170,65))):
@@ -329,25 +398,29 @@ def preview(p,current,start,finish):
     marker=region(p,'markerRegion',(420,235,1100,750))
     rows_text(p.get('rows'),marker,s,full=False)
     if any(names.count(name)!=1 for name in ('属性变更','所需材料','取消','确认')): raise ValueError('full upgrade popup markers missing')
-    materials=p.get('materials')
-    if not isinstance(materials,list) or not 1<=len(materials)<=4: raise ValueError('preview bounded material cards missing')
+    materials=preview_materials(p)
+    marker=cost_method(p)
+    if (marker==PINNED_SPLIT_METHOD and any(not modern_split(item.get('quantity',{})) for item in materials)
+            or marker!=PINNED_SPLIT_METHOD and any(quantity_chain_modern(item.get('quantity',{})) for item in materials)):
+        raise ValueError('talent popup method and every material split proof must agree')
     result=[]
     for item in materials:
         name=material_name(item.get('name'));card=_rect(item.get('card'));icon=_rect(item.get('iconRegion'))
         if not name or not .75<=_number(item.get('iconScore'))<=1 or not _inside(card,(p['width']*.2,p['height']*.5,p['width']*.6,p['height']*.25)) or not _inside(icon,card):
             raise ValueError('actual material card identity/geometry unverified')
         if not _inside(_rect(item['quantity']['bounds']),card) or item['quantity']['observedAt']!=p['observedAt']: raise ValueError('material quantity outside actual card/frame')
-        material_crop(item,p,start,finish)
-        owned,required=quantity(item['quantity'],start,finish)
+        material_crop(item,p,start,finish,trusted_runtime_root=trusted_runtime_root)
+        owned,required=quantity(item['quantity'],start,finish,trusted_runtime_root=trusted_runtime_root)
         result.append({'name':name,'owned':owned,'required':required})
     if len({item['name'] for item in result})!=len(result): raise ValueError('duplicate material identity')
-    coin_identity(p);mora_crop(p['mora'],p,start,finish)
+    if quantity_chain_modern(p['mora']):raise ValueError('pinned material split metadata cannot authenticate Mora ratio')
+    coin_identity(p);mora_crop(p['mora'],p,start,finish,trusted_runtime_root=trusted_runtime_root)
     if p['mora']['observedAt']!=p['observedAt']: raise ValueError('Mora cost not from the same actual popup')
     owned,required=quantity(p['mora'],start,finish)
     return result,{'owned':owned,'required':required}
 
 
-def verified_observation(raw,character,talent_type,started_at,finished_at):
+def verified_observation(raw,character,talent_type,started_at,finished_at,*,trusted_runtime_root=None):
     start,finish=_time(started_at),_time(finished_at)
     if (not isinstance(raw,dict) or raw.get('schemaVersion')!=1 or raw.get('task')!='talent-upgrade-inspection'
             or raw.get('status')!='success' or raw.get('readOnly') is not True or raw.get('evidenceVerified') is not True
@@ -383,11 +456,23 @@ def verified_observation(raw,character,talent_type,started_at,finished_at):
         entry_binding(evidence,frames,character,talent_type,start,finish,names,details)
     previews=[f for f in frames if 'materials' in f and 'current' in f]
     if len(previews)<2 or len(previews)%2 or previews[0]['observedAt']<=details[1]['observedAt'] or evidence.get('preview')!=previews[-1]: raise ValueError('independent full next-cost popup pair missing')
+    method=cost_method(raw)
+    if any(cost_method(p)!=method for p in previews):raise ValueError('payload and every popup quantity method must agree')
+    pinned_proof=None
+    for p in previews:
+        for item in preview_materials(p):
+            q=item['quantity']
+            for reading in (q,q.get('initialReading')):
+                if reading is not None and modern_split(reading):
+                    split_model_shape(reading)
+                    if pinned_proof is not None and reading['splitModelEvidence']!=pinned_proof:
+                        raise ValueError('all material and popup split model proofs must be identical')
+                    pinned_proof=reading['splitModelEvidence']
     costs=None
     for index in range(0,len(previews),2):
         pair(previews[index],previews[index+1])
         for p in previews[index:index+2]:
-            actual=preview(p,b[1],start,finish)
+            actual=preview(p,b[1],start,finish,trusted_runtime_root=trusted_runtime_root)
             if costs is not None and costs!=actual: raise ValueError('costs changed across actual popup observations')
             costs=actual
     tooltips=evidence.get('materialTooltips',[])
@@ -413,7 +498,7 @@ def verified_observation(raw,character,talent_type,started_at,finished_at):
             footer=rows_text(tip.get('footerLabelRows'),region(tip,'footerLabelRegion',(725,890,470,65)),s,full=False)
             if not footer.startswith('培养需求'): raise ValueError('actual cultivation footer label missing')
             region(tip['quantity'],'bounds',(885,890,295,65))
-            if quantity(tip['quantity'],start,finish,'培养需求')[0]!=item['owned']: raise ValueError('tooltip actual owned differs from popup owned')
+            if quantity(tip['quantity'],start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)[0]!=item['owned']: raise ValueError('tooltip actual owned differs from popup owned')
         if two[0]['observedAt']<=previews[1]['observedAt'] or two[1]['observedAt']>=previews[-1]['observedAt']: raise ValueError('tooltip read out of this cost-preview sequence')
     worlds=[f for f in frames if f.get('phase')=='world_restore']
     if len(worlds)<2: raise ValueError('world cleanup independent frames missing')
@@ -429,12 +514,12 @@ def verified_observation(raw,character,talent_type,started_at,finished_at):
     return {'talentName':b[0],'currentBaseLevel':b[1],'nextBaseLevel':b[1]+1,'materials':costs[0],'mora':costs[1]}
 
 
-def verify_talent_preview(packet,character,talent_type,started_at,finished_at):
+def verify_talent_preview(packet,character,talent_type,started_at,finished_at,*,trusted_runtime_root=None):
     if (not isinstance(packet,dict) or packet.get('readOnly') is not True or packet.get('targetReached') is not False
             or type(packet.get('completedUpgrades')) is not int or packet.get('completedUpgrades')!=0 or packet.get('selectedTalentType')!=talent_type): raise ValueError('talent preview read-only summary scope invalid')
     if packet.get('evidenceVerified') is not True:
         if packet.get('costs') is not None: raise ValueError('unknown talent preview costs must remain null')
         return False
-    actual=verified_observation(packet.get('nativeObservation'),character,talent_type,started_at,finished_at)
+    actual=verified_observation(packet.get('nativeObservation'),character,talent_type,started_at,finished_at,trusted_runtime_root=trusted_runtime_root)
     if packet.get('costs')!=actual: raise ValueError('talent preview summary differs from raw evidence')
     return True

@@ -1,11 +1,154 @@
 from copy import deepcopy
 from datetime import datetime,timezone
+import hashlib
+import json
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 from scripts.talent_preview import verify_talent_preview,quantity
+from scripts.named_count_model_assets import COUNT_MODEL_ASSETS,read_named_count_model_assets
+from scripts.named_inventory import RAW_DETECTOR
 from tests.talent_preview_fixture import packet,START,FINISH,BASE,rect,row
 
 class TalentPreviewTests(unittest.TestCase):
     def verify(self,p):return verify_talent_preview(p,'芭芭拉','元素战技',START,FINISH)
+    def split_runtime(self):
+        temporary=tempfile.TemporaryDirectory(prefix='synthetic-talent-split-models-')
+        self.addCleanup(temporary.cleanup);root=Path(temporary.name)
+        config=root/'User/Config.json';config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'otherConfig':{'ocrConfig':{'paddleOcrModelConfig':8}}}),encoding='utf-8')
+        for name,path in [*COUNT_MODEL_ASSETS,('PpOcrDetV6',RAW_DETECTOR)]:
+            asset=root/path;asset.parent.mkdir(parents=True,exist_ok=True);asset.write_bytes(('SYNTHETIC-MODEL-'+name).encode())
+        models=read_named_count_model_assets(root);models['pinMethod']='actual_bundled_open_read_sha256_hold_session'
+        data=(root/RAW_DETECTOR).read_bytes()
+        proof={'loadMethod':'new_cpu_uncached_original_onnx_and_labels_under_read_pins','provider':'Cpu','rawModel':'V6','detectorModel':'V4',
+            'countModels':models,'rawDetectorAsset':{'modelName':'PpOcrDetV6','relativePath':RAW_DETECTOR,'sha256':hashlib.sha256(data).hexdigest(),'length':len(data)}}
+        return root,proof
+    def modern_packet(self):
+        root,proof=self.split_runtime();p=packet('芭芭拉');raw=p['nativeObservation']
+        raw['costQuantityMethod']='pinned_v6_v4_slash_integer_split'
+        for f in (f for f in raw['evidence']['rawFrames'] if 'materials' in f):
+            f['costQuantityMethod']=raw['costQuantityMethod'];q=f['materials'][0]['quantity']
+            q.update(slashPixelVerified=True,raw='3213',detectorRaw='3213',ocrRows=[],splitOcrScale=4,
+                splitRegionMethod='slash_vertical_band',splitVerticalPaddingReference=6,slashBounds=rect(794,720,4,10),
+                slashCorrelation=-.9,slashInkPixels=12,numeratorRegion=rect(754,714,39,22),denominatorRegion=rect(799,714,45,22),
+                numeratorRaw='32',denominatorRaw='3',numeratorRows=[row('32',760,717,26,16)],denominatorRows=[row('3',810,717,18,16)],
+                splitRawModel='V6',splitDetectorModel='V4',splitRawPaddleReadback=8,splitModelEvidence=deepcopy(proof))
+        return p,root
+    def verify_modern(self,p,root):
+        return verify_talent_preview(p,'芭芭拉','元素战技',START,FINISH,trusted_runtime_root=root)
+
+    def test_modern26_pinned_split_independently_hashes_six_fixed_runtime_assets(self):
+        p,root=self.modern_packet();before=deepcopy(p)
+        self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+        self.assertFalse(p['nativeObservation']['confirmationSubmitted']);self.assertEqual(p['completedUpgrades'],0)
+
+    def test_modern26_requires_trusted_root_and_rejects_other_runtime_bytes(self):
+        p,root=self.modern_packet()
+        with self.assertRaisesRegex(ValueError,'trusted BetterGI runtime root'):self.verify(p)
+        other,unused=self.split_runtime();(other/COUNT_MODEL_ASSETS[0][1]).write_bytes(b'different actual model')
+        with self.assertRaises(ValueError):self.verify_modern(p,other)
+
+    def test_modern26_any_nonnull_metadata_requires_every_field_and_exact_readback(self):
+        for key in ('splitRawModel','splitDetectorModel','splitModelEvidence','splitRawPaddleReadback'):
+            for removal in (True,False):
+                with self.subTest(key=key,removal=removal):
+                    p,root=self.modern_packet();q=p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']
+                    if removal:q.pop(key)
+                    else:q[key]=None
+                    with self.assertRaises(ValueError):self.verify_modern(p,root)
+        for change in ({'splitRawModel':'V4'},{'splitDetectorModel':'V6'},{'splitRawPaddleReadback':True},
+                       {'splitRawPaddleReadback':8.0},{'splitRawPaddleReadback':7}):
+            p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity'].update(change)
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_cannot_fall_back_to_whole_ratio_legacy_geometry_or_clipped_digits(self):
+        for change in ({'slashPixelVerified':False},{'splitRegionMethod':None},{'splitRegionMethod':'legacy'},
+                       {'splitOcrScale':3},{'splitVerticalPaddingReference':4},{'prefix':'培养需求'}):
+            p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity'].update(change)
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']['numeratorRows'][0]['bounds']['y']=715
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_payload_popup_marker_and_every_material_proof_must_agree(self):
+        for mutate in (lambda raw:raw.pop('costQuantityMethod'),lambda raw:raw.update(costQuantityMethod='legacy_observed_ratio'),
+                       lambda raw:raw['evidence']['preview'].pop('costQuantityMethod'),
+                       lambda raw:raw['evidence']['preview']['materials'][0]['quantity'].update(splitRawModel=None,splitDetectorModel=None,splitModelEvidence=None,splitRawPaddleReadback=None)):
+            p,root=self.modern_packet();mutate(p['nativeObservation'])
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_rejects_wrong_model_paths_versions_hash_shapes_or_missing_sixth_asset(self):
+        for mutate in (lambda e:e.update(provider='Cuda'),lambda e:e.update(rawModel='V4'),lambda e:e.pop('rawDetectorAsset'),
+                       lambda e:e['countModels'].update(rawPaddleConfig=True),lambda e:e['countModels'].update(fixedDetectorName='V6'),
+                       lambda e:e['countModels']['assets'][0].update(relativePath='../actual.onnx'),
+                       lambda e:e['countModels']['assets'][1].update(modelName='PpOcrRecV6'),
+                       lambda e:e['countModels']['assets'][2].update(length=True),lambda e:e['countModels']['assets'][3].update(sha256='0'*63),
+                       lambda e:e['rawDetectorAsset'].update(relativePath=COUNT_MODEL_ASSETS[0][1]),
+                       lambda e:e['countModels']['assets'].append(deepcopy(e['rawDetectorAsset']))):
+            p,root=self.modern_packet();mutate(p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']['splitModelEvidence'])
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_every_actual_model_byte_config_and_hash_or_length_change_rejects(self):
+        for name,path in [*COUNT_MODEL_ASSETS,('PpOcrDetV6',RAW_DETECTOR)]:
+            with self.subTest(model=name):
+                p,root=self.modern_packet();asset=root/path;original=asset.read_bytes();asset.write_bytes(b'X'+original[1:])
+                with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.modern_packet();(root/'User/Config.json').write_text(json.dumps({'otherConfig':{'ocrConfig':{'paddleOcrModelConfig':7}}}))
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+        for key,value in (('sha256','0'*64),('length',1)):
+            p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']['splitModelEvidence']['rawDetectorAsset'][key]=value
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_non_material_or_other_quantity_proof_cannot_borrow_model_attestation(self):
+        p,root=self.modern_packet();raw=p['nativeObservation'];proof=deepcopy(raw['evidence']['preview']['materials'][0]['quantity']['splitModelEvidence'])
+        raw['evidence']['preview']['mora'].update(splitRawModel='V6',splitDetectorModel='V4',splitModelEvidence=proof,splitRawPaddleReadback=8)
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.modern_packet();p['nativeObservation']['evidence']['materialTooltips'][0][0]['quantity']['splitRawModel']='V6'
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p=self.variant17();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']['initialReading']['splitRawModel']='V6'
+        with self.assertRaises(ValueError):self.verify(p)
+
+    def test_modern26_all_null_metadata_is_legacy_readonly_compatibility_only(self):
+        p=packet('芭芭拉');raw=p['nativeObservation'];raw['costQuantityMethod']='legacy_observed_ratio'
+        for f in (f for f in raw['evidence']['rawFrames'] if 'materials' in f):
+            f.update(costQuantityMethod='legacy_observed_ratio')
+            for q in (f['materials'][0]['quantity'],f['mora']):q.update(splitRawModel=None,splitDetectorModel=None,splitModelEvidence=None,splitRawPaddleReadback=None)
+        self.assertTrue(self.verify(p));self.assertFalse(raw['confirmationSubmitted']);self.assertEqual(p['completedUpgrades'],0)
+
+    def test_modern26_all_materials_and_popup_frames_use_one_identical_model_proof(self):
+        for second_material in (False,True):
+            p,root=self.modern_packet();frames=[f for f in p['nativeObservation']['evidence']['rawFrames'] if 'materials' in f]
+            f=frames[0] if second_material else frames[-1]
+            if second_material:
+                another=deepcopy(f['materials'][0]);another['name']='合成测试第二材料';f['materials'].append(another)
+            f['materials'][-1]['quantity']['splitModelEvidence']['rawDetectorAsset']['sha256']='0'*64
+            with self.assertRaisesRegex(ValueError,'model proofs must be identical'):self.verify_modern(p,root)
+
+    def test_modern26_missing_null_or_nonobject_material_quantity_fails_closed(self):
+        for value in (None,[],True,'native-summary'):
+            p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0]['quantity']=value
+            with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.modern_packet();p['nativeObservation']['evidence']['preview']['materials'][0].pop('quantity')
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_modern26_cultivation_passes_actual_trusted_runtime_root_and_byte_failure_stays_unknown(self):
+        from scripts.cultivation import verify_cultivation_report
+        from tests.test_cultivation import CultivationTests
+        p,root=self.modern_packet();helper=CultivationTests();report=helper.report()
+        report['target']['characterName']='芭芭拉'
+        report.update(profile=None,inventory={},plan=None,requiredScanIds=[],manualInventoryIds=[],steps=[],
+            metadata={'diagnostic':'talent-upgrade-preview-only'},talentPreview=p,startedAt=START,finishedAt=FINISH,
+            policy={'originalResinBudget':0,'condensedResinBudget':0,'maxMinutes':3})
+        path=root/'User/JsScript/AutoGameCultivation/record/test-run.json';path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(report,ensure_ascii=False),encoding='utf-8');archive=root/'logs/offline-run';archive.mkdir(parents=True)
+        def check():return verify_cultivation_report(helper.event(),root,'test-run','scan',report['target'],archive,expected_talent_type='元素战技')
+        with patch('scripts.talent_preview.verify_talent_preview',wraps=verify_talent_preview) as verifier:
+            result=check();self.assertEqual(result['status'],'success',result['reason'])
+            self.assertEqual(verifier.call_args.kwargs['trusted_runtime_root'],root.resolve())
+        self.assertTrue(result['cultivation']['talentPreviewVerified']);self.assertEqual(result['cultivation']['completedUpgrades'],0)
+        (root/RAW_DETECTOR).write_bytes(b'changed synthetic actual runtime bytes')
+        result=check();self.assertEqual(result['status'],'unknown');self.assertIn('V6 detector',result['reason'])
     def variant17(self):
         p=packet('芭芭拉')
         for preview in (f for f in p['nativeObservation']['evidence']['rawFrames'] if 'materials' in f):

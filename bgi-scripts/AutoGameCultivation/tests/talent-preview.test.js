@@ -5,6 +5,101 @@ import {verifyTalentObservation,createTalentPreviewReader,verifyTalentQuantity} 
 import {runCultivation} from '../core/operator.js';
 const fixture=()=>JSON.parse(readFileSync(new URL('./fixtures/talent-preview-synthetic.json',import.meta.url),'utf8'));
 const BASE=1791734400000;
+function syntheticSplitProof(){
+  const pairs=[
+    ['PpOcrDetV4','Assets/Model/PaddleOCR/Det/V4/PP-OCRv4_mobile_det_infer/slim.onnx'],
+    ['PpOcrRecV4','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/slim.onnx'],
+    ['PpOcrRecV6','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/slim.onnx'],
+    ['PpOcrRecV4-labels','Assets/Model/PaddleOCR/Rec/V4/PP-OCRv4_mobile_rec_infer/inference.yml'],
+    ['PpOcrRecV6-labels','Assets/Model/PaddleOCR/Rec/V6/PP-OCRv6_small_rec_infer/inference.yml'],
+    ['PpOcrDetV6','Assets/Model/PaddleOCR/Det/V6/PP-OCRv6_small_det_infer/slim.onnx']
+  ];
+  const assets=pairs.map(([modelName,relativePath],i)=>({modelName,relativePath,sha256:String(i+1).repeat(64),length:100+i}));
+  return {loadMethod:'new_cpu_uncached_original_onnx_and_labels_under_read_pins',provider:'Cpu',rawModel:'V6',detectorModel:'V4',
+    countModels:{rawPaddleConfig:8,rawPaddleName:'V6',fixedDetectorConfig:7,fixedDetectorName:'V4',pinMethod:'actual_bundled_open_read_sha256_hold_session',assets:assets.slice(0,5)},rawDetectorAsset:assets[5]};
+}
+function modernQuantity(at=BASE+1400){
+  const box=(x,y,width,height)=>({x,y,width,height});
+  return {observedAt:at,width:1920,height:1080,bounds:box(754,710,90,35),complete:true,owned:32,required:3,prefix:'',
+    slashPixelVerified:true,raw:'3213',detectorRaw:'3213',ocrRows:[],splitOcrScale:4,splitRegionMethod:'slash_vertical_band',splitVerticalPaddingReference:6,
+    slashBounds:box(794,720,4,10),slashCorrelation:-.9,slashInkPixels:12,numeratorRegion:box(754,714,39,22),denominatorRegion:box(799,714,45,22),
+    numeratorRaw:'32',denominatorRaw:'3',numeratorRows:[{text:'32',bounds:box(760,717,26,16)}],denominatorRows:[{text:'3',bounds:box(810,717,18,16)}],
+    splitRawModel:'V6',splitDetectorModel:'V4',splitModelEvidence:syntheticSplitProof(),splitRawPaddleReadback:8};
+}
+function modernObservation(){
+  const raw=fixture();raw.costQuantityMethod='pinned_v6_v4_slash_integer_split';
+  for(const p of [...raw.evidence.rawFrames.filter(f=>'materials' in f),raw.evidence.preview]){
+    p.costQuantityMethod=raw.costQuantityMethod;p.materials[0].quantity=modernQuantity(p.observedAt);
+  }
+  return raw;
+}
+test('modern26 split validates exact six-asset protocol shape without claiming disk or consumption verification',()=>{
+  const raw=modernObservation(),copy=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);
+  assert.deepEqual(raw,copy);assert.equal(raw.confirmationSubmitted,false);
+  // A syntactically valid digest is only protocol shape here; the Host must hash actual files.
+  const q=modernQuantity();q.splitModelEvidence.rawDetectorAsset.sha256='0'.repeat(64);
+  assert.deepEqual(verifyTalentQuantity(q,BASE,BASE+4000),{owned:32,required:3});
+});
+test('modern26 any non-null field requires all four exact model metadata fields',()=>{
+  for(const key of ['splitRawModel','splitDetectorModel','splitModelEvidence','splitRawPaddleReadback'])for(const remove of [true,false]){
+    const q=modernQuantity();if(remove)delete q[key];else q[key]=null;
+    assert.throws(()=>verifyTalentQuantity(q,BASE,BASE+4000));
+  }
+  for(const change of [{splitRawModel:'V4'},{splitDetectorModel:'V6'},{splitRawPaddleReadback:true},{splitRawPaddleReadback:7}]){
+    const q=modernQuantity();Object.assign(q,change);assert.throws(()=>verifyTalentQuantity(q,BASE,BASE+4000));
+  }
+});
+test('modern26 never downgrades to whole ratios, legacy crop geometry or partial integer rows',()=>{
+  for(const change of [{slashPixelVerified:false},{splitRegionMethod:null},{splitOcrScale:3},{splitVerticalPaddingReference:4},{prefix:'培养需求'}]){
+    const q=modernQuantity();Object.assign(q,change);assert.throws(()=>verifyTalentQuantity(q,BASE,BASE+4000));
+  }
+  const q=modernQuantity();q.numeratorRows[0].bounds.y=715;assert.throws(()=>verifyTalentQuantity(q,BASE,BASE+4000));
+});
+test('modern26 fixed asset names paths lengths digests and original model config are bounded and exact',()=>{
+  for(const mutate of [e=>e.provider='Cuda',e=>e.rawModel='V4',e=>delete e.rawDetectorAsset,e=>e.countModels.rawPaddleConfig=true,
+      e=>e.countModels.fixedDetectorName='V6',e=>e.countModels.assets[0].relativePath='../model.onnx',e=>e.countModels.assets[1].modelName='PpOcrRecV6',
+      e=>e.countModels.assets[2].length=true,e=>e.countModels.assets[3].sha256='0'.repeat(63),e=>e.rawDetectorAsset.relativePath=e.countModels.assets[0].relativePath,
+      e=>e.countModels.assets.push(structuredClone(e.rawDetectorAsset))]){
+    const q=modernQuantity();mutate(q.splitModelEvidence);assert.throws(()=>verifyTalentQuantity(q,BASE,BASE+4000));
+  }
+});
+test('modern26 payload and each popup marker require modern proof for every material',()=>{
+  for(const mutate of [r=>delete r.costQuantityMethod,r=>r.costQuantityMethod='legacy_observed_ratio',r=>delete r.evidence.preview.costQuantityMethod,
+      r=>Object.assign(r.evidence.preview.materials[0].quantity,{splitRawModel:null,splitDetectorModel:null,splitModelEvidence:null,splitRawPaddleReadback:null})]){
+    const raw=modernObservation();mutate(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('modern26 metadata on a different quantity proof cannot replace material evidence',()=>{
+  const raw=modernObservation();Object.assign(raw.evidence.preview.mora,{splitRawModel:'V6',splitDetectorModel:'V4',splitModelEvidence:syntheticSplitProof(),splitRawPaddleReadback:8});
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  const tip=modernObservation();tip.evidence.materialTooltips[0][0].quantity.splitRawModel='V6';
+  assert.throws(()=>verifyTalentObservation(tip,'芭芭拉','元素战技',BASE,BASE+4000));
+});
+test('modern26 all-null metadata retains legacy readonly fixture compatibility with confirmation disabled',()=>{
+  const raw=fixture();raw.costQuantityMethod='legacy_observed_ratio';
+  for(const p of [...raw.evidence.rawFrames.filter(f=>'materials' in f),raw.evidence.preview]){
+    p.costQuantityMethod='legacy_observed_ratio';for(const q of [p.materials[0].quantity,p.mora])Object.assign(q,{splitRawModel:null,splitDetectorModel:null,splitModelEvidence:null,splitRawPaddleReadback:null});
+  }
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);assert.equal(raw.confirmationSubmitted,false);
+});
+test('modern26 model proof is identical across all materials and every popup even when each shape is legal',()=>{
+  for(const second of [false,true]){
+    const raw=modernObservation(),frames=raw.evidence.rawFrames.filter(f=>'materials' in f),p=second?frames[0]:frames.at(-1);
+    if(second){const another=structuredClone(p.materials[0]);another.name='合成测试第二材料';p.materials.push(another);}
+    p.materials.at(-1).quantity.splitModelEvidence.rawDetectorAsset.sha256='0'.repeat(64);
+    if(!second)raw.evidence.preview=structuredClone(p);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/model_proofs_must_match/);
+  }
+});
+test('modern26 missing null or nonobject material quantity fails closed',()=>{
+  for(const value of [null,[],true,'native-summary']){
+    const raw=modernObservation();raw.evidence.preview.materials[0].quantity=value;
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+  const raw=modernObservation();delete raw.evidence.preview.materials[0].quantity;
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+});
 function variant17(){
   const raw=fixture(),previews=[...raw.evidence.rawFrames.filter(f=>'materials' in f),raw.evidence.preview];
   for(const p of previews){
