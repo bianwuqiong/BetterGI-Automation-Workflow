@@ -100,6 +100,57 @@ class TalentPreviewTests(unittest.TestCase):
 
     def source31_tips(self,p):return [f for f in p['nativeObservation']['evidence']['rawFrames'] if 'footerLabelRows' in f]
 
+    def marker36_packet(self):
+        p,root=self.source31_packet();raw=p['nativeObservation'];raw['previewMarkerMethod']='whole_marker_required_roles_v2'
+        for f in self.timed_previews(p):
+            f['previewMarkerMethod']=raw['previewMarkerMethod'];proof=f['markerRoleEvidence'];proof['method']=raw['previewMarkerMethod']
+            material=proof['roles'][1];proof['legacyMaterialHeading']=deepcopy(material)
+            proof['legacyMaterialHeading']['rawText']='所需材料C'
+            proof['legacyMaterialHeading']['detectorRows'].append(row('C',1030,592,10,20))
+            material['region']=rect(885,575,135,60)
+            material['detectorRows']=[row('所需材料',906,589,100,28)]
+            f['rows'][1]['bounds']=rect(900,585,100,30)
+        return p,root
+
+    def test_marker36_narrow_material_accepts_with_failed_old_diagnostic(self):
+        p,root=self.marker36_packet();before=deepcopy(p)
+        self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+
+    def test_marker36_method_roi_and_diagnostic_field_cannot_downgrade(self):
+        changes=(lambda r:r['markerRoleEvidence'].pop('legacyMaterialHeading'),
+                 lambda r:r['markerRoleEvidence'].update(legacyMaterialHeading=None),
+                 lambda r:r['markerRoleEvidence']['roles'][1]['region'].update(x=870),
+                 lambda r:r.update(previewMarkerMethod='whole_marker_required_roles_v1'),
+                 lambda r:r['markerRoleEvidence']['roles'][1].update(rawText='所需材料C'),
+                 lambda r:r['markerRoleEvidence']['roles'][1]['detectorRows'].append(row('C',1008,590,8,18)))
+        for change in changes:
+            with self.subTest(change=changes.index(change)):
+                p,root=self.marker36_packet();change(self.timed_previews(p)[0])
+                with self.assertRaises(ValueError):self.verify_modern(p,root)
+        p,root=self.marker36_packet();p['nativeObservation']['previewMarkerMethod']='whole_marker_required_roles_v1'
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_marker36_old_diagnostic_geometry_row_and_frame_association(self):
+        changes=(lambda d:d.update(role='confirm_label'),lambda d:d['region'].update(x=885),
+                 lambda d:d.update(wholeRowIndex=0),lambda d:d.update(observedAt=d['observedAt']+1),
+                 lambda d:d['detectorRows'][0]['bounds'].update(x=869),
+                 lambda d:d['detectorRows'].append(row('C',1049,590,2,18)))
+        for change in changes:
+            with self.subTest(change=changes.index(change)):
+                p,root=self.marker36_packet();change(self.timed_previews(p)[0]['markerRoleEvidence']['legacyMaterialHeading'])
+                with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_marker36_two_pixel_margins_for_whole_and_narrow_detector_rows(self):
+        for member in ('whole','detector'):
+            for edge in (2,1):
+                with self.subTest(member=member,edge=edge):
+                    p,root=self.marker36_packet();f=self.timed_previews(p)[0]
+                    box=(f['rows'][1] if member=='whole' else f['markerRoleEvidence']['roles'][1]['detectorRows'][0])['bounds']
+                    box.update(x=885+edge,width=100)
+                    if edge==2:self.assertTrue(self.verify_modern(p,root))
+                    else:
+                        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
     def test_source31_reserved_payload_and_frame_proofs_cannot_downgrade(self):
         for key in ('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'):
             for placement in ('payload','frame'):

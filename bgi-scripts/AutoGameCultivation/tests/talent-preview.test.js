@@ -73,6 +73,55 @@ function source31Observation(){
   raw.evidence.materialTooltips=[structuredClone(source31Tips(raw))];syncTimedPreview(raw);return raw;
 }
 function syncSource31(raw){raw.evidence.materialTooltips=[structuredClone(source31Tips(raw))];syncTimedPreview(raw);}
+function marker36Observation(){
+  const raw=source31Observation();raw.previewMarkerMethod='whole_marker_required_roles_v2';
+  for(const p of timedPreviews(raw)){
+    p.previewMarkerMethod=raw.previewMarkerMethod;
+    const proof=p.markerRoleEvidence,material=proof.roles[1];
+    proof.method=raw.previewMarkerMethod;
+    proof.legacyMaterialHeading=structuredClone(material);
+    proof.legacyMaterialHeading.rawText='所需材料C';
+    proof.legacyMaterialHeading.detectorRows.push({text:'C',bounds:{x:1030,y:592,width:10,height:20}});
+    material.region={x:885,y:575,width:135,height:60};
+    material.detectorRows=[{text:'所需材料',bounds:{x:906,y:589,width:100,height:28}}];
+    p.rows[1].bounds={x:900,y:585,width:100,height:30};
+  }
+  syncTimedPreview(raw);return raw;
+}
+
+test('marker36 narrow material role accepts complete target while retaining failed old ROI diagnosis',()=>{
+  const raw=marker36Observation(),before=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+  assert.deepEqual(raw,before);
+});
+test('marker36 requires exact method, new ROI, and present diagnostic field without v1 downgrade',()=>{
+  for(const change of [r=>delete timedPreviews(r)[0].markerRoleEvidence.legacyMaterialHeading,
+      r=>timedPreviews(r)[0].markerRoleEvidence.legacyMaterialHeading=null,
+      r=>timedPreviews(r)[0].markerRoleEvidence.roles[1].region.x=870,
+      r=>timedPreviews(r)[0].previewMarkerMethod='whole_marker_required_roles_v1',
+      r=>r.previewMarkerMethod='whole_marker_required_roles_v1',
+      r=>timedPreviews(r)[0].markerRoleEvidence.roles[1].rawText='所需材料C',
+      r=>timedPreviews(r)[0].markerRoleEvidence.roles[1].detectorRows.push({text:'C',bounds:{x:1008,y:590,width:8,height:18}})]){
+    const raw=marker36Observation();change(raw);syncTimedPreview(raw);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('marker36 legacy diagnosis must stay tied to old ROI, same material row and frame',()=>{
+  for(const change of [d=>d.role='confirm_label',d=>d.region.x=885,d=>d.wholeRowIndex=0,d=>d.observedAt++,
+      d=>d.detectorRows[0].bounds.x=869,d=>d.detectorRows.push({text:'C',bounds:{x:1049,y:590,width:2,height:18}})]){
+    const raw=marker36Observation();change(timedPreviews(raw)[0].markerRoleEvidence.legacyMaterialHeading);syncTimedPreview(raw);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('marker36 retains two pixel margins for both original and independent narrow rows',()=>{
+  for(const member of ['whole','detector'])for(const edge of [2,1]){
+    const raw=marker36Observation(),p=timedPreviews(raw)[0];
+    const box=(member==='whole'?p.rows[1]:p.markerRoleEvidence.roles[1].detectorRows[0]).bounds;
+    box.x=885+edge;box.width=100;syncTimedPreview(raw);
+    if(edge===2)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+    else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
 
 test('source31 reserved payload and frame method/proof claims cannot downgrade legacy',()=>{
   for(const key of ['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence']){

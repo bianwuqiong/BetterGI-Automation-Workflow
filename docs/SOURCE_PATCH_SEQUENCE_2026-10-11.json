@@ -171,6 +171,21 @@
       "order": 33,
       "path": "patches/local-known-enter-game-2026-10-13.patch",
       "sha256": "39fd08efcb870596ba006d5cb45de41b424b7218846b314ef0b639b2ff9e9225"
+    },
+    {
+      "order": 34,
+      "path": "patches/local-matched-enter-game-2026-10-13.patch",
+      "sha256": "3ed7789040b8ef08bbf5008ae1ba8023eef029924c390b72c3e0ef88fb168ca8"
+    },
+    {
+      "order": 35,
+      "path": "patches/local-reuse-game-loading-2026-10-13.patch",
+      "sha256": "060f5e15da19dc220c417a290c7b37971778874b0df47a7241bfb6d4c33c7b41"
+    },
+    {
+      "order": 36,
+      "path": "patches/local-talent-material-heading-2026-10-13.patch",
+      "sha256": "1bac7886429726acb83ba9e042ca28960d3d229e7f08d3dc3623406a4596f0b9"
     }
   ],
   "offlineValidation": {
@@ -509,13 +524,41 @@
   "startupReadinessExtension": {
     "validationDocument": "docs/LOCAL_STARTUP_REFUSAL_2026-10-13.md",
     "triggerOwnershipAndDrainNativeCases": 39,
-    "startupKnownEntryNativeSuite": 61,
+    "startupKnownEntryNativeSuite": 66,
     "hostPythonRegression": 748,
     "upstreamNormalEnterGameReused": true,
-    "normalEntryMaximumAttempts": 1,
+    "normalEntryMaximumAttempts": 5,
     "unknownPageInputAllowed": false,
     "authenticationAutomated": false,
     "consumerEnabled": false,
-    "completeStartupLiveAccepted": false
+    "completeStartupLiveAccepted": false,
+    "matchedCurrentTemplateCenter": true,
+    "normalEntryImplementation": "existing GameLoadingTrigger normal branch and TryClickEnterGame state",
+    "normalEntryMinimumIntervalSeconds": 5,
+    "independentStageClickerUsed": false,
+    "normalEntryAuthenticationHandlersInvoked": false
+  },
+  "materialHeadingExtension": {
+    "method": "whole_marker_required_roles_v2",
+    "currentRegion": [
+      885,
+      575,
+      135,
+      60
+    ],
+    "oldDiagnosticRegion": [
+      870,
+      575,
+      180,
+      60
+    ],
+    "requiredPixelMargin": 2,
+    "originalFreshnessMilliseconds": 1500,
+    "originalRowsFiltered": false,
+    "v1HistoricalCompatibility": true,
+    "legacyDiagnosticRequired": true,
+    "liveAccepted": false,
+    "consumerEnabled": false,
+    "validationDocument": "docs/TALENT_HEADING_ROI.md"
   }
 }

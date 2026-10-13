@@ -1,0 +1,158 @@
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -57,7 +57,10 @@
+ public sealed record UpgradePreviewMarkerBackground(int WholeRowIndex,bool InsideWholeSource,int LeftMargin,int RightMargin,
+     int TopMargin,int BottomMargin,bool ClaimsTitleOrInputEvidence);
+ public sealed record UpgradePreviewMarkerRoleEvidence(string Method,Rect WholeRegion,UpgradePreviewMarkerRole[] Roles,
+-    UpgradePreviewMarkerBackground[] BackgroundRows);
++    UpgradePreviewMarkerBackground[] BackgroundRows)
++{
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public UpgradePreviewMarkerRole? LegacyMaterialHeading{get;init;}
++}
+ public sealed record UpgradePreviewReadTiming(long CaptureCallStartedAt,long CaptureReturnedAt,
+     long ReaderStartedAt,long ReaderCompletedAt,long? PairEvaluatedAt,long? DiagnosticPngCompletedAt,bool? PairAccepted);
+ public sealed record InspectionPrivateCapture(long ObservedAt,int Width,int Height,string PixelType,
+@@ -92,14 +95,16 @@
+     public const string PinnedCostQuantityMethod="pinned_v6_v4_slash_integer_split";
+     public const string PreviewTimingMethod="capture_read_evaluate_then_private_png_v1";
+     public const string TooltipTimingMethod="capture_read_evaluate_then_private_png_v1";
+-    public const string PreviewMarkerMethodName="whole_marker_required_roles_v1";
++    public const string LegacyPreviewMarkerMethodName="whole_marker_required_roles_v1";
++    public const string PreviewMarkerMethodName="whole_marker_required_roles_v2";
+     public const string TooltipQuantityMethodName="existing_full_footer_v1";
+     public static readonly Rect WholeMarkerRegion=new(420,235,1100,750);
+     public static readonly Rect TooltipOldFooterRegion=new(885,890,295,65);
+     public static readonly Rect TooltipWholeFooterRegion=new(725,890,470,65);
+-    internal static (string Role,string Text,Rect Region)[] FixedMarkerRoles()=>[
++    public static readonly Rect LegacyMaterialHeadingRegion=new(870,575,180,60);
++    internal static (string Role,string Text,Rect Region)[] FixedMarkerRoles(bool legacy=false)=>[
+         ("attribute_heading","属性变更",new(870,295,180,70)),
+-        ("material_heading","所需材料",new(870,575,180,60)),
++        ("material_heading","所需材料",legacy?LegacyMaterialHeadingRegion:new(885,575,135,60)),
+         ("cancel_label","取消",new(620,875,170,70)),
+         ("confirm_label","确认",new(1170,875,180,70))];
+     public static readonly Rect InspectionNameReference=new(1420,110,360,68);
+@@ -223,20 +228,21 @@
+     private static bool MarkerPair(UpgradePreviewFrame a,UpgradePreviewFrame b)
+     {
+         bool claimed(UpgradePreviewFrame f)=>f.PreviewMarkerMethod is not null||f.SourceRegionModelEvidence is not null||f.MarkerRoleEvidence is not null;
+-        return !claimed(a)&&!claimed(b)||MarkerFrame(a)&&MarkerFrame(b)&&SameStrict(a.SourceRegionModelEvidence,b.SourceRegionModelEvidence);
++        return !claimed(a)&&!claimed(b)||a.PreviewMarkerMethod==b.PreviewMarkerMethod&&MarkerFrame(a)&&MarkerFrame(b)&&SameStrict(a.SourceRegionModelEvidence,b.SourceRegionModelEvidence);
+     }
+     public static bool MarkerFrame(UpgradePreviewFrame f)
+     {
+-        if(f.Width!=1920||f.Height!=1080||f.PreviewMarkerMethod!=PreviewMarkerMethodName||
++        bool legacy=f.PreviewMarkerMethod==LegacyPreviewMarkerMethodName;
++        if(f.Width!=1920||f.Height!=1080||(!legacy&&f.PreviewMarkerMethod!=PreviewMarkerMethodName)||
+             !StrictInventoryModelValidation.Verified(f.SourceRegionModelEvidence)||f.MarkerRoleEvidence is not { } proof||
+-            proof.Method!=PreviewMarkerMethodName||f.MarkerRegion!=WholeMarkerRegion||proof.WholeRegion!=WholeMarkerRegion||
++            proof.Method!=f.PreviewMarkerMethod||f.MarkerRegion!=WholeMarkerRegion||proof.WholeRegion!=WholeMarkerRegion||
+             proof.Roles is not { Length: 4 }||proof.BackgroundRows is null||f.Rows is null||
+             f.Rows.Length<4||f.CostQuantityMethod!=PinnedCostQuantityMethod||
+             f.Materials.Any(m=>m.Quantity.InitialReading is not { } initial||
+                 !SameStrict(f.SourceRegionModelEvidence,initial.SplitModelEvidence)||
+                 !SameStrict(f.SourceRegionModelEvidence,m.Quantity.SplitModelEvidence)))return false;
+         if(f.Rows.Any(r=>string.IsNullOrWhiteSpace(Normalize(r.Text))||!InImage(r.Bounds,f.Width,f.Height)))return false;
+-        var specs=FixedMarkerRoles();var used=new HashSet<int>();
++        var specs=FixedMarkerRoles(legacy);var used=new HashSet<int>();
+         for(int index=0;index<specs.Length;index++)
+         {
+             var spec=specs[index];var role=proof.Roles[index];
+@@ -246,6 +252,20 @@
+                 !Margin(f.Rows[role.WholeRowIndex],WholeMarkerRegion)||!Margin(f.Rows[role.WholeRowIndex],spec.Region)||
+                 Normalize(role.RawText)!=spec.Text||role.DetectorRows is not { Length: 1 }||
+                 Normalize(role.DetectorRows[0].Text)!=spec.Text||!Margin(role.DetectorRows[0],spec.Region))return false;
++        }
++        if(legacy)
++        {
++            if(proof.LegacyMaterialHeading is not null)return false;
++        }
++        else
++        {
++            var old=proof.LegacyMaterialHeading;var current=proof.Roles[1];
++            if(old is null||old.Role!="material_heading"||old.Region!=LegacyMaterialHeadingRegion||
++                old.WholeRowIndex!=current.WholeRowIndex||old.ObservedAt!=f.ObservedAt||old.RawText is null||old.RawText.Length>256||
++                old.DetectorRows is null||old.DetectorRows.Length>32||
++                old.DetectorRows.Any(r=>r.Text is null||r.Text.Length>256||!InImage(r.Bounds,f.Width,f.Height)||
++                    r.Bounds.Left<old.Region.Left||r.Bounds.Top<old.Region.Top||r.Bounds.Right>old.Region.Right||r.Bounds.Bottom>old.Region.Bottom))return false;
++            // Diagnostic old rows may fail the single-title rule; never use them as acceptance evidence.
+         }
+         if(proof.BackgroundRows.Length!=f.Rows.Length-4)return false;
+         int offset=0;
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -98,7 +98,11 @@
+                 return new UpgradePreviewMarkerBackground(pair.index,left>=0&&right>=0&&top>=0&&bottom>=0,
+                     left,right,top,bottom,false);
+             }).ToArray();
+-        return new(TalentUpgradePreviewEvidence.PreviewMarkerMethodName,marker,roles,backgrounds);
++        var oldBox=Scale(TalentUpgradePreviewEvidence.LegacyMaterialHeadingRegion,frame.Width);
++        using var oldCrop=frame.DeriveCrop(oldBox);
++        var oldMaterial=new UpgradePreviewMarkerRole("material_heading",oldBox,roles[1].WholeRowIndex,at,
++            raw.OcrWithoutDetector(oldCrop.SrcMat),Rows(frame,TalentUpgradePreviewEvidence.LegacyMaterialHeadingRegion,raw));
++        return new(TalentUpgradePreviewEvidence.PreviewMarkerMethodName,marker,roles,backgrounds){LegacyMaterialHeading=oldMaterial};
+     }
+     internal static (UpgradePreviewRatio Reading,string WholeRaw,string WholeDetector) ReadWholeFooter(
+         ImageRegion frame,Rect box,IOcrService ocr,long at)
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
+@@ -36,10 +36,45 @@
+             new(at,"200/10",new(900,800,275,55),200,10,true),"摩拉",.9,whole){
+             Width=1920,Height=1080,MarkerRegion=TalentUpgradePreviewEvidence.WholeMarkerRegion,
+             CostQuantityMethod=TalentUpgradePreviewEvidence.PinnedCostQuantityMethod,
+-            PreviewMarkerMethod=TalentUpgradePreviewEvidence.PreviewMarkerMethodName,
++            PreviewMarkerMethod=TalentUpgradePreviewEvidence.LegacyPreviewMarkerMethodName,
+             SourceRegionModelEvidence=models,
+-            MarkerRoleEvidence=new(TalentUpgradePreviewEvidence.PreviewMarkerMethodName,
++            MarkerRoleEvidence=new(TalentUpgradePreviewEvidence.LegacyPreviewMarkerMethodName,
+                 TalentUpgradePreviewEvidence.WholeMarkerRegion,roleProof,[background])};
++    }
++    private static UpgradePreviewFrame CurrentMarkerFrame()
++    {
++        var frame=MarkerFrame();var proof=frame.MarkerRoleEvidence!;
++        var roles=proof.Roles.ToArray();
++        var old=roles[1] with{DetectorRows=roles[1].DetectorRows.Append(new("C",new(1024,587,26,34))).ToArray()};
++        roles[1]=roles[1] with{Region=new(885,575,135,60)};
++        return frame with{PreviewMarkerMethod=TalentUpgradePreviewEvidence.PreviewMarkerMethodName,
++            MarkerRoleEvidence=proof with{Method=TalentUpgradePreviewEvidence.PreviewMarkerMethodName,Roles=roles,LegacyMaterialHeading=old}};
++    }
++    [Fact] public void CurrentHeadingKeepsOldFailureButRequiresItsOwnCompleteSingleRow()
++    {
++        var frame=CurrentMarkerFrame();
++        Assert.True(TalentUpgradePreviewEvidence.MarkerFrame(frame));
++        Assert.Equal(2,frame.MarkerRoleEvidence!.LegacyMaterialHeading!.DetectorRows.Length);
++        var roles=frame.MarkerRoleEvidence.Roles.ToArray();
++        roles[1]=roles[1] with{DetectorRows=roles[1].DetectorRows.Append(new("C",new(1005,590,10,20))).ToArray()};
++        Assert.False(TalentUpgradePreviewEvidence.MarkerFrame(frame with{MarkerRoleEvidence=frame.MarkerRoleEvidence with{Roles=roles}}));
++    }
++    [Theory][InlineData("missing")][InlineData("clock")][InlineData("region")][InlineData("index")][InlineData("geometry")]
++    public void CurrentHeadingRequiresUnchangedLinkedLegacyDiagnostics(string fault)
++    {
++        var frame=CurrentMarkerFrame();var proof=frame.MarkerRoleEvidence!;var old=proof.LegacyMaterialHeading!;
++        var changed=fault switch{
++            "missing"=>null,"clock"=>old with{ObservedAt=old.ObservedAt+1},
++            "region"=>old with{Region=new(885,575,135,60)},"index"=>old with{WholeRowIndex=0},
++            _=>old with{DetectorRows=[new("C",new(1048,587,20,34))]}};
++        Assert.False(TalentUpgradePreviewEvidence.MarkerFrame(frame with{MarkerRoleEvidence=proof with{LegacyMaterialHeading=changed}}));
++    }
++    [Fact] public void CurrentHeadingStillRequiresTwoPixelWholeAndRoleMargins()
++    {
++        var frame=CurrentMarkerFrame();var proof=frame.MarkerRoleEvidence!;
++        var rows=frame.Rows.ToArray();rows[1]=rows[1] with{Bounds=new(1010,590,9,25)};
++        var roles=proof.Roles.ToArray();roles[1]=roles[1] with{DetectorRows=[rows[1]]};
++        Assert.False(TalentUpgradePreviewEvidence.MarkerFrame(frame with{Rows=rows,MarkerRoleEvidence=proof with{Roles=roles}}));
+     }
+     [Fact] public void FourFixedRolesAndEveryUnalteredBackgroundRowAreRequired()
+     {
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -143,3 +143,5 @@
+ - 第三十四层仅把正常进入游戏的固定中心输入替换为同次严格两帧匹配的EnterGame文字框中心，复用原ImageRegion到桌面坐标转换与鼠标输入。输入框须完全位于当前帧及原模板ROI内；原所有权、捕获代次、前台、取消、期限、新鲜度和最多一次尝试保持。未知/认证/剧情无输入，不以一次点击代替进入世界验收。
+ 
+ - 第三十五层恢复复用历史GameLoadingTrigger正常开门调用链：抽出原EnterGame模板与既有5秒节流/最多5次状态为同一个正常分支，OnCapture与实际owned启动等待共同调用。不再使用独立单次点击器或新分阶段算法；入口出现于加载前/后均由原模板处理。只读启动不调用认证、账号选择、适龄或奖励分支，仍有真实owner/捕获绑定/前台/原180秒期限/当前500ms核验。输入使用匹配区域Click及既有坐标转换。
++
++- 第三十六层仅修正严格升级预览所需材料标题的固定独立识别区域885,575,135,60，版本whole_marker_required_roles_v2；六张实际原图已用同一原始V6/V4模型验证完整单标题和最小8px边距。原宽区域870,575,180,60独立读数完整保留为legacyMaterialHeading诊断，整页行/背景证据不改变。兼容历史v1，不通过过滤额外C或放宽单行/2px/1500ms来接受；新版本缺少关联旧诊断即拒绝，消费仍默认关闭。

@@ -26,8 +26,9 @@ READ_TIMING_FIELDS={'captureCallStartedAt','captureReturnedAt','readerStartedAt'
     'pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'}
 PRIVATE_CAPTURE_FIELDS={'observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'}
 FOOTER_METHOD='existing_full_footer_v1'
-MARKER_METHOD='whole_marker_required_roles_v1'
-SOURCE31_METHODS={'previewMarkerMethod':MARKER_METHOD,'tooltipQuantityMethod':FOOTER_METHOD,'tooltipTimingMethod':PREVIEW_TIMING_METHOD}
+MARKER_METHOD_V1='whole_marker_required_roles_v1'
+MARKER_METHOD_V2='whole_marker_required_roles_v2'
+SOURCE31_METHODS={'tooltipQuantityMethod':FOOTER_METHOD,'tooltipTimingMethod':PREVIEW_TIMING_METHOD}
 SOURCE31_FRAME_FIELDS=('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence')
 FOOTER_FIELDS={'method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'}
 MARKER_ROLES=(('attribute_heading','属性变更',(870,295,180,70)),('material_heading','所需材料',(870,575,180,60)),
@@ -172,8 +173,11 @@ def source_rows(values,box,expected=None):
 
 def marker_roles(p,*,trusted_runtime_root=None):
     proof=p.get('markerRoleEvidence')
-    if (p.get('previewMarkerMethod')!=MARKER_METHOD or not isinstance(proof,dict)
-            or set(proof)!={'method','wholeRegion','roles','backgroundRows'} or proof['method']!=MARKER_METHOD):
+    method=p.get('previewMarkerMethod');v2=method==MARKER_METHOD_V2
+    fields={'method','wholeRegion','roles','backgroundRows'}
+    if v2:fields.add('legacyMaterialHeading')
+    if (method not in (MARKER_METHOD_V1,MARKER_METHOD_V2) or not isinstance(proof,dict)
+            or set(proof)!=fields or proof['method']!=method):
         raise ValueError('modern whole marker role method/proof incomplete')
     source_models(p.get('sourceRegionModelEvidence'),trusted_runtime_root)
     whole=source_rect(p.get('markerRegion'),(420,235,1100,750));source_rect(proof['wholeRegion'],whole)
@@ -182,7 +186,8 @@ def marker_roles(p,*,trusted_runtime_root=None):
         raise ValueError('modern whole marker original rows or four roles missing')
     for row in rows:source_row(row)
     picked=[]
-    for role,(kind,text,expected) in zip(roles,MARKER_ROLES):
+    for role,(kind,text,original) in zip(roles,MARKER_ROLES):
+        expected=(885,575,135,60) if v2 and kind=='material_heading' else original
         if (not isinstance(role,dict) or set(role)!={'role','region','wholeRowIndex','observedAt','rawText','detectorRows'}
                 or role['role']!=kind or type(role['observedAt']) is not int or role['observedAt']!=p['observedAt']):
             raise ValueError('modern marker fixed role scope incomplete')
@@ -193,6 +198,20 @@ def marker_roles(p,*,trusted_runtime_root=None):
         if not isinstance(role['rawText'],str) or clean(role['rawText'])!=text:
             raise ValueError('modern marker independent raw recognition mismatch')
         source_rows(role['detectorRows'],box,text);picked.append(index)
+    if v2:
+        diagnostic=proof['legacyMaterialHeading'];material=roles[1]
+        if (not isinstance(diagnostic,dict) or set(diagnostic)!={'role','region','wholeRowIndex','observedAt','rawText','detectorRows'}
+                or diagnostic['role']!='material_heading' or type(diagnostic['wholeRowIndex']) is not int
+                or diagnostic['wholeRowIndex']!=material['wholeRowIndex'] or type(diagnostic['observedAt']) is not int
+                or diagnostic['observedAt']!=p['observedAt'] or not isinstance(diagnostic['rawText'],str)
+                or len(diagnostic['rawText'])>256 or not isinstance(diagnostic['detectorRows'],list)
+                or len(diagnostic['detectorRows'])>32):
+            raise ValueError('legacy material diagnostic scope invalid')
+        old=source_rect(diagnostic['region'],(870,575,180,60))
+        for row in diagnostic['detectorRows']:
+            if (not isinstance(row,dict) or set(row)!={'text','bounds'} or not isinstance(row['text'],str)
+                    or len(row['text'])>256 or not _inside(source_rect(row['bounds']),old)):
+                raise ValueError('legacy material diagnostic row outside old region or invalid')
     remaining=[i for i in range(len(rows)) if i not in picked]
     if len(background)!=len(remaining):raise ValueError('modern whole marker background rows must be exhaustive')
     keys={'wholeRowIndex','insideWholeSource','leftMargin','rightMargin','topMargin','bottomMargin','claimsTitleOrInputEvidence'}
@@ -270,7 +289,8 @@ def source31_protocol(raw,frames,previews,pinned_proof,start,finish,*,trusted_ru
     tips=[f for f in frames if 'kindRows' in f and 'footerLabelRows' in f]
     active=any(raw.get(k) is not None for k in (*SOURCE31_METHODS,*SOURCE31_FRAME_FIELDS)) or any(f.get(k) is not None for f in frames for k in SOURCE31_FRAME_FIELDS) or any(f.get('readTiming') is not None for f in tips)
     if not active:return False
-    if (any(raw.get(k)!=value for k,value in SOURCE31_METHODS.items()) or raw.get('previewTimingMethod')!=PREVIEW_TIMING_METHOD
+    if (raw.get('previewMarkerMethod') not in (MARKER_METHOD_V1,MARKER_METHOD_V2)
+            or any(raw.get(k)!=value for k,value in SOURCE31_METHODS.items()) or raw.get('previewTimingMethod')!=PREVIEW_TIMING_METHOD
             or cost_method(raw)!=PINNED_SPLIT_METHOD or pinned_proof is None):
         raise ValueError('modern talent source31 complete payload methods and pinned costs required')
     tooltip_pairs=raw['evidence'].get('materialTooltips')
@@ -281,6 +301,8 @@ def source31_protocol(raw,frames,previews,pinned_proof,start,finish,*,trusted_ru
         if type(f.get('observedAt')) is not int or (f['width'],f['height'])!=(1920,1080) or f.get('sourceRegionModelEvidence')!=pinned_proof:
             raise ValueError('modern source regions must use the same six-asset material scope')
         source_models(f.get('sourceRegionModelEvidence'),trusted_runtime_root)
+    if any(p.get('previewMarkerMethod')!=raw['previewMarkerMethod'] for p in previews):
+        raise ValueError('modern popup marker methods cannot mix')
     for p in previews:marker_roles(p,trusted_runtime_root=trusted_runtime_root)
     for tip in tips:footer_quantity(tip,start,finish,trusted_runtime_root=trusted_runtime_root)
     all_pairs=[f for f in frames if f in previews or f in tips]

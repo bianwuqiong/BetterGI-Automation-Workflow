@@ -9,6 +9,9 @@ param(
     [string]$RouteConfig,
     [int]$TimeoutMinutes = 0,
     [switch]$DryRun,
+    [switch]$DebugRecording,
+    [switch]$CultivationTalentPreview,
+    [ValidateSet('normal-attack','elemental-skill','elemental-burst')][string]$TalentType = 'elemental-skill',
     [switch]$CheckOnly
 )
 
@@ -89,9 +92,21 @@ $ffprobe = Find-Executable ([string]$config.recordingFfprobeExe) 'ffprobe'
 $frameRate = [Math]::Max(1, [Math]::Min(30, [int]($config.recordingFrameRate | ForEach-Object { if ($_){$_}else{15} })))
 $outputWidth = [Math]::Max(640, [Math]::Min(1920, [int]($config.recordingWidth | ForEach-Object { if ($_){$_}else{1280} })))
 $quality = [Math]::Max(18, [Math]::Min(40, [int]($config.recordingQuality | ForEach-Object { if ($_){$_}else{30} })))
+$averageKbps = 0
+$maximumKbps = 0
+if ($DebugRecording) {
+    $frameRate = 8
+    $outputWidth = 960
+    $quality = 32
+    $averageKbps = 400
+    $maximumKbps = 500
+}
 $windowTimeoutSec = [Math]::Max(30, [Math]::Min(300, [int]($config.recordingWindowTimeoutSec | ForEach-Object { if ($_){$_}else{120} })))
 $minimumFrameCoverage = [Math]::Max(0.1, [Math]::Min(1.0,
     [double]($config.recordingMinimumFrameCoverage | ForEach-Object { if ($_){$_}else{0.7} })))
+if ($CultivationTalentPreview -and ($Profile -ne 'cultivation' -or $CultivationMode -ne 'scan')) {
+    throw '天赋录屏预览仅允许cultivation scan零预算。'
+}
 
 if ($CheckOnly) {
     [pscustomobject]@{
@@ -103,6 +118,9 @@ if ($CheckOnly) {
         FrameRate = $frameRate
         OutputWidth = $outputWidth
         Quality = $quality
+        AverageKbps = $averageKbps
+        MaximumKbps = $maximumKbps
+        StartupRecordingSkipped = [bool]$DebugRecording
         MinimumFrameCoverage = $minimumFrameCoverage
         WindowTimeoutSec = $windowTimeoutSec
         Codec = 'h264_nvenc'
@@ -136,6 +154,10 @@ $workflowInfo.FileName = if ($config.pythonExe) { [string]$config.pythonExe } el
 $workflowArguments = '-B "{0}" --root "{1}" run --no-delay --profile {2} --execution-mode foreground' -f `
     (Join-Path $PSScriptRoot 'workflow.py'), $Root, $Profile
 if ($Profile -eq 'cultivation') { $workflowArguments += ' --cultivation-mode ' + $CultivationMode }
+if ($CultivationTalentPreview) {
+    if ($Profile -ne 'cultivation' -or $CultivationMode -ne 'scan') { throw '天赋录屏预览仅允许cultivation scan零预算。' }
+    $workflowArguments += ' --cultivation-talent-preview --talent-type ' + $TalentType
+}
 if ($Task) {
     if ($Profile -ne 'cultivation') { throw '录屏单节点只允许 cultivation 档的培养材料。' }
     $workflowArguments += ' --task "培养材料"'
@@ -213,6 +235,11 @@ try {
                 Sort-Object StartTime | Select-Object -First 1
 
             if ($gameProcess) {
+                if ($DebugRecording) {
+                    $python = if ($config.pythonExe) { [string]$config.pythonExe } else { 'python' }
+                    & $python -B (Join-Path $PSScriptRoot 'recording_readiness.py') --root $Root --run-id $runId
+                    if ($LASTEXITCODE -ne 0) { Start-Sleep -Milliseconds 500; continue }
+                }
                 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
                 $recordingPath = Join-Path $runDirectory 'genshin-window.mkv'
                 $windowHandle = '0x{0:X}' -f $gameProcess.MainWindowHandle.ToInt64()
@@ -223,6 +250,9 @@ try {
                     '-draw_mouse 0 -i hwnd={1} -vf scale={2}:-2:flags=fast_bilinear ' +
                     '-c:v h264_nvenc -preset p4 -rc vbr -cq {3} -b:v 0 -pix_fmt yuv420p ' +
                     '-an -f matroska "{4}"') -f $frameRate, $windowHandle, $outputWidth, $quality, $recordingPath
+                if ($DebugRecording) {
+                    $recorderInfo.Arguments = $recorderInfo.Arguments.Replace('-b:v 0', ('-b:v {0}k -maxrate {1}k -bufsize {2}k' -f $averageKbps, $maximumKbps, ($maximumKbps * 2)))
+                }
                 $recorderInfo.WorkingDirectory = $Root
                 $recorderInfo.UseShellExecute = $false
                 $recorderInfo.CreateNoWindow = $true
@@ -349,7 +379,7 @@ $recording = [ordered]@{
     ffmpegPid = if ($recorder) { $recorder.Id } else { $null }
     startedAt = if ($recordingStartedAt) { $recordingStartedAt.ToString('o') } else { $null }
     stoppedAt = if ($recordingStoppedAt) { $recordingStoppedAt.ToString('o') } else { $null }
-    settings = [ordered]@{ frameRate = $frameRate; outputWidth = $outputWidth; quality = $quality; codec = 'h264_nvenc'; audio = $false; priority = 'AboveNormal'; priorityApplied = $recorderPriorityApplied; inputQueueFrames = 4; statsDisabled = $true }
+    settings = [ordered]@{ frameRate = $frameRate; outputWidth = $outputWidth; quality = $quality; codec = 'h264_nvenc'; audio = $false; priority = 'AboveNormal'; priorityApplied = $recorderPriorityApplied; inputQueueFrames = 4; statsDisabled = $true; debugRecording = [bool]$DebugRecording; startupRecordingSkipped = [bool]$DebugRecording; averageKbps = $averageKbps; maximumKbps = $maximumKbps }
     probe = $probe
     expectedFrames = $expectedFrames
     frameCoverage = [Math]::Round($frameCoverage, 4)

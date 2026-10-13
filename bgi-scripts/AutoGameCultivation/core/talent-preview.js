@@ -48,12 +48,13 @@ const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(val
 const PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1';
 const READ_TIMING_FIELDS=['captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'];
 const PRIVATE_CAPTURE_FIELDS=['observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'];
-const FOOTER_METHOD='existing_full_footer_v1',MARKER_METHOD='whole_marker_required_roles_v1';
-const SOURCE31_METHODS={previewMarkerMethod:MARKER_METHOD,tooltipQuantityMethod:FOOTER_METHOD,tooltipTimingMethod:PREVIEW_TIMING_METHOD};
+const FOOTER_METHOD='existing_full_footer_v1',MARKER_METHOD_V1='whole_marker_required_roles_v1',MARKER_METHOD_V2='whole_marker_required_roles_v2';
+const SOURCE31_METHODS={tooltipQuantityMethod:FOOTER_METHOD,tooltipTimingMethod:PREVIEW_TIMING_METHOD};
 const SOURCE31_FRAME_FIELDS=['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'];
 const FOOTER_FIELDS=['method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'];
 const MARKER_ROLES=[['attribute_heading','属性变更',[870,295,180,70]],['material_heading','所需材料',[870,575,180,60]],
   ['cancel_label','取消',[620,875,170,70]],['confirm_label','确认',[1170,875,180,70]]];
+const markerMethod=value=>[MARKER_METHOD_V1,MARKER_METHOD_V2].includes(value);
 function previewTiming(raw,previews,start,finish){
   if(raw.previewTimingMethod==null&&previews.every(p=>p.readTiming==null))return;
   if(raw.previewTimingMethod!==PREVIEW_TIMING_METHOD)fail('talent_modern_preview_timing_method_required');
@@ -136,19 +137,33 @@ function sourceRows(rows,box,expected=null){
 }
 function markerRoles(p){
   const proof=p.markerRoleEvidence;
-  if(p.previewMarkerMethod!==MARKER_METHOD||!exactKeys(proof,['method','wholeRegion','roles','backgroundRows'])||proof.method!==MARKER_METHOD)fail('talent_modern_marker_role_proof_incomplete');
+  const method=p.previewMarkerMethod,v2=method===MARKER_METHOD_V2;
+  if(!markerMethod(method)||!exactKeys(proof,v2?['method','wholeRegion','roles','backgroundRows','legacyMaterialHeading']:['method','wholeRegion','roles','backgroundRows'])||proof.method!==method)fail('talent_modern_marker_role_proof_incomplete');
   sourceModelShape(p.sourceRegionModelEvidence);
   const whole=sourceRect(p.markerRegion,[420,235,1100,750]);sourceRect(proof.wholeRegion,[whole.x,whole.y,whole.width,whole.height]);
   const rows=p.rows,roles=proof.roles,background=proof.backgroundRows;
   if(!Array.isArray(rows)||!rows.length||!Array.isArray(roles)||roles.length!==4||!Array.isArray(background))fail('talent_marker_whole_rows_or_roles_missing');
   rows.forEach(sourceRow);const picked=[];
   for(const [offset,role] of roles.entries()){
-    const [kind,text,expected]=MARKER_ROLES[offset];
+    const [kind,text,original]=MARKER_ROLES[offset],expected=v2&&kind==='material_heading'?[885,575,135,60]:original;
     if(!exactKeys(role,['role','region','wholeRowIndex','observedAt','rawText','detectorRows'])||role.role!==kind||!Number.isSafeInteger(role.observedAt)||role.observedAt!==p.observedAt)fail('talent_marker_role_scope_incomplete');
     const index=integer(role.wholeRowIndex,0,rows.length-1),box=sourceRect(role.region,expected),matches=rows.map((row,i)=>clean(row.text)===text?i:null).filter(i=>i!=null);
     if(matches.length!==1||matches[0]!==index||Math.min(...margins(rows[index],whole))<2||Math.min(...margins(rows[index],box))<2)fail('talent_mandatory_marker_duplicated_clipped_or_wrong_role');
     if(typeof role.rawText!=='string'||clean(role.rawText)!==text)fail('talent_marker_independent_raw_mismatch');
     sourceRows(role.detectorRows,box,text);picked.push(index);
+  }
+  if(v2){
+    const diagnostic=proof.legacyMaterialHeading,material=roles[1];
+    if(!exactKeys(diagnostic,['role','region','wholeRowIndex','observedAt','rawText','detectorRows'])
+        ||diagnostic.role!=='material_heading'||diagnostic.wholeRowIndex!==material.wholeRowIndex
+        ||!Number.isSafeInteger(diagnostic.observedAt)||diagnostic.observedAt!==p.observedAt
+        ||typeof diagnostic.rawText!=='string'||diagnostic.rawText.length>256||!Array.isArray(diagnostic.detectorRows)
+        ||diagnostic.detectorRows.length>32)fail('talent_legacy_material_diagnostic_scope_invalid');
+    const old=sourceRect(diagnostic.region,[870,575,180,60]);
+    for(const row of diagnostic.detectorRows){
+      if(!exactKeys(row,['text','bounds'])||typeof row.text!=='string'||row.text.length>256)fail('talent_legacy_material_diagnostic_row_invalid');
+      const box=sourceRect(row.bounds);if(!inside(box,old))fail('talent_legacy_material_diagnostic_row_outside_old_region');
+    }
   }
   const remaining=rows.map((row,i)=>i).filter(i=>!picked.includes(i));if(background.length!==remaining.length)fail('talent_marker_background_rows_not_exhaustive');
   for(const [offset,item] of background.entries()){
@@ -199,13 +214,14 @@ function footerQuantity(tip,start,finish){
 function source31Protocol(raw,frames,previews,pinnedProof,start,finish){
   const tips=frames.filter(f=>'kindRows' in f&&'footerLabelRows' in f),active=[...Object.keys(SOURCE31_METHODS),...SOURCE31_FRAME_FIELDS].some(k=>raw[k]!=null)||frames.some(f=>SOURCE31_FRAME_FIELDS.some(k=>f[k]!=null))||tips.some(f=>f.readTiming!=null);
   if(!active)return false;
-  if(Object.entries(SOURCE31_METHODS).some(([k,v])=>raw[k]!==v)||raw.previewTimingMethod!==PREVIEW_TIMING_METHOD||costMethod(raw)!==PINNED_SPLIT_METHOD||pinnedProof==null)fail('talent_source31_payload_methods_and_pinned_costs_required');
+  if(!markerMethod(raw.previewMarkerMethod)||Object.entries(SOURCE31_METHODS).some(([k,v])=>raw[k]!==v)||raw.previewTimingMethod!==PREVIEW_TIMING_METHOD||costMethod(raw)!==PINNED_SPLIT_METHOD||pinnedProof==null)fail('talent_source31_payload_methods_and_pinned_costs_required');
   const pairs=raw.evidence.materialTooltips;
   if(!Array.isArray(pairs)||pairs.some(pair=>!Array.isArray(pair)||pair.length!==2)||!same(pairs.flat(),tips)||!tips.length)fail('talent_modern_tooltip_pairs_must_retain_all_actual_raw_frames');
   const identity=proof=>{sourceModelShape(proof);return [...proof.countModels.assets,proof.rawDetectorAsset].map(a=>[a.modelName,a.relativePath,a.sha256,a.length]);};
   for(const f of [...previews,...tips]){
     if(!Number.isSafeInteger(f.observedAt)||f.width!==1920||f.height!==1080||!same(identity(f.sourceRegionModelEvidence),identity(pinnedProof)))fail('talent_source_regions_same_six_asset_scope_required');
   }
+  if(previews.some(p=>p.previewMarkerMethod!==raw.previewMarkerMethod))fail('talent_source31_marker_methods_mixed');
   previews.forEach(markerRoles);tips.forEach(tip=>footerQuantity(tip,start,finish));
   const all=frames.filter(f=>previews.includes(f)||tips.includes(f));
   for(let i=0;i<all.length;i+=2)if(('materials' in all[i])!==('materials' in all[i+1]))fail('talent_original_retained_pair_kinds_mixed');
