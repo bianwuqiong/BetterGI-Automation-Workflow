@@ -9,7 +9,7 @@ from PIL import Image
 from scripts.named_inventory_catalog import CSV_PATH,MODEL_PATH,load_runtime_catalog,resolve_material
 from scripts.named_count_model_assets import COUNT_MODEL_ASSETS,read_named_count_model_assets
 from scripts.named_inventory_world import ANCHORS
-from scripts.named_inventory import RAW_DETECTOR
+from scripts.named_inventory import RAW_DETECTOR,FULL_TITLE_REGION_METHOD
 from tests.weekly_inventory_fixture import border,rect
 
 BASE=1791734400000
@@ -73,7 +73,7 @@ def selected(root,models,at):
         for position in range(begin,end,max(1,int((end-begin)/12))):
             xx,yy=(best[0],position) if vertical else (position,best[0]);b,g,r=map(int,image[yy,xx]);side['samples'].append({'x':xx,'y':yy,'b':b,'g':g,'r':r})
     stack={'observedAt':at,'nameRegion':rect(1280,110,540,78),'nameRows':[{'text':'合成教导',**rect(1300,130,150,25)}],'countRegion':reading['sourceRegion'],'countRows':[source],'countMethod':reading['method'],'rawCountText':'7','selectedItemVerified':True,'selectedItemRect':item,'selectionEvidence':outline}
-    initial={**deepcopy(stack),'nameRegion':rect(1309,120,491,60),'nameRows':[{'text':'合成教导',**rect(1320,130,150,25)}],'countRegion':rect(115,428,115,22),'countRows':[],'countMethod':'raw_ocr_without_detector','rawCountText':'~7'}
+    initial={**deepcopy(stack),'countRegion':rect(115,428,115,22),'countRows':[],'countMethod':'raw_ocr_without_detector','rawCountText':'~7'}
     frame={'stack':stack,'initialStack':initial,'countReading':reading,'width':1920,'height':1080,'category':'characterDevelopmentItems','gameActive':True,'promptVisible':False,'tabVerified':True,'headerRegion':rect(100,0,350,100),'headerRows':[{'text':'养成道具',**rect(120,24,180,30)}],'iconName':'合成教导','iconScore':.9,'iconRegion':rect(110,300,125,125),'iconMethod':'cell_resize_125x153_top_125x125'}
     return image,frame
 def fixture(root):
@@ -82,11 +82,13 @@ def fixture(root):
     context={'source':'runner_windows_os_preflight',**{k:binding[k] for k in ('processId','windowHandle','processStartedUtcTicks','executablePath','captureRectangle')},'foregroundWindowHandle':456}
     context['captureRectangle']=rect(0,30,1920,1080)
     request={'runId':'synthetic-run','stepId':'synthetic-step','phase':'diagnostic','materials':[pair]};session='bitblt-inventory:'+'c'*64
-    raw={'schemaVersion':1,'source':'named_cultivation_backpack_selected_stack','readOnly':True,'confirmationSubmitted':False,'targetReached':False,'completedUpgrades':0,**{k:request[k] for k in ('runId','stepId','phase')},'status':'verified','mainUiRestored':True,'cleanupCompleted':True,'startedAt':BASE,'finishedAt':BASE+3500,'observedAt':BASE+1900,'captureSession':session,'gameBinding':binding,'catalogVersion':catalog['version'],'strictModels':strict,'countModels':strict['countModels'],'requestedMaterials':[target],'inventory':{'104301':7},'observations':{},'rejectedObservations':{},'rawFrames':[],'entryWorldFrames':[],'worldFrames':[]}
+    raw={'schemaVersion':2,'source':'named_cultivation_backpack_selected_stack','readOnly':True,'confirmationSubmitted':False,'targetReached':False,'completedUpgrades':0,**{k:request[k] for k in ('runId','stepId','phase')},'status':'verified','mainUiRestored':True,'cleanupCompleted':True,'startedAt':BASE,'finishedAt':BASE+3500,'observedAt':BASE+1900,'captureSession':session,'gameBinding':binding,'catalogVersion':catalog['version'],'strictModels':strict,'countModels':strict['countModels'],'requestedMaterials':[target],'inventory':{'104301':7},'observations':{},'rejectedObservations':{},'rawFrames':[],'entryWorldFrames':[],'worldFrames':[]}
     for i,(at,kind) in enumerate(((200,'world_entry'),(500,'world_entry'),(1500,'named_selected_stack'),(1900,'named_selected_stack'),(2700,'world_restore'),(3100,'world_restore'))):
         when=BASE+at
         if 'world' in kind:image=world_image(templates);recognized={'observedAt':when,'width':1920,'height':1080,'focused':True,'world':True,'prompt':False,'knownBag':False,'escapeRequested':False};raw['entryWorldFrames' if kind=='world_entry' else 'worldFrames'].append(recognized)
-        else:image,recognized=selected(root,strict['countModels'],when)
+        else:
+            image,recognized=selected(root,strict['countModels'],when)
+            recognized.update(nameRegionMethod=FULL_TITLE_REGION_METHOD,initialNameRegion=deepcopy(recognized['initialStack']['nameRegion']),nameModelEvidence=deepcopy(strict))
         data=png(image);path=write(root,f'log/named-inventory-native-frames/{"d"*32}/{i}.png',data);pixels={'observedAt':when,'width':1920,'height':1080,'pixelType':'CV_8UC3','path':str(path),'pngSha256':digest(data),'nativePixelsSha256':digest(image.tobytes()),'source':'diagnostic_only_lossless_native_srcmat_no_resize'}
         if kind=='named_selected_stack':recognized['privateCapture']=pixels
         record={'phase':kind,'observedAt':when,'actualCapture':{'callStartedAt':when-20,'callReturnedAt':when,'nativeWidth':1920,'nativeHeight':1080,'pixelType':'CV_8UC3','binding':binding,'returnedRectangle':binding['captureRectangle'],'freshnessSource':'BitBltSession.GetImage_executes_BitBlt_GdiFlush_new_buffer_each_call'},'privateCapture':pixels,'recognized':recognized}
@@ -111,6 +113,6 @@ def mora_fixture(root):
             f={**f,'phase':'actual_Mora_balance','recognized':read};readings.append(read)
         frames.append(f)
     raw={k:named[k] for k in ('schemaVersion','readOnly','confirmationSubmitted','targetReached','completedUpgrades','status','mainUiRestored','cleanupCompleted','startedAt','finishedAt','captureSession','gameBinding','catalogVersion','strictModels','entryWorldFrames','worldFrames')}
-    raw.update(source='bound_precious_items_bottom_mora',materialId='202',materialName='摩拉',balance=123456,readings=readings,rawFrames=frames,
+    raw.update(schemaVersion=1,source='bound_precious_items_bottom_mora',materialId='202',materialName='摩拉',balance=123456,readings=readings,rawFrames=frames,
         request={'balanceRegion':rect(392,1000,168,40),'iconRegion':rect(354,1000,37,37)})
     return {**{key:packet[key] for key in ('readOnly','targetReached','completedUpgrades','sessionAfterVerified','consumptionVerified','liveVerified','rawEvidenceVerified','readStartedAt','readFinishedAt')},'bindingReceipt':packet['bindingReceipt'],'nativeObservation':raw},context

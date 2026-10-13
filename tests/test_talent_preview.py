@@ -58,6 +58,212 @@ class TalentPreviewTests(unittest.TestCase):
         return p,root
     def timed_previews(self,p):return [f for f in p['nativeObservation']['evidence']['rawFrames'] if 'materials' in f]
 
+    def source31_packet(self):
+        p,root=self.timed_packet();raw=p['nativeObservation'];previews=self.timed_previews(p)
+        proof=deepcopy(previews[0]['materials'][0]['quantity']['splitModelEvidence'])
+        raw.update(previewMarkerMethod='whole_marker_required_roles_v1',tooltipQuantityMethod='existing_full_footer_v1',
+            tooltipTimingMethod='capture_read_evaluate_then_private_png_v1')
+        roles=(('attribute_heading','属性变更',(870,295,180,70)),('material_heading','所需材料',(870,575,180,60)),
+            ('cancel_label','取消',(620,875,170,70)),('confirm_label','确认',(1170,875,180,70)))
+        for f in previews:
+            f.update(previewMarkerMethod=raw['previewMarkerMethod'],sourceRegionModelEvidence=deepcopy(proof))
+            f['rows']=[row(text,x+10,y+10,100,30) for kind,text,(x,y,w,h) in roles]
+            f['rows'] += [row('匿名完整背景',600,400,100,25),row('匿名截断背景',419,470,100,25)]
+            background=[]
+            for i in (4,5):
+                b=f['rows'][i]['bounds'];m=(b['x']-420,1520-b['x']-b['width'],b['y']-235,985-b['y']-b['height'])
+                background.append(dict(wholeRowIndex=i,insideWholeSource=min(m)>=0,leftMargin=m[0],rightMargin=m[1],topMargin=m[2],bottomMargin=m[3],claimsTitleOrInputEvidence=False))
+            f['markerRoleEvidence']={'method':raw['previewMarkerMethod'],'wholeRegion':deepcopy(f['markerRegion']),
+                'roles':[dict(role=kind,region=rect(x,y,w,h),wholeRowIndex=i,observedAt=f['observedAt'],rawText=text,
+                    detectorRows=[row(text,x+12,y+12,90,28)]) for i,(kind,text,(x,y,w,h)) in enumerate(roles)],'backgroundRows':background}
+        tips=[f for f in raw['evidence']['rawFrames'] if 'footerLabelRows' in f]
+        for i,f in enumerate(tips):
+            # Two explicit independent synthetic name readings for the stronger protocol.
+            f.update(alternateNameRows=deepcopy(f['nameRows']),alternateRawName=f['rawName'],
+                alternateNameScale=4,alternateNamePreprocessing='gray_threshold_210_inverse_cubic_4x')
+            initial=deepcopy(f['quantity']);initial.update(complete=False,owned=None,required=None)
+            initial['ocrRows']=[row('培养需求32/99',884,897,182,40)]
+            f['quantity']['bounds']=rect(725,890,470,65);f['quantity']['ocrRows']=deepcopy(f['footerLabelRows'])
+            f.update(tooltipQuantityMethod=raw['tooltipQuantityMethod'],sourceRegionModelEvidence=deepcopy(proof),
+                footerQuantityEvidence=dict(method=raw['tooltipQuantityMethod'],oldRegion=rect(885,890,295,65),sourceRegion=rect(725,890,470,65),
+                    initialReading=initial,initialWholeRawText='培养需求32/99',initialWholeDetectorText='培养需求32/99',
+                    wholeRawText='培养需求32/99',wholeDetectorText='培养需求32/99'))
+            path=root/'log/synthetic-talent-preview-originals'/f'tooltip-{i}.png'
+            with Image.new('RGB',(1920,1080),(70+i,80+i,90+i)) as image:
+                image.save(path,format='PNG');pixels_hash=hashlib.sha256(image.tobytes('raw','BGR')).hexdigest()
+            f['privateCapture']=dict(observedAt=f['observedAt'],width=1920,height=1080,pixelType='CV_8UC3',path=str(path),
+                pngSha256=hashlib.sha256(path.read_bytes()).hexdigest(),nativePixelsSha256=pixels_hash,source='diagnostic_only_lossless_native_srcmat_no_resize')
+            f['readTiming']=dict(captureCallStartedAt=f['observedAt']-5,captureReturnedAt=f['observedAt'],readerStartedAt=f['observedAt'],
+                readerCompletedAt=f['observedAt']+30,pairEvaluatedAt=None if i==0 else BASE+2450,
+                diagnosticPngCompletedAt=BASE+2490+i*20,pairAccepted=None if i==0 else True)
+        return p,root
+
+    def source31_tips(self,p):return [f for f in p['nativeObservation']['evidence']['rawFrames'] if 'footerLabelRows' in f]
+
+    def test_source31_reserved_payload_and_frame_proofs_cannot_downgrade(self):
+        for key in ('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'):
+            for placement in ('payload','frame'):
+                with self.subTest(field=key,placement=placement):
+                    p=packet('芭芭拉');target=p['nativeObservation'] if placement=='payload' else p['nativeObservation']['evidence']['rawFrames'][-1]
+                    target[key]=False
+                    with self.assertRaises(ValueError):verify_talent_preview(p,'芭芭拉','元素战技',START,FINISH)
+
+    def test_source31_rejects_zero_area_original_role_background_and_failed_initial_rows(self):
+        p,root=self.source31_packet()
+        for kind in ('mandatory','background','role','failed_initial'):
+            for axis in ('width','height'):
+                with self.subTest(kind=kind,axis=axis):
+                    q=deepcopy(p);preview=self.timed_previews(q)[0]
+                    if kind=='mandatory':preview['rows'][0]['bounds'][axis]=0
+                    elif kind=='role':preview['markerRoleEvidence']['roles'][0]['detectorRows'][0]['bounds'][axis]=0
+                    elif kind=='failed_initial':self.source31_tips(q)[0]['footerQuantityEvidence']['initialReading']['ocrRows'][0]['bounds'][axis]=0
+                    else:
+                        preview['rows'][4]['bounds'][axis]=0;b=preview['rows'][4]['bounds'];d=preview['markerRoleEvidence']['backgroundRows'][0]
+                        d.update(rightMargin=1520-b['x']-b['width'],bottomMargin=985-b['y']-b['height'])
+                    with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_whole_footer_forbids_slash_geometry_and_complete_initial_clipped_edges(self):
+        p,root=self.source31_packet()
+        for member in ('quantity','initial'):
+            for key,value in (('slashBounds',{'x':900,'y':900,'width':4,'height':10}),('numeratorRegion',{'x':900,'y':900,'width':20,'height':20}),
+                    ('denominatorRegion',{'x':930,'y':900,'width':20,'height':20}),('splitRegionMethod','slash_vertical_band')):
+                q=deepcopy(p);tip=self.source31_tips(q)[0];reading=tip['quantity'] if member=='quantity' else tip['footerQuantityEvidence']['initialReading']
+                reading[key]=value
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+        for edge in ('top','bottom'):
+            for margin in (1,2):
+                q=deepcopy(p);tip=self.source31_tips(q)[0];initial=tip['footerQuantityEvidence']['initialReading']
+                initial.update(complete=True,owned=32,required=99)
+                initial['ocrRows'][0]['bounds'].update(x=900,y=890+margin if edge=='top' else 955-20-margin,width=180,height=20)
+                if margin==2:self.assertTrue(self.verify_modern(q,root))
+                else:
+                    with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_complete_fixed_footer_roles_and_real_pngs_preserve_failed_initial_and_aggregate(self):
+        p,root=self.source31_packet();before=deepcopy(p)
+        self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+        self.assertEqual(p['costs']['materials'][0]['required'],3)
+        self.assertEqual(self.source31_tips(p)[0]['quantity']['required'],99)
+        self.assertIsNone(self.source31_tips(p)[0]['footerQuantityEvidence']['initialReading']['owned'])
+        self.assertEqual(self.timed_previews(p)[0]['rows'][-1]['bounds']['x'],419)
+        self.assertFalse(p['nativeObservation']['confirmationSubmitted']);self.assertEqual(p['completedUpgrades'],0)
+
+    def test_source31_partial_payload_and_any_frame_claim_cannot_downgrade(self):
+        p,root=self.source31_packet()
+        changes=[lambda r:r.pop('previewMarkerMethod'),lambda r:r.update(tooltipQuantityMethod=None),lambda r:r.update(tooltipTimingMethod='legacy'),
+            lambda r:self.timed_previews({'nativeObservation':r})[0].update(markerRoleEvidence=None),
+            lambda r:self.source31_tips({'nativeObservation':r})[0].update(footerQuantityEvidence=None),
+            lambda r:self.source31_tips({'nativeObservation':r})[0].update(sourceRegionModelEvidence=None)]
+        for change in changes:
+            q=deepcopy(p);change(q['nativeObservation'])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+        for key in ('previewMarkerMethod','tooltipQuantityMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'):
+            q=packet('芭芭拉');q['nativeObservation']['evidence']['rawFrames'][0][key]=False
+            with self.subTest(key=key),self.assertRaises(ValueError):self.verify(q)
+
+    def test_source31_marker_exhaustive_signed_background_rows_never_claim_title_or_input(self):
+        p,root=self.source31_packet()
+        for change in (lambda f:f['markerRoleEvidence']['backgroundRows'].pop(),lambda f:f['markerRoleEvidence']['backgroundRows'].reverse(),
+                lambda f:f['markerRoleEvidence']['backgroundRows'][1].update(insideWholeSource=True),
+                lambda f:f['markerRoleEvidence']['backgroundRows'][1].update(leftMargin=0),
+                lambda f:f['markerRoleEvidence']['backgroundRows'][0].update(claimsTitleOrInputEvidence=True),
+                lambda f:f['markerRoleEvidence']['backgroundRows'][0].update(wholeRowIndex=True)):
+            q=deepcopy(p);change(self.timed_previews(q)[0])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_roles_reject_duplicate_swapped_misplaced_or_clipped_mandatory_source(self):
+        p,root=self.source31_packet()
+        changes=(lambda f:f['rows'].append(deepcopy(f['rows'][0])),lambda f:f['rows'][0]['bounds'].update(x=419),
+            lambda f:f['rows'][2].update(text='确认'),lambda f:f['markerRoleEvidence']['roles'][0].update(wholeRowIndex=True),
+            lambda f:f['markerRoleEvidence']['roles'][0]['region'].update(x=871),
+            lambda f:f['markerRoleEvidence']['roles'][0].update(observedAt=f['observedAt']+1),
+            lambda f:f['markerRoleEvidence']['roles'][0].update(rawText='属性'),
+            lambda f:f['markerRoleEvidence']['roles'][0]['detectorRows'][0]['bounds'].update(x=871),
+            lambda f:f['markerRoleEvidence']['roles'][0]['detectorRows'].append(deepcopy(f['markerRoleEvidence']['roles'][0]['detectorRows'][0])))
+        for change in changes:
+            q=deepcopy(p);change(self.timed_previews(q)[0])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_source_rectangles_require_actual_ints_and_consistent_native_derived_fields(self):
+        p,root=self.source31_packet()
+        for value in (True,870.0,'870'):
+            q=deepcopy(p);self.timed_previews(q)[0]['markerRoleEvidence']['roles'][0]['region']['x']=value
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+        q=deepcopy(p);box=self.timed_previews(q)[0]['markerRoleEvidence']['roles'][0]['region']
+        box.update(top=295,bottom=365,left=870,right=1050,location=dict(x=870,y=295),size=dict(width=180,height=70),topLeft=dict(x=870,y=295),bottomRight=dict(x=1050,y=365))
+        self.assertTrue(self.verify_modern(q,root));box['bottom']=364
+        with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_two_pixel_role_and_footer_boundaries_remain_exact(self):
+        p,root=self.source31_packet()
+        for edge in (1,2):
+            q=deepcopy(p);self.timed_previews(q)[0]['markerRoleEvidence']['roles'][0]['detectorRows'][0]['bounds'].update(x=870+edge)
+            if edge==2:self.assertTrue(self.verify_modern(q,root))
+            else:
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+            q=deepcopy(p);tip=self.source31_tips(q)[0];tip['quantity']['ocrRows'][0]['bounds'].update(y=890+edge,height=40)
+            tip['footerLabelRows']=deepcopy(tip['quantity']['ocrRows'])
+            if edge==2:self.assertTrue(self.verify_modern(q,root))
+            else:
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_footer_eight_fields_and_fixed_actual_source_geometry_are_required(self):
+        p,root=self.source31_packet()
+        for key in ('method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'):
+            q=deepcopy(p);self.source31_tips(q)[0]['footerQuantityEvidence'].pop(key)
+            with self.subTest(key=key),self.assertRaises(ValueError):self.verify_modern(q,root)
+        for change in (lambda t:t['footerQuantityEvidence']['oldRegion'].update(x=884),lambda t:t['quantity']['bounds'].update(x=877,width=311),
+                lambda t:t['footerQuantityEvidence']['initialReading'].update(observedAt=t['observedAt']+1),
+                lambda t:t['footerQuantityEvidence']['initialReading'].update(owned=32),lambda t:t['footerQuantityEvidence']['sourceRegion'].update(width=True)):
+            q=deepcopy(p);change(self.source31_tips(q)[0])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_whole_prefix_ambiguity_repair_extra_rows_and_split_proof_borrowing_reject(self):
+        p,root=self.source31_packet()
+        for change in (lambda t:t['footerQuantityEvidence'].update(wholeRawText='32/99'),
+                lambda t:t['footerQuantityEvidence'].update(wholeRawText='培养需求培养需求32/99'),
+                lambda t:t['footerQuantityEvidence'].update(wholeDetectorText='培养需求32/98'),
+                lambda t:t['quantity']['ocrRows'].append(deepcopy(t['quantity']['ocrRows'][0])),
+                lambda t:t['quantity'].update(splitRawModel='V6'),lambda t:t['quantity']['ocrRows'][0].update(text='培养需32/99')):
+            q=deepcopy(p);change(self.source31_tips(q)[0])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_complete_initial_conflict_rejects_while_failed_initial_raw_never_becomes_owned(self):
+        p,root=self.source31_packet();t=self.source31_tips(p)[0];i=t['footerQuantityEvidence']['initialReading']
+        i.update(complete=True,owned=33,required=99,raw='33/99',detectorRaw='33/99');i['ocrRows']=[row('培养需求33/99',893,897,180,40)]
+        t['footerQuantityEvidence'].update(initialWholeRawText='培养需求33/99',initialWholeDetectorText='培养需求33/99')
+        with self.assertRaisesRegex(ValueError,'conflicts'):self.verify_modern(p,root)
+
+    def test_source31_same_six_asset_scope_and_actual_bytes_cannot_be_borrowed_or_changed(self):
+        p,root=self.source31_packet();q=deepcopy(p);self.source31_tips(q)[0]['sourceRegionModelEvidence']['rawDetectorAsset']['sha256']='0'*64
+        with self.assertRaises(ValueError):self.verify_modern(q,root)
+        (root/RAW_DETECTOR).write_bytes(b'SYNTHETIC-ALTERED-SOURCE-MODEL')
+        with self.assertRaises(ValueError):self.verify_modern(p,root)
+
+    def test_source31_tooltip_timings_png_order_originals_and_cross_kind_path_reuse_reject(self):
+        p,root=self.source31_packet()
+        for change in (lambda t:t.update(readTiming=None),lambda t:t['readTiming'].update(pairAccepted=False),
+                lambda t:t['readTiming'].update(pairEvaluatedAt=t['observedAt']+1501),
+                lambda t:t['readTiming'].update(readerStartedAt=True),
+                lambda t:t['readTiming'].update(diagnosticPngCompletedAt=BASE+2700)):
+            q=deepcopy(p);change(self.source31_tips(q)[1])
+            with self.assertRaises(ValueError):self.verify_modern(q,root)
+        q=deepcopy(p);tip=self.source31_tips(q)[0];tip['privateCapture']={**deepcopy(self.timed_previews(q)[0]['privateCapture']),'observedAt':tip['observedAt']}
+        with self.assertRaisesRegex(ValueError,'reused'):self.verify_modern(q,root)
+        q=deepcopy(p);tip=self.source31_tips(q)[0];Path(tip['privateCapture']['path']).write_bytes(b'SYNTHETIC-NOT-PNG')
+        with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_source31_new_protocol_unknown_keeps_raw_null_costs_and_no_consumption(self):
+        p,root=self.source31_packet();p['nativeObservation']['status']='unknown';p.update(evidenceVerified=False,costs=None);before=deepcopy(p)
+        self.assertFalse(self.verify_modern(p,root));self.assertEqual(p,before)
+
+    def test_source31_all_null_new_fields_keep_legacy_and_unmarked_clipped_rows_still_reject(self):
+        p=packet('芭芭拉');raw=p['nativeObservation'];raw.update(previewMarkerMethod=None,tooltipQuantityMethod=None,tooltipTimingMethod=None)
+        for f in raw['evidence']['rawFrames']:
+            f.update(sourceRegionModelEvidence=None,markerRoleEvidence=None,footerQuantityEvidence=None)
+        self.assertTrue(self.verify(p));self.timed_previews(p)[0]['rows'].append(row('匿名旧截断背景',419,400,90,25))
+        with self.assertRaises(ValueError):self.verify(p)
+
     def test_timing29_real_synthetic_full_pngs_and_fixed_models_match_without_bitblt_or_consumer_claim(self):
         p,root=self.timed_packet();before=deepcopy(p)
         self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)

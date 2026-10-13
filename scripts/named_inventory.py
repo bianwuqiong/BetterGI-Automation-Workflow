@@ -12,7 +12,7 @@ try:
     from .named_inventory_context import validate_game_context
     from .named_inventory_world import verify_world_pixels
     from .named_count_model_assets import read_named_count_model_assets
-    from .weekly_inventory import frame_count,HEADER_ALIASES,clean
+    from .weekly_inventory import frame_count,HEADER_ALIASES,clean,dimensions,rect,rows
 except ImportError:
     from backpack_inventory_evidence import _time
     from named_inventory_catalog import load_runtime_catalog,resolve_material,_file
@@ -20,9 +20,10 @@ except ImportError:
     from named_inventory_context import validate_game_context
     from named_inventory_world import verify_world_pixels
     from named_count_model_assets import read_named_count_model_assets
-    from weekly_inventory import frame_count,HEADER_ALIASES,clean
+    from weekly_inventory import frame_count,HEADER_ALIASES,clean,dimensions,rect,rows
 
 RAW_DETECTOR='Assets/Model/PaddleOCR/Det/V6/PP-OCRv6_small_det_infer/slim.onnx'
+FULL_TITLE_REGION_METHOD='pinned_v6_raw_named_stack_rect_v1'
 
 
 def prepare_named_request(scope,*,run_id,step_id,phase='diagnostic',trusted_runtime_root):
@@ -46,7 +47,7 @@ def prepare_named_request(scope,*,run_id,step_id,phase='diagnostic',trusted_runt
 
 def _same_assets(a,b):
     if not isinstance(a,dict) or set(a)!=set(b):return False
-    return all(sha(a[k])==sha(b[k]) if k=='sha256' else a[k]==b[k] for k in b)
+    return all(sha(a[k])==sha(b[k]) if k=='sha256' else type(a[k]) is type(b[k]) and a[k]==b[k] for k in b)
 
 
 def strict_models(value,root):
@@ -68,6 +69,22 @@ def strict_models(value,root):
 def _version(actual,reported):
     if not isinstance(reported,dict) or reported.get('parserVersion')!=actual['parserVersion']:return False
     return all(_same_assets(reported.get(k),actual[k]) for k in ('csv','model'))
+
+
+def named_title_contract(frame,target,start,finish,strict):
+    scale=dimensions(frame,start,finish)
+    expected=tuple(round(v*scale) for v in (1280,110,540,78))
+    if (frame.get('nameRegionMethod')!=FULL_TITLE_REGION_METHOD
+            or json.dumps(frame.get('nameModelEvidence'),sort_keys=True,allow_nan=False)!=json.dumps(strict,sort_keys=True,allow_nan=False)
+            or rect(frame.get('initialNameRegion'))!=expected
+            or not isinstance(frame.get('countReading'),dict) or not isinstance(frame.get('initialStack'),dict)):
+        raise ValueError('named inventory pinned full-title method/ROI/model scope missing')
+    for stack in (frame['initialStack'],frame.get('stack',{})):
+        integer(stack.get('observedAt'))
+        if (rect(stack.get('nameRegion'))!=expected
+                or stack.get('selectedItemVerified') is not True
+                or rows(stack.get('nameRows'),expected,scale)!=[clean(target['materialName'])]):
+            raise ValueError('named inventory complete exact initial/final title missing')
 
 
 def _original(frames,value,at,phase=None):
@@ -124,7 +141,7 @@ def _packet_interval(packet,started_at,finished_at):
 
 def verified_named_observation(raw,request,started_at,finished_at,*,trusted_runtime_root,trusted_game_context,binding_receipt,trusted_workflow_root=None):
     start,finish=_time(started_at),_time(finished_at);root=Path(trusted_runtime_root).resolve(strict=True)
-    if (not isinstance(raw,dict) or raw.get('schemaVersion')!=1 or raw.get('source')!='named_cultivation_backpack_selected_stack'
+    if (not isinstance(raw,dict) or type(raw.get('schemaVersion')) is not int or raw['schemaVersion']!=2 or raw.get('source')!='named_cultivation_backpack_selected_stack'
             or raw.get('readOnly') is not True or raw.get('confirmationSubmitted') is not False or raw.get('targetReached') is not False
             or type(raw.get('completedUpgrades')) is not int or raw['completedUpgrades']!=0 or raw.get('status')!='verified'
             or raw.get('mainUiRestored') is not True or raw.get('cleanupCompleted') is not True
@@ -138,6 +155,8 @@ def verified_named_observation(raw,request,started_at,finished_at,*,trusted_runt
     # Native-only generation fields are not OS facts: the single trusted direct API
     # return owns this whole scope; every actual capture must match that same binding.
     catalog=load_runtime_catalog(root);targets=[resolve_material(catalog,m) for m in request['materials']]
+    if not 1<=len(targets)<=8 or len({m['materialId'] for m in targets})!=len(targets) or len({m['materialName'] for m in targets})!=len(targets):
+        raise ValueError('named inventory one to eight unique exact material pairs required')
     if not _version(catalog['version'],raw.get('catalogVersion')) or raw.get('requestedMaterials')!=targets:raise ValueError('named inventory runtime CSV/ONNX exact scope differs')
     assets=strict_models(raw.get('strictModels'),root)
     if raw.get('countModels')!=raw['strictModels']['countModels']:raise ValueError('named inventory shared model scope inconsistent')
@@ -162,9 +181,15 @@ def verified_named_observation(raw,request,started_at,finished_at,*,trusted_runt
         original_a=_original(frames,a,first,'named_selected_stack');original_b=_original(frames,b,second,'named_selected_stack')
         if a.get('privateCapture')!=original_a['privateCapture'] or b.get('privateCapture')!=original_b['privateCapture']:
             raise ValueError('named inventory typed frame refers to different original pixels')
+        if any((f.get('width'),f.get('height'))!=(original['privateCapture']['width'],original['privateCapture']['height'])
+                for f,original in ((a,original_a),(b,original_b))):
+            raise ValueError('named inventory recognized frame dimensions differ from original pixels')
         for f in (a,b):
             if f.get('countReading',{}).get('modelEvidence')!=raw['countModels']:raise ValueError('named inventory frame model scope changed')
-        va,vb=(frame_count(f,target,selection,rs,rf,assets) for f in (a,b))
+            named_title_contract(f,target,rs,rf,raw['strictModels'])
+        if (a['width'],a['height'])!=(b['width'],b['height']) or a['stack']['nameRegion']!=b['stack']['nameRegion'] or a['stack']['countRegion']!=b['stack']['countRegion']:
+            raise ValueError('named inventory independent frame geometry changed')
+        va,vb=(frame_count(f,target,selection,rs,rf,assets,named_title=True) for f in (a,b))
         if __package__:from .named_inventory_pixels import verify_selected_pixels
         else:from named_inventory_pixels import verify_selected_pixels
         for f,original in ((a,original_a),(b,original_b)):

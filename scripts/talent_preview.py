@@ -11,12 +11,12 @@ try:
     from .backpack_inventory_evidence import _number,_rect,_inside,_time
     from .named_count_model_assets import COUNT_MODEL_ASSETS
     from .named_inventory import RAW_DETECTOR,strict_models
-    from .named_inventory_capture import original_png
+    from .named_inventory_capture import original_png,rectangle_core
 except ImportError:
     from backpack_inventory_evidence import _number,_rect,_inside,_time
     from named_count_model_assets import COUNT_MODEL_ASSETS
     from named_inventory import RAW_DETECTOR,strict_models
-    from named_inventory_capture import original_png
+    from named_inventory_capture import original_png,rectangle_core
 
 TYPES=('普通攻击','元素战技','元素爆发')
 PINNED_SPLIT_METHOD='pinned_v6_v4_slash_integer_split'
@@ -25,6 +25,13 @@ PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1'
 READ_TIMING_FIELDS={'captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt',
     'pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'}
 PRIVATE_CAPTURE_FIELDS={'observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'}
+FOOTER_METHOD='existing_full_footer_v1'
+MARKER_METHOD='whole_marker_required_roles_v1'
+SOURCE31_METHODS={'previewMarkerMethod':MARKER_METHOD,'tooltipQuantityMethod':FOOTER_METHOD,'tooltipTimingMethod':PREVIEW_TIMING_METHOD}
+SOURCE31_FRAME_FIELDS=('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence')
+FOOTER_FIELDS={'method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'}
+MARKER_ROLES=(('attribute_heading','属性变更',(870,295,180,70)),('material_heading','所需材料',(870,575,180,60)),
+    ('cancel_label','取消',(620,875,170,70)),('confirm_label','确认',(1170,875,180,70)))
 
 def preview_timing(raw,previews,start,finish,*,trusted_runtime_root=None):
     """Authenticate retained PNG bytes and the reported evaluation sequence, not BitBlt ownership."""
@@ -34,6 +41,10 @@ def preview_timing(raw,previews,start,finish,*,trusted_runtime_root=None):
         raise ValueError('modern preview timing requires the exact capture/read/evaluate/PNG method')
     if cost_method(raw)!=PINNED_SPLIT_METHOD or any(cost_method(p)!=PINNED_SPLIT_METHOD for p in previews):
         raise ValueError('modern preview timing cannot authenticate legacy quantity costs')
+    retained_pair_timing(raw,previews,start,finish,trusted_runtime_root=trusted_runtime_root)
+
+def retained_pair_timing(raw,previews,start,finish,*,trusted_runtime_root=None):
+    """Shared reported clocks and retained originals; never capture ownership or consumption."""
     if trusted_runtime_root is None:raise ValueError('modern preview PNG requires trusted BetterGI runtime root')
     paths=set();file_ids=set()
     for offset in range(0,len(previews),2):
@@ -85,7 +96,7 @@ def preview_timing(raw,previews,start,finish,*,trusted_runtime_root=None):
         following=next((f for f in raw['evidence']['rawFrames'] if f['observedAt']>second['observedAt']),None)
         if following is not None:
             next_capture=following['observedAt']
-            if 'materials' in following and 'current' in following:
+            if following.get('readTiming') is not None or 'materials' in following and 'current' in following:
                 timing=following.get('readTiming')
                 if not isinstance(timing,dict):raise ValueError('next modern preview capture timing missing')
                 next_capture=integer(timing.get('captureCallStartedAt'),0,9007199254740991)
@@ -106,7 +117,11 @@ def split_model_shape(q):
             or type(q.get('splitVerticalPaddingReference')) is not int or q['splitVerticalPaddingReference']!=6
             or q.get('prefix','')!=''):
         raise ValueError('modern quantity requires complete pinned V6/V4 slash-band metadata')
-    proof=q.get('splitModelEvidence')
+    source_model_shape(q.get('splitModelEvidence'))
+    return True
+
+def source_model_shape(proof):
+    """Exact held six-asset scope shape; whole readers use scope.Raw V6 DET/REC."""
     if (not isinstance(proof,dict) or set(proof)!={'loadMethod','provider','rawModel','detectorModel','countModels','rawDetectorAsset'}
             or proof['loadMethod']!='new_cpu_uncached_original_onnx_and_labels_under_read_pins'
             or proof['provider']!='Cpu' or proof['rawModel']!='V6' or proof['detectorModel']!='V4'):
@@ -125,6 +140,153 @@ def split_model_shape(q):
                 or not isinstance(asset['sha256'],str) or not re.fullmatch('[0-9a-fA-F]{64}',asset['sha256'])
                 or type(asset['length']) is not int or not 0<asset['length']<=1024*1024*1024):
             raise ValueError('modern quantity fixed six-model asset proof invalid')
+    return True
+
+def source_models(proof,root):
+    source_model_shape(proof)
+    if root is None:raise ValueError('modern source regions require trusted BetterGI runtime root')
+    strict_models(proof,root)
+
+def source_rect(value,expected=None):
+    r=rectangle_core(value)
+    box=tuple(r[k] for k in ('x','y','width','height'))
+    if box[2]<=0 or box[3]<=0 or not _inside(box,(0,0,1920,1080)) or expected is not None and box!=expected:
+        raise ValueError('modern source region is not the exact reviewed rectangle')
+    return box
+
+def source_row(row):
+    if not isinstance(row,dict) or set(row)!={'text','bounds'} or not isinstance(row['text'],str) or not clean(row['text']):
+        raise ValueError('modern original OCR row shape invalid')
+    return source_rect(row['bounds'])
+
+def row_margins(row,box):
+    x,y,w,h=source_row(row);bx,by,bw,bh=box
+    return (x-bx,bx+bw-x-w,y-by,by+bh-y-h)
+
+def source_rows(values,box,expected=None):
+    if not isinstance(values,list) or len(values)!=1 or min(row_margins(values[0],box))<2:
+        raise ValueError('modern source complete single row must clear all four two-pixel edges')
+    result=clean(values[0]['text'])
+    if expected is not None and result!=expected:raise ValueError('modern independent source row text mismatch')
+    return result
+
+def marker_roles(p,*,trusted_runtime_root=None):
+    proof=p.get('markerRoleEvidence')
+    if (p.get('previewMarkerMethod')!=MARKER_METHOD or not isinstance(proof,dict)
+            or set(proof)!={'method','wholeRegion','roles','backgroundRows'} or proof['method']!=MARKER_METHOD):
+        raise ValueError('modern whole marker role method/proof incomplete')
+    source_models(p.get('sourceRegionModelEvidence'),trusted_runtime_root)
+    whole=source_rect(p.get('markerRegion'),(420,235,1100,750));source_rect(proof['wholeRegion'],whole)
+    rows=p.get('rows');roles=proof['roles'];background=proof['backgroundRows']
+    if not isinstance(rows,list) or not rows or not isinstance(roles,list) or len(roles)!=4 or not isinstance(background,list):
+        raise ValueError('modern whole marker original rows or four roles missing')
+    for row in rows:source_row(row)
+    picked=[]
+    for role,(kind,text,expected) in zip(roles,MARKER_ROLES):
+        if (not isinstance(role,dict) or set(role)!={'role','region','wholeRowIndex','observedAt','rawText','detectorRows'}
+                or role['role']!=kind or type(role['observedAt']) is not int or role['observedAt']!=p['observedAt']):
+            raise ValueError('modern marker fixed role scope incomplete')
+        matches=[i for i,row in enumerate(rows) if clean(row['text'])==text]
+        index=integer(role['wholeRowIndex'],0,len(rows)-1);box=source_rect(role['region'],expected)
+        if matches!=[index] or min(row_margins(rows[index],whole))<2 or min(row_margins(rows[index],box))<2:
+            raise ValueError('modern mandatory whole marker row duplicated, clipped or in wrong role')
+        if not isinstance(role['rawText'],str) or clean(role['rawText'])!=text:
+            raise ValueError('modern marker independent raw recognition mismatch')
+        source_rows(role['detectorRows'],box,text);picked.append(index)
+    remaining=[i for i in range(len(rows)) if i not in picked]
+    if len(background)!=len(remaining):raise ValueError('modern whole marker background rows must be exhaustive')
+    keys={'wholeRowIndex','insideWholeSource','leftMargin','rightMargin','topMargin','bottomMargin','claimsTitleOrInputEvidence'}
+    for item,index in zip(background,remaining):
+        if not isinstance(item,dict) or set(item)!=keys or integer(item['wholeRowIndex'],0,len(rows)-1)!=index:
+            raise ValueError('modern whole marker background index incomplete or changed')
+        margins=row_margins(rows[index],whole)
+        if (type(item['insideWholeSource']) is not bool or item['insideWholeSource']!=(min(margins)>=0)
+                or item['claimsTitleOrInputEvidence'] is not False
+                or any(type(item[k]) is not int or item[k]!=v for k,v in zip(('leftMargin','rightMargin','topMargin','bottomMargin'),margins))):
+            raise ValueError('modern background containment/margins must preserve original clipped rows')
+
+def footer_quantity(tip,start,finish,*,trusted_runtime_root=None):
+    proof=tip.get('footerQuantityEvidence');q=tip.get('quantity')
+    if (tip.get('tooltipQuantityMethod')!=FOOTER_METHOD or not isinstance(proof,dict) or set(proof)!=FOOTER_FIELDS
+            or proof['method']!=FOOTER_METHOD or not isinstance(q,dict)):
+        raise ValueError('modern tooltip fixed full footer proof incomplete')
+    source_models(tip.get('sourceRegionModelEvidence'),trusted_runtime_root)
+    old=source_rect(proof['oldRegion'],(885,890,295,65));box=source_rect(proof['sourceRegion'],(725,890,470,65))
+    source_rect(tip.get('footerLabelRegion'),box);source_rect(q.get('bounds'),box)
+    for value in (q,proof['initialReading']):
+        if (not isinstance(value,dict) or type(value.get('observedAt')) is not int or value['observedAt']!=tip['observedAt']
+                or type(value.get('width')) is not int or type(value.get('height')) is not int
+                or (value['width'],value['height'])!=(1920,1080) or value.get('prefix')!='培养需求'
+                or type(value.get('complete')) is not bool or value.get('initialReading') is not None
+                or value.get('cropMethod','fixed_or_initial')!='fixed_or_initial' or value.get('sourceCountRow') is not None
+                or quantity_chain_modern(value) or value.get('slashPixelVerified') is not False
+                or any(value.get(key) is not None for key in ('slashBounds','numeratorRegion','denominatorRegion'))
+                or value.get('splitRegionMethod','none')!='none'):
+            raise ValueError('modern footer initial/final actual image/whole reading provenance invalid')
+        frame(value,start,finish)
+    initial=proof['initialReading'];source_rect(initial.get('bounds'),old)
+    for values,raw_key,det_key,accepted in ((initial,'initialWholeRawText','initialWholeDetectorText',False),(q,'wholeRawText','wholeDetectorText',True)):
+        whole_raw=proof[raw_key];whole_detector=proof[det_key]
+        if not isinstance(whole_raw,str) or not isinstance(whole_detector,str) or not isinstance(values.get('raw'),str) or not isinstance(values.get('detectorRaw'),str) or not isinstance(values.get('ocrRows'),list):
+            raise ValueError('modern footer complete original raw strings and rows required')
+        for row in values['ocrRows']:source_row(row)
+        if clean(whole_detector)!=clean(''.join(row['text'] for row in values['ocrRows'])):
+            raise ValueError('modern footer whole detector text is not its actual original rows')
+        strip=lambda v:clean(v)[len('培养需求'):] if clean(v).startswith('培养需求') else ''
+        if strip(whole_raw)!=clean(values['raw']) or strip(whole_detector)!=clean(values['detectorRaw']):
+            raise ValueError('modern footer original prefix removal differs from reported raw')
+        if accepted:
+            if clean(whole_raw)!=clean(whole_detector) or not re.fullmatch(r'培养需求(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})',clean(whole_raw)):
+                raise ValueError('modern footer whole raw/detector prefix or ratio ambiguous')
+            source_rows(values['ocrRows'],box,clean(whole_raw))
+    actual=quantity(q,start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)
+    if actual[1]<1:raise ValueError('modern footer aggregate denominator must be positive')
+    if not initial['complete']:
+        if initial.get('owned') is not None or initial.get('required') is not None:
+            raise ValueError('modern footer failed initial reading must keep null quantities')
+    else:
+        initial_whole=clean(proof['initialWholeRawText'])
+        if initial_whole!=clean(proof['initialWholeDetectorText']) or not re.fullmatch(r'培养需求(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})',initial_whole):
+            raise ValueError('modern complete initial footer full prefix/raw detector disagreement')
+        source_rows(initial['ocrRows'],old,initial_whole)
+        if quantity(initial,start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)!=actual:
+            raise ValueError('modern footer high-confidence initial conflicts with final whole ratio')
+    for key,reference in (('nameRegion',(730,168,440,67)),('kindRegion',(730,230,440,65)),('sourceRegion',(730,690,460,65))):
+        source_rect(tip.get(key),reference)
+    # Strong modern name/role margins supplement the original exact identity checks.
+    for key,raw_key in (('nameRows','rawName'),('alternateNameRows','alternateRawName')):
+        observed=source_rows(tip.get(key),source_rect(tip['nameRegion']))
+        if observed!=clean(tip.get(raw_key)) or material_name(observed)!=material_name(tip.get('name')):
+            raise ValueError('both modern full tooltip name readings must exactly match original raw and identity')
+    if type(tip.get('alternateNameScale')) is not int or tip['alternateNameScale']!=4 or tip.get('alternateNamePreprocessing')!='gray_threshold_210_inverse_cubic_4x':
+        raise ValueError('modern alternate tooltip name requires its actual reviewed preprocessing')
+    source_rows(tip.get('kindRows'),source_rect(tip['kindRegion']),tip.get('kind'))
+    source_rows(tip.get('sourceRows'),source_rect(tip['sourceRegion']),'来源')
+    source_rows(tip.get('footerLabelRows'),box,clean(proof['wholeRawText']))
+    if tip['footerLabelRows']!=q['ocrRows']:raise ValueError('modern footer label rows must be the exact final quantity detector rows')
+    return actual
+
+def source31_protocol(raw,frames,previews,pinned_proof,start,finish,*,trusted_runtime_root=None):
+    tips=[f for f in frames if 'kindRows' in f and 'footerLabelRows' in f]
+    active=any(raw.get(k) is not None for k in (*SOURCE31_METHODS,*SOURCE31_FRAME_FIELDS)) or any(f.get(k) is not None for f in frames for k in SOURCE31_FRAME_FIELDS) or any(f.get('readTiming') is not None for f in tips)
+    if not active:return False
+    if (any(raw.get(k)!=value for k,value in SOURCE31_METHODS.items()) or raw.get('previewTimingMethod')!=PREVIEW_TIMING_METHOD
+            or cost_method(raw)!=PINNED_SPLIT_METHOD or pinned_proof is None):
+        raise ValueError('modern talent source31 complete payload methods and pinned costs required')
+    tooltip_pairs=raw['evidence'].get('materialTooltips')
+    if (not isinstance(tooltip_pairs,list) or any(not isinstance(p,list) or len(p)!=2 for p in tooltip_pairs)
+            or [f for p in tooltip_pairs for f in p]!=tips or not tips):
+        raise ValueError('modern tooltip pairs must retain every actual raw tooltip frame')
+    for f in [*previews,*tips]:
+        if type(f.get('observedAt')) is not int or (f['width'],f['height'])!=(1920,1080) or f.get('sourceRegionModelEvidence')!=pinned_proof:
+            raise ValueError('modern source regions must use the same six-asset material scope')
+        source_models(f.get('sourceRegionModelEvidence'),trusted_runtime_root)
+    for p in previews:marker_roles(p,trusted_runtime_root=trusted_runtime_root)
+    for tip in tips:footer_quantity(tip,start,finish,trusted_runtime_root=trusted_runtime_root)
+    all_pairs=[f for f in frames if f in previews or f in tips]
+    if any(('materials' in all_pairs[i])!=('materials' in all_pairs[i+1]) for i in range(0,len(all_pairs),2)):
+        raise ValueError('modern original retained pair kinds cannot mix')
+    retained_pair_timing(raw,all_pairs,start,finish,trusted_runtime_root=trusted_runtime_root)
     return True
 
 def split_models(q,trusted_runtime_root):
@@ -467,9 +629,11 @@ def preview(p,current,start,finish,*,trusted_runtime_root=None):
         region_key='currentLevelRegion' if key=='currentLevelRows' else 'nextLevelRegion'
         raw_key='currentLevelRaw' if key=='currentLevelRows' else 'nextLevelRaw'
         if rows_text(p.get(key),region(p,region_key,ref),s,full=False)!=f'等级{value}' or clean(p.get(raw_key))!=f'等级{value}': raise ValueError('preview raw next-level label mismatch')
-    names=[clean(row.get('text')) for row in p.get('rows',[])]
     marker=region(p,'markerRegion',(420,235,1100,750))
-    rows_text(p.get('rows'),marker,s,full=False)
+    if any(p.get(k) is not None for k in ('previewMarkerMethod','markerRoleEvidence','sourceRegionModelEvidence')):
+        marker_roles(p,trusted_runtime_root=trusted_runtime_root)
+    else:rows_text(p.get('rows'),marker,s,full=False)
+    names=[clean(row.get('text')) for row in p.get('rows',[])]
     if any(names.count(name)!=1 for name in ('属性变更','所需材料','取消','确认')): raise ValueError('full upgrade popup markers missing')
     materials=preview_materials(p)
     marker=cost_method(p)
@@ -542,6 +706,7 @@ def verified_observation(raw,character,talent_type,started_at,finished_at,*,trus
                     if pinned_proof is not None and reading['splitModelEvidence']!=pinned_proof:
                         raise ValueError('all material and popup split model proofs must be identical')
                     pinned_proof=reading['splitModelEvidence']
+    source31=source31_protocol(raw,frames,previews,pinned_proof,start,finish,trusted_runtime_root=trusted_runtime_root)
     costs=None
     for index in range(0,len(previews),2):
         pair(previews[index],previews[index+1])
@@ -571,8 +736,11 @@ def verified_observation(raw,character,talent_type,started_at,finished_at,*,trus
                 raise ValueError('fullnamed actual material tooltip unverified')
             footer=rows_text(tip.get('footerLabelRows'),region(tip,'footerLabelRegion',(725,890,470,65)),s,full=False)
             if not footer.startswith('培养需求'): raise ValueError('actual cultivation footer label missing')
-            region(tip['quantity'],'bounds',(885,890,295,65))
-            if quantity(tip['quantity'],start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)[0]!=item['owned']: raise ValueError('tooltip actual owned differs from popup owned')
+            if source31:owned=footer_quantity(tip,start,finish,trusted_runtime_root=trusted_runtime_root)[0]
+            else:
+                region(tip['quantity'],'bounds',(885,890,295,65))
+                owned=quantity(tip['quantity'],start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)[0]
+            if owned!=item['owned']: raise ValueError('tooltip actual owned differs from popup owned')
         if two[0]['observedAt']<=previews[1]['observedAt'] or two[1]['observedAt']>=previews[-1]['observedAt']: raise ValueError('tooltip read out of this cost-preview sequence')
     worlds=[f for f in frames if f.get('phase')=='world_restore']
     if len(worlds)<2: raise ValueError('world cleanup independent frames missing')

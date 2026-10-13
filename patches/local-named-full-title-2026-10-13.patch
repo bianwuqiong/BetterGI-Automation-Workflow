@@ -1,0 +1,358 @@
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs
+@@ -33,6 +33,7 @@
+ /// <summary>Reuses grid geometry/HSV rules only. Never performs one/seven substitutions or cleans numeric text.</summary>
+ public static class NamedStackCountReader
+ {
++    public const string FullTitleRegionMethod = "pinned_v6_raw_named_stack_rect_v1";
+     public static Rect NameRect(int width)=>new((int)Math.Round(1280*width/1920d),(int)Math.Round(110*width/1920d),
+         (int)Math.Round(540*width/1920d),(int)Math.Round(78*width/1920d));
+     public static Rect SourceRect(Rect item)
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+@@ -5,8 +5,10 @@
+ using System.Collections.Generic;
+ using System.Linq;
+ using System.Text.RegularExpressions;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ using BetterGenshinImpact.GameTask.CharacterDevelopment;
+ using BetterGenshinImpact.GameTask.Model.GameUI;
++using Newtonsoft.Json;
+ 
+ namespace BetterGenshinImpact.GameTask.Common.Job;
+ 
+@@ -62,6 +64,12 @@
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
+     public BackpackFrameEvidence? InitialStack{get;init;}
+     public NamedStackCountReading? CountReading{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)]
++    public string? NameRegionMethod{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)]
++    public BackpackRect? InitialNameRegion{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)]
++    public StrictInventoryModelEvidence? NameModelEvidence{get;init;}
+ }
+ public sealed record WeeklyInventoryObservation(BackpackSelection Selection,
+     WeeklyInventoryFrameEvidence First, WeeklyInventoryFrameEvidence Second);
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+@@ -19,6 +19,7 @@
+ using BetterGenshinImpact.GameTask.Model.GameUI;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Extensions.DependencyInjection;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ using Newtonsoft.Json;
+ using Newtonsoft.Json.Serialization;
+ using OpenCvSharp;
+@@ -209,10 +210,15 @@
+         return ReadFrame(frame,at,selection,category,recognizer,ct,fixedCountDetector,countModelPin,true);
+     }
+     internal static WeeklyInventoryFrameEvidence ReadFrame(ImageRegion frame,long at,BackpackSelection selection,string category,
+-        ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin countModelPin,bool retainDiagnostic=false,IOcrService? actualRawOcr=null)
+-    {
+-        ct.ThrowIfCancellationRequested();
+-        var nameRect = BackpackInventoryEvidenceSafety.NameRect(frame.Width);
++        ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin countModelPin,bool retainDiagnostic=false,IOcrService? actualRawOcr=null,
++        bool namedTitleRoute=false,StrictInventoryModelEvidence? nameModelEvidence=null)
++    {
++        ct.ThrowIfCancellationRequested();
++        if(namedTitleRoute!=(nameModelEvidence is not null)
++            || namedTitleRoute&&(actualRawOcr is null||!StrictInventoryModelValidation.Verified(nameModelEvidence)))
++            throw new InvalidOperationException("named_full_title_route_requires_current_pinned_raw_model");
++        var expandedNameRect=NamedStackCountReader.NameRect(frame.Width);
++        var nameRect = namedTitleRoute?expandedNameRect:BackpackInventoryEvidenceSafety.NameRect(frame.Width);
+         var countRect = BackpackInventoryEvidenceSafety.RawCountRect(selection.ItemRect.ToRect());
+         var headerRect = WeeklyConversionInventoryEvidence.HeaderRect(frame.Width);
+         var rawOcr=actualRawOcr??OcrFactory.Paddle;
+@@ -232,13 +238,16 @@
+         countModelPin.Readback();
+         var refinedCount=NamedStackCountReader.Read(frame.SrcMat,selection.ItemRect.ToRect(),rawOcr,fixedCountDetector)
+             with{ModelEvidence=countModelPin.Evidence,RawPaddleReadback=countModelPin.Readback()};
+-        var expandedNameRect=NamedStackCountReader.NameRect(frame.Width);var expandedNames=Rows(frame,expandedNameRect,rawOcr);
++        var expandedNames=namedTitleRoute?names:Rows(frame,expandedNameRect,rawOcr);
+         var refinedStack=new BackpackFrameEvidence{ObservedAt=at,NameRegion=BackpackRect.From(expandedNameRect),NameRows=expandedNames,
+             CountRegion=refinedCount.SourceRegion,CountRows=refinedCount.SourceRows,RawCountText=refinedCount.Raw,
+             CountMethod="grid_hsv_foreground_exact_dual_ocr",SelectedItemVerified=stack.SelectedItemVerified,
+             SelectedItemRect=stack.SelectedItemRect,SelectionEvidence=stack.SelectionEvidence};
+         var read=new WeeklyInventoryFrameEvidence(refinedStack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion)
+-            {InitialStack=stack,CountReading=refinedCount};
++            {InitialStack=stack,CountReading=refinedCount,
++                NameRegionMethod=namedTitleRoute?NamedStackCountReader.FullTitleRegionMethod:null,
++                InitialNameRegion=namedTitleRoute?BackpackRect.From(nameRect):null,
++                NameModelEvidence=namedTitleRoute?nameModelEvidence:null};
+         if(retainDiagnostic&&WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read))
+         {
+             // The complete known bag, model, selected outline and actual name identify this private diagnostic scene.
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/Native20InventoryImageReader.cs
+@@ -1,14 +1,21 @@
+ // SPDX-License-Identifier: GPL-3.0-only
+ // Modified 2026-10-12: thin image-only adapters; algorithms remain in existing shared readers.
++using System;
+ using System.Threading;
+ using BetterGenshinImpact.Core.Recognition.OCR;
+ namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ internal static class Native20InventoryImageReader
+ {
+     internal static WeeklyInventoryFrameEvidence Named(InventoryCapturedImage shot,BackpackSelection selection,
+-        string category,ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin pin)=>
+-        ReadWeeklyConversionInventoryTask.ReadFrame(shot.Image,shot.ObservedAt,selection,category,recognizer,ct,fixedCountDetector,pin,false,StrictInventoryOcrSession.Current)
++        string category,ItemRecognizer recognizer,CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin pin,
++        StrictInventoryOcrSession scope)
++    {
++        if(scope is null||!ReferenceEquals(fixedCountDetector,scope.Detector)||!ReferenceEquals(pin,scope.CountPin))
++            throw new InvalidOperationException("named_title_and_count_models_must_share_actual_pinned_session");
++        return ReadWeeklyConversionInventoryTask.ReadFrame(shot.Image,shot.ObservedAt,selection,category,recognizer,ct,fixedCountDetector,pin,
++            retainDiagnostic:false,actualRawOcr:scope.Raw,namedTitleRoute:true,nameModelEvidence:scope.Evidence)
+             with{PrivateCapture=shot.OriginalPixels};
++    }
+     internal static MoraFrameEvidence Mora(InventoryCapturedImage shot,MoraSnapshotRequest request,ItemRecognizer recognizer,CancellationToken ct)=>
+         ReadMoraSnapshotTask.ReadFrame(shot.Image,shot.ObservedAt,request,recognizer,ct,StrictInventoryOcrSession.Current);
+ }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+@@ -236,7 +236,7 @@
+                     var rawPair = await ReadWeeklyConversionInventoryTask.ObservePair(selected,
+                         (s, token) => {
+                             using var shot = Capture(token);
+-                            var read = Native20InventoryImageReader.Named(shot, s, group.Key, recognizer, token, fixedCountDetector, countModelPin);
++                            var read = Native20InventoryImageReader.Named(shot, s, group.Key, recognizer, token, fixedCountDetector, countModelPin, strictOcr!);
+                             Remember("named_selected_stack", shot, read); return read;
+                         },
+                         (milliseconds, token) => Task.Delay(milliseconds, token), deadline.Token);
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/NamedCultivationInventoryEvidence.cs
+@@ -37,7 +37,7 @@
+ public sealed class NamedCultivationInventoryResult
+ {
+     public StrictInventoryModelEvidence? StrictModels{get;set;}
+-    public int SchemaVersion { get; init; } = 1;
++    public int SchemaVersion { get; init; } = 2;
+     public string Source { get; init; } = "named_cultivation_backpack_selected_stack";
+     public bool ReadOnly { get; init; } = true;
+     public bool ConfirmationSubmitted { get; init; }
+@@ -79,8 +79,12 @@
+     {
+         if (f.Width is < 800 or > 4096 || f.Height is < 450 or > 2160 || f.Width * 9 != f.Height * 16
+             || !f.GameActive || f.PromptVisible || !f.TabVerified || f.Category != target.Category
+-            || f.IconName != target.MaterialName || !double.IsFinite(f.IconScore) || f.IconScore is < .75 or > 1)
++            || f.IconName != target.MaterialName || !double.IsFinite(f.IconScore) || f.IconScore is < .75 or > 1
++            || f.NameRegionMethod != NamedStackCountReader.FullTitleRegionMethod
++            || !StrictInventoryModelValidation.Verified(f.NameModelEvidence))
+             return null;
++        var expectedName=BackpackRect.From(NamedStackCountReader.NameRect(f.Width));
++        if(f.InitialNameRegion!=expectedName)return null;
+         var item = selection.ItemRect; var s = f.Stack; double margin = 2 * f.Width / 1920d;
+         int? refinedValue = null;
+         if (f.CountReading is { } refined)
+@@ -91,7 +95,9 @@
+                 || refined.RawPaddleReadback != 8 || initial.ObservedAt != s.ObservedAt
+                 || initial.SelectedItemRect != s.SelectedItemRect || initial.SelectedItemVerified != s.SelectedItemVerified
+                 || !Equals(initial.SelectionEvidence, s.SelectionEvidence)
+-                || initial.NameRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(f.Width))
++                || initial.NameRegion != expectedName || initial.NameRows is not { Length: 1 }
++                || Text(initial.NameRows[0].Text) != Text(target.MaterialName)
++                || !Away(initial.NameRows[0],expectedName,margin)
+                 || initial.CountRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(item.ToRect()))
+                 || initial.CountMethod != "raw_ocr_without_detector" || initial.RawCountText is null
+                 || initial.NameRows is null || initial.CountRows is null
+@@ -109,7 +115,7 @@
+             || f.HeaderRegion != WeeklyConversionInventoryEvidence.HeaderRect(f.Width)
+             || !WeeklyConversionInventoryEvidence.HeaderVerified(f.HeaderRows, f.HeaderRegion, target.Category)
+             || f.HeaderRows.Where(r => aliases.Contains(Text(r.Text), StringComparer.Ordinal)).Any(r => !Away(r, f.HeaderRegion, margin))
+-            || s.NameRegion != BackpackRect.From(f.CountReading is null ? BackpackInventoryEvidenceSafety.NameRect(f.Width) : NamedStackCountReader.NameRect(f.Width))
++            || s.NameRegion != expectedName
+             || s.CountRegion != BackpackRect.From(f.CountReading is null ? BackpackInventoryEvidenceSafety.RawCountRect(item.ToRect()) : NamedStackCountReader.SourceRect(item.ToRect()))
+             || !Inside(s.NameRegion, f.Width, f.Height) || s.SelectedItemRect != item || !s.SelectedItemVerified
+             || s.NameRows.Length != 1 || Text(s.NameRows[0].Text) != Text(target.MaterialName)
+@@ -171,6 +177,8 @@
+             || click.ClickedAt < start || a.Stack.ObservedAt > finish || b.Stack.ObservedAt > finish
+             || a.Stack.ObservedAt - click.ClickedAt is < 100 or > 5000 || b.Stack.ObservedAt - a.Stack.ObservedAt is < 100 or > 5000
+             || a.Stack.NameRegion != b.Stack.NameRegion || a.Stack.CountRegion != b.Stack.CountRegion
++            || a.NameRegionMethod != b.NameRegionMethod || a.InitialNameRegion != b.InitialNameRegion
++            || !SameStrictModels(a.NameModelEvidence,b.NameModelEvidence)
+             || (a.CountReading is null) != (b.CountReading is null)
+             || a.CountReading is not null && !SameModels(a.CountReading.ModelEvidence, b.CountReading!.ModelEvidence)) return null;
+         var first = Frame(a, target, click); var second = Frame(b, target, click);
+@@ -179,7 +187,7 @@
+     public static bool CanPublish(NamedCultivationInventoryResult result, NamedCultivationInventoryRequest request,
+         RuntimeCultivationCatalog catalog, long now)
+     {
+-        if (result.SchemaVersion != 1 || result.Source != "named_cultivation_backpack_selected_stack" || !result.ReadOnly
++        if (result.SchemaVersion != 2 || result.Source != "named_cultivation_backpack_selected_stack" || !result.ReadOnly
+             || result.ConfirmationSubmitted || result.CompletedUpgrades != 0 || result.TargetReached
+             || result.RunId != request.RunId || result.StepId != request.StepId || result.Phase != request.Phase
+             || result.CatalogVersion != catalog.Version || !result.MainUiRestored || !result.CleanupCompleted
+@@ -208,6 +216,8 @@
+                 || observed.Pair.Selection.ClickedAt <= previous || !result.Inventory[asked.MaterialId].HasValue
+                 || observed.Pair.First.CountReading is null || observed.Pair.Second.CountReading is null
+                 || !SameModels(observed.Pair.First.CountReading.ModelEvidence, result.CountModels)
++                || !SameStrictModels(observed.Pair.First.NameModelEvidence,result.StrictModels)
++                || !SameStrictModels(observed.Pair.Second.NameModelEvidence,result.StrictModels)
+                 || !Original(result, observed.Pair.First, observed.Pair.First.Stack.ObservedAt)
+                 || !Original(result, observed.Pair.Second, observed.Pair.Second.Stack.ObservedAt)
+                 || Count(observed, catalog, result.StartedAt, result.FinishedAt) != result.Inventory[asked.MaterialId]) return false;
+@@ -229,6 +239,8 @@
+         ContractResolver = new CamelCasePropertyNamesContractResolver() });
+     private static bool SameModels(NamedCountModelEvidence? a, NamedCountModelEvidence? b) => a is not null && b is not null
+         && JToken.DeepEquals(JObject.FromObject(a, Camel), JObject.FromObject(b, Camel));
++    private static bool SameStrictModels(StrictInventoryModelEvidence? a,StrictInventoryModelEvidence? b)=>a is not null&&b is not null
++        && JToken.DeepEquals(JObject.FromObject(a,Camel),JObject.FromObject(b,Camel));
+     private static bool Original(NamedCultivationInventoryResult result, object recognized, long at)
+     {
+         var raw = JObject.FromObject(recognized, Camel);
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedCultivationInventoryPureTests.cs
+@@ -125,6 +125,12 @@
+         result.RawFrames.Add(Raw(observed.Pair.First, 1300)); result.RawFrames.Add(Raw(observed.Pair.Second, 1550));
+         foreach (var w in result.WorldFrames) result.RawFrames.Add(Raw(w, w.ObservedAt));
+         Assert.True(NamedCultivationInventoryEvidence.CanPublish(result, request, catalog, 3500));
++        var legacy=JObject.FromObject(result,Camel);legacy["schemaVersion"]=1;
++        Assert.False(NamedCultivationInventoryEvidence.CanPublish(legacy.ToObject<NamedCultivationInventoryResult>()!,request,catalog,3500));
++        var actualStrict=result.StrictModels!;
++        result.StrictModels=actualStrict with{RawDetectorAsset=actualStrict.RawDetectorAsset with{Sha256=new string('c',64)}};
++        Assert.False(NamedCultivationInventoryEvidence.CanPublish(result,request,catalog,3500));
++        result.StrictModels=actualStrict;
+         result.WorldFrames[^1] = result.WorldFrames[^1] with { Focused = false };
+         Assert.False(NamedCultivationInventoryEvidence.CanPublish(result, request, catalog, 3500));
+         result.WorldFrames[^1] = World(3300);
+@@ -132,17 +138,17 @@
+         NamedCultivationInventoryRequest WithPhase(string phase) { var r = request.Freeze(); r.Phase = phase; return r; }
+     }
+ 
+-    [Fact] public void Native20ExpandedNameAndFixedV4CurrentV6CountWithBadInitialAreVerifiedFromRaw()
++    [Fact] public void Native20ExpandedNameRequiresCompleteInitialTitleButMayKeepBadInitialQuantityRaw()
+     {
+         var catalog = Catalog(); var target = catalog.Resolve(Ask()); var observed = Observe20(target, 37);
+         Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
+         foreach (var f in new[] { observed.Pair.First, observed.Pair.Second })
+         {
+-            f.InitialStack!.NameRows[0] = f.InitialStack.NameRows[0] with { Text = "不完整旧标题" };
+-            f.InitialStack.CountRows[0] = f.InitialStack.CountRows[0] with { X = f.InitialStack.CountRegion.X };
++            f.InitialStack!.CountRows[0] = f.InitialStack.CountRows[0] with { X = f.InitialStack.CountRegion.X };
+         }
+         Assert.Equal(37, NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
+-        Assert.Equal("不完整旧标题", observed.Pair.First.InitialStack!.NameRows[0].Text);
++        observed.Pair.Second.InitialStack!.NameRows[0] = observed.Pair.Second.InitialStack.NameRows[0] with { Text = "不完整旧标题" };
++        Assert.Null(NamedCultivationInventoryEvidence.Count(observed, catalog, 1000, 4000));
+         var missing = observed with { Pair = observed.Pair with { Second = observed.Pair.Second with { InitialStack = null } } };
+         Assert.Null(NamedCultivationInventoryEvidence.Count(missing, catalog, 1000, 4000));
+     }
+@@ -168,6 +174,90 @@
+         // Each frame has independent model evidence; distinct pinned versions reject a pair.
+         Assert.Null(NamedCultivationInventoryEvidence.Count(different, catalog, 1000, 4000));
+     }
++    [Fact] public void NamedFullTitleAcceptsExactlyTwoNaturalSourcePixelsOnEveryEdge()
++    {
++        var catalog=Catalog();var target=catalog.Resolve(Ask());var observed=Observe20(target,37);
++        foreach(var frame in new[]{observed.Pair.First,observed.Pair.Second})
++        {
++            var box=BackpackRect.From(NamedStackCountReader.NameRect(frame.Width));
++            var row=new BackpackOcrRow(target.MaterialName,box.X+2,box.Y+2,box.Width-4,box.Height-4);
++            frame.InitialStack!.NameRows[0]=row;frame.Stack.NameRows[0]=row;
++        }
++        Assert.Equal(37,NamedCultivationInventoryEvidence.Count(observed,catalog,1000,4000));
++    }
++    [Fact] public void NamedFullTitleRejectsEachTouchedOrCrossedSourceEdge()
++    {
++        var catalog=Catalog();var target=catalog.Resolve(Ask());
++        Func<BackpackRect,BackpackOcrRow>[] badRows=[
++            r=>new(target.MaterialName,r.X,r.Y+2,r.Width-4,r.Height-4),
++            r=>new(target.MaterialName,r.X+1,r.Y+2,r.Width-4,r.Height-4),
++            r=>new(target.MaterialName,r.X+2,r.Y+2,r.Width-3,r.Height-4),
++            r=>new(target.MaterialName,r.X+2,r.Y+2,r.Width-1,r.Height-4),
++            r=>new(target.MaterialName,r.X+2,r.Y,r.Width-4,r.Height-4),
++            r=>new(target.MaterialName,r.X+2,r.Y+1,r.Width-4,r.Height-4),
++            r=>new(target.MaterialName,r.X+2,r.Y+2,r.Width-4,r.Height-3),
++            r=>new(target.MaterialName,r.X+2,r.Y+2,r.Width-4,r.Height-1)];
++        foreach(var bad in badRows)
++        {
++            var observed=Observe20(target,37);
++            var box=BackpackRect.From(NamedStackCountReader.NameRect(1920));
++            observed.Pair.Second.InitialStack!.NameRows[0]=bad(box);
++            observed.Pair.Second.Stack.NameRows[0]=bad(box);
++            Assert.Null(NamedCultivationInventoryEvidence.Count(observed,catalog,1000,4000));
++        }
++    }
++    [Fact] public void NamedInitialAndFinalTitlesMustEachBeOneExactCompleteName()
++    {
++        var catalog=Catalog();var target=catalog.Resolve(Ask());
++        foreach(var wrong in new[]{"教材","教材原阶附加"})
++        {
++            var initial=Observe20(target,37);
++            initial.Pair.Second.InitialStack!.NameRows[0]=initial.Pair.Second.InitialStack.NameRows[0] with{Text=wrong};
++            Assert.Null(NamedCultivationInventoryEvidence.Count(initial,catalog,1000,4000));
++            var final=Observe20(target,37);
++            final.Pair.Second.Stack.NameRows[0]=final.Pair.Second.Stack.NameRows[0] with{Text=wrong};
++            Assert.Null(NamedCultivationInventoryEvidence.Count(final,catalog,1000,4000));
++        }
++        var multiple=Observe20(target,37);
++        var frame=multiple.Pair.Second;var row=frame.InitialStack!.NameRows[0];
++        multiple=multiple with{Pair=multiple.Pair with{Second=frame with{
++            InitialStack=CopyStack(frame.InitialStack,nameRows:[row,row])}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(multiple,catalog,1000,4000));
++    }
++    [Fact] public void NamedTitleRequiresExactMethodRoiAndSameActualPinnedModelEvidence()
++    {
++        var catalog=Catalog();var target=catalog.Resolve(Ask());var baseline=Observe20(target,37);
++        var missing=baseline with{Pair=baseline.Pair with{Second=baseline.Pair.Second with{NameRegionMethod=null}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(missing,catalog,1000,4000));
++        var wrongRoi=baseline with{Pair=baseline.Pair with{Second=baseline.Pair.Second with{
++            InitialNameRegion=BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920))}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(wrongRoi,catalog,1000,4000));
++        var wrongModel=baseline with{Pair=baseline.Pair with{Second=baseline.Pair.Second with{
++            NameModelEvidence=StrictModels() with{RawModel="V4"}}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(wrongModel,catalog,1000,4000));
++        var validDifferent=StrictModels();
++        validDifferent=validDifferent with{RawDetectorAsset=validDifferent.RawDetectorAsset with{Sha256=new string('c',64)}};
++        var mismatched=baseline with{Pair=baseline.Pair with{Second=baseline.Pair.Second with{NameModelEvidence=validDifferent}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(mismatched,catalog,1000,4000));
++        var wrongInitial=baseline with{Pair=baseline.Pair with{Second=baseline.Pair.Second with{
++            InitialStack=CopyStack(baseline.Pair.Second.InitialStack!,
++                nameRegion:BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920)))}}};
++        Assert.Null(NamedCultivationInventoryEvidence.Count(wrongInitial,catalog,1000,4000));
++    }
++    [Fact] public void WeeklyFrameOmitsNamedOnlyNullMetadata()
++    {
++        var frame=Observe(Catalog().Resolve(Ask()),37).Pair.First with{
++            NameRegionMethod=null,InitialNameRegion=null,NameModelEvidence=null};
++        var json=JsonConvert.SerializeObject(frame,new JsonSerializerSettings{
++            ContractResolver=new CamelCasePropertyNamesContractResolver()});
++        Assert.DoesNotContain("nameRegionMethod",json);
++        Assert.DoesNotContain("initialNameRegion",json);
++        Assert.DoesNotContain("nameModelEvidence",json);
++    }
++    private static BackpackFrameEvidence CopyStack(BackpackFrameEvidence source,BackpackRect? nameRegion=null,BackpackOcrRow[]? nameRows=null)=>new(){
++        ObservedAt=source.ObservedAt,NameRegion=nameRegion??source.NameRegion,NameRows=nameRows??source.NameRows,
++        CountRegion=source.CountRegion,CountRows=source.CountRows,CountMethod=source.CountMethod,RawCountText=source.RawCountText,
++        SelectedItemVerified=source.SelectedItemVerified,SelectedItemRect=source.SelectedItemRect,SelectionEvidence=source.SelectionEvidence};
+     [Fact] public void ActualCaptureIntervalRectangleBindingAndRawCorrespondenceRejectInventedFreshness()
+     {
+         var frame = Raw(World(1300), 1300); var binding = Binding();
+@@ -262,7 +352,7 @@
+         var selected = new BackpackSelection(new(150, 400, 125, 153), 210, 450, 1000);
+         WeeklyInventoryFrameEvidence Frame(long at)
+         {
+-            var name = BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920));
++            var name = BackpackRect.From(NamedStackCountReader.NameRect(1920));
+             var amount = BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(selected.ItemRect.ToRect()));
+             var stack = new BackpackFrameEvidence { ObservedAt = at, NameRegion = name,
+                 NameRows = [new(material.MaterialName, 1340, 130, 160, 20)], CountRegion = amount,
+@@ -271,7 +361,9 @@
+                 SelectionEvidence = Border(selected.ItemRect) };
+             return new(stack, 1920, 1080, material.Category, true, false, true, new(100, 0, 350, 100),
+                 [new(material.Category == "preciousItems" ? "贵重道具" : "养成道具", 120, 20, 200, 30)],
+-                material.MaterialName, .92, new(150, 400, 125, 125));
++                material.MaterialName, .92, new(150, 400, 125, 125)) {
++                    NameRegionMethod=NamedStackCountReader.FullTitleRegionMethod,
++                    InitialNameRegion=name,NameModelEvidence=StrictModels()};
+         }
+         return new(material, new(selected, Frame(1300), Frame(1550)), "anonymous_synthetic_raw_fixture");
+     }

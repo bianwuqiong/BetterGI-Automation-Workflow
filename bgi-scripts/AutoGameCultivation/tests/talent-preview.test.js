@@ -46,6 +46,121 @@ function timedObservation(){
   raw.evidence.preview=structuredClone(previews.at(-1));return raw;
 }
 function syncTimedPreview(raw){raw.evidence.preview=structuredClone(timedPreviews(raw).at(-1));}
+const source31Tips=raw=>raw.evidence.rawFrames.filter(f=>'footerLabelRows' in f);
+function source31Observation(){
+  const raw=timedObservation(),previews=timedPreviews(raw),proof=syntheticSplitProof(),box=(x,y,width,height)=>({x,y,width,height});
+  const row=(text,x,y,width,height)=>({text,bounds:box(x,y,width,height)});
+  Object.assign(raw,{previewMarkerMethod:'whole_marker_required_roles_v1',tooltipQuantityMethod:'existing_full_footer_v1',tooltipTimingMethod:'capture_read_evaluate_then_private_png_v1'});
+  const roles=[['attribute_heading','属性变更',[870,295,180,70]],['material_heading','所需材料',[870,575,180,60]],['cancel_label','取消',[620,875,170,70]],['confirm_label','确认',[1170,875,180,70]]];
+  for(const p of previews){
+    p.previewMarkerMethod=raw.previewMarkerMethod;p.sourceRegionModelEvidence=structuredClone(proof);
+    p.rows=roles.map(([kind,text,[x,y,w,h]])=>row(text,x+10,y+10,100,30));p.rows.push(row('匿名完整背景',600,400,100,25),row('匿名截断背景',419,470,100,25));
+    p.markerRoleEvidence={method:raw.previewMarkerMethod,wholeRegion:structuredClone(p.markerRegion),
+      roles:roles.map(([kind,text,[x,y,w,h]],i)=>({role:kind,region:box(x,y,w,h),wholeRowIndex:i,observedAt:p.observedAt,rawText:text,detectorRows:[row(text,x+12,y+12,90,28)]})),
+      backgroundRows:[4,5].map(i=>{const b=p.rows[i].bounds,m=[b.x-420,1520-b.x-b.width,b.y-235,985-b.y-b.height];return {wholeRowIndex:i,insideWholeSource:Math.min(...m)>=0,leftMargin:m[0],rightMargin:m[1],topMargin:m[2],bottomMargin:m[3],claimsTitleOrInputEvidence:false};})};
+  }
+  for(const [i,tip] of source31Tips(raw).entries()){
+    tip.alternateNameRows=structuredClone(tip.nameRows);tip.alternateRawName=tip.rawName;
+    tip.alternateNameScale=4;tip.alternateNamePreprocessing='gray_threshold_210_inverse_cubic_4x';
+    const initial=structuredClone(tip.quantity);Object.assign(initial,{complete:false,owned:null,required:null});initial.ocrRows=[row('培养需求32/99',884,897,182,40)];
+    tip.quantity.bounds=box(725,890,470,65);tip.quantity.ocrRows=structuredClone(tip.footerLabelRows);
+    Object.assign(tip,{tooltipQuantityMethod:raw.tooltipQuantityMethod,sourceRegionModelEvidence:structuredClone(proof),
+      footerQuantityEvidence:{method:raw.tooltipQuantityMethod,oldRegion:box(885,890,295,65),sourceRegion:box(725,890,470,65),initialReading:initial,
+        initialWholeRawText:'培养需求32/99',initialWholeDetectorText:'培养需求32/99',wholeRawText:'培养需求32/99',wholeDetectorText:'培养需求32/99'},
+      privateCapture:{observedAt:tip.observedAt,width:1920,height:1080,pixelType:'CV_8UC3',path:`C:/synthetic-runtime/log/talent-originals/tooltip-${i}.png`,pngSha256:(i?'a':'9').repeat(64),nativePixelsSha256:(i?'c':'b').repeat(64),source:'diagnostic_only_lossless_native_srcmat_no_resize'},
+      readTiming:{captureCallStartedAt:tip.observedAt-5,captureReturnedAt:tip.observedAt,readerStartedAt:tip.observedAt,readerCompletedAt:tip.observedAt+30,pairEvaluatedAt:i?BASE+2450:null,diagnosticPngCompletedAt:BASE+2490+i*20,pairAccepted:i?true:null}});
+  }
+  raw.evidence.materialTooltips=[structuredClone(source31Tips(raw))];syncTimedPreview(raw);return raw;
+}
+function syncSource31(raw){raw.evidence.materialTooltips=[structuredClone(source31Tips(raw))];syncTimedPreview(raw);}
+
+test('source31 reserved payload and frame method/proof claims cannot downgrade legacy',()=>{
+  for(const key of ['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence']){
+    for(const placement of ['payload','frame']){const raw=fixture();(placement==='payload'?raw:raw.evidence.rawFrames.at(-1))[key]=false;
+      assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  }
+});
+test('source31 whole footer rejects split geometry and complete initial vertical clipping',()=>{
+  for(const member of ['quantity','initial'])for(const [key,value] of [['slashBounds',{x:900,y:900,width:4,height:10}],['numeratorRegion',{x:900,y:900,width:20,height:20}],
+      ['denominatorRegion',{x:930,y:900,width:20,height:20}],['splitRegionMethod','slash_vertical_band']]){
+    const raw=source31Observation(),tip=source31Tips(raw)[0];(member==='quantity'?tip.quantity:tip.footerQuantityEvidence.initialReading)[key]=value;syncSource31(raw);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+  for(const edge of ['top','bottom'])for(const margin of [1,2]){
+    const raw=source31Observation(),initial=source31Tips(raw)[0].footerQuantityEvidence.initialReading;
+    Object.assign(initial,{complete:true,owned:32,required:99});Object.assign(initial.ocrRows[0].bounds,{x:900,y:edge==='top'?890+margin:955-20-margin,width:180,height:20});syncSource31(raw);
+    if(margin===2)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);
+    else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('source31 fixed footer and redundant fixed roles preserve complete raw rows failed initial and aggregate demand',()=>{
+  const raw=source31Observation(),before=structuredClone(raw),result=verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000);
+  assert.equal(result.materials[0].required,3);assert.equal(source31Tips(raw)[0].quantity.required,99);assert.equal(source31Tips(raw)[0].footerQuantityEvidence.initialReading.owned,null);
+  assert.equal(timedPreviews(raw)[0].rows.at(-1).bounds.x,419);assert.deepEqual(raw,before);assert.equal(raw.confirmationSubmitted,false);
+});
+test('source31 partial payload and frame claims cannot downgrade into legacy success',()=>{
+  const changes=[r=>delete r.previewMarkerMethod,r=>r.tooltipQuantityMethod=null,r=>r.tooltipTimingMethod='legacy',r=>timedPreviews(r)[0].markerRoleEvidence=null,r=>source31Tips(r)[0].footerQuantityEvidence=null,r=>source31Tips(r)[0].sourceRegionModelEvidence=null];
+  for(const change of changes){const raw=source31Observation();change(raw);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  for(const key of ['previewMarkerMethod','tooltipQuantityMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence']){const raw=fixture();raw.evidence.rawFrames[0][key]=false;assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('source31 original signed background rows are exhaustive and cannot claim title or input evidence',()=>{
+  const changes=[p=>p.markerRoleEvidence.backgroundRows.pop(),p=>p.markerRoleEvidence.backgroundRows.reverse(),p=>p.markerRoleEvidence.backgroundRows[1].insideWholeSource=true,p=>p.markerRoleEvidence.backgroundRows[1].leftMargin=0,p=>p.markerRoleEvidence.backgroundRows[0].claimsTitleOrInputEvidence=true,p=>p.markerRoleEvidence.backgroundRows[0].wholeRowIndex=true];
+  for(const change of changes){const raw=source31Observation();change(timedPreviews(raw)[0]);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('source31 mandatory roles reject duplication label swaps wrong positions clipped originals and role readings',()=>{
+  const changes=[p=>p.rows.push(structuredClone(p.rows[0])),p=>p.rows[0].bounds.x=419,p=>p.rows[2].text='确认',p=>p.markerRoleEvidence.roles[0].wholeRowIndex=true,p=>p.markerRoleEvidence.roles[0].region.x=871,p=>p.markerRoleEvidence.roles[0].observedAt++,p=>p.markerRoleEvidence.roles[0].rawText='属性',p=>p.markerRoleEvidence.roles[0].detectorRows[0].bounds.x=871,p=>p.markerRoleEvidence.roles[0].detectorRows.push(structuredClone(p.markerRoleEvidence.roles[0].detectorRows[0]))];
+  for(const change of changes){const raw=source31Observation();change(timedPreviews(raw)[0]);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('source31 source rectangles reject Boolean coordinates partial derived shape and changed derived coordinates',()=>{
+  for(const value of [true,'870',870.5]){const raw=source31Observation();timedPreviews(raw)[0].markerRoleEvidence.roles[0].region.x=value;assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  const raw=source31Observation(),box=timedPreviews(raw)[0].markerRoleEvidence.roles[0].region;
+  Object.assign(box,{top:295,bottom:365,left:870,right:1050,location:{x:870,y:295},size:{width:180,height:70},topLeft:{x:870,y:295},bottomRight:{x:1050,y:365}});
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);box.bottom=364;
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+});
+test('source31 exact two pixel role and footer edges pass while one pixel fails',()=>{
+  for(const edge of [1,2]){
+    const raw=source31Observation();timedPreviews(raw)[0].markerRoleEvidence.roles[0].detectorRows[0].bounds.x=870+edge;
+    if(edge===2)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+    const footer=source31Observation(),tip=source31Tips(footer)[0];Object.assign(tip.quantity.ocrRows[0].bounds,{y:890+edge,height:40});tip.footerLabelRows=structuredClone(tip.quantity.ocrRows);syncSource31(footer);
+    if(edge===2)assert.equal(verifyTalentObservation(footer,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);else assert.throws(()=>verifyTalentObservation(footer,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('source31 footer requires exact eight fields fixed source and old ROI same image and failed nullable values',()=>{
+  for(const key of ['method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText']){const raw=source31Observation();delete source31Tips(raw)[0].footerQuantityEvidence[key];syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  for(const change of [t=>t.footerQuantityEvidence.oldRegion.x=884,t=>Object.assign(t.quantity.bounds,{x:877,width:311}),t=>t.footerQuantityEvidence.initialReading.observedAt++,t=>t.footerQuantityEvidence.initialReading.owned=32,t=>t.footerQuantityEvidence.sourceRegion.width=true]){const raw=source31Observation();change(source31Tips(raw)[0]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('source31 whole prefix ambiguity repairs extra detector rows and borrowed split proof reject',()=>{
+  for(const change of [t=>t.footerQuantityEvidence.wholeRawText='32/99',t=>t.footerQuantityEvidence.wholeRawText='培养需求培养需求32/99',t=>t.footerQuantityEvidence.wholeDetectorText='培养需求32/98',t=>t.quantity.ocrRows.push(structuredClone(t.quantity.ocrRows[0])),t=>t.quantity.splitRawModel='V6',t=>t.quantity.ocrRows[0].text='培养需32/99']){const raw=source31Observation();change(source31Tips(raw)[0]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('source31 complete initial disagreement cannot be replaced by a higher confidence final whole crop',()=>{
+  const raw=source31Observation(),tip=source31Tips(raw)[0],initial=tip.footerQuantityEvidence.initialReading;
+  Object.assign(initial,{complete:true,owned:33,required:99,raw:'33/99',detectorRaw:'33/99'});initial.ocrRows=[{text:'培养需求33/99',bounds:{x:893,y:897,width:180,height:40}}];
+  Object.assign(tip.footerQuantityEvidence,{initialWholeRawText:'培养需求33/99',initialWholeDetectorText:'培养需求33/99'});syncSource31(raw);
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/initial_complete_conflict/);
+});
+test('source31 six asset proof cannot be borrowed while JSON object field order is immaterial',()=>{
+  const raw=source31Observation();source31Tips(raw)[0].sourceRegionModelEvidence.rawDetectorAsset.sha256='0'.repeat(64);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  const reordered=source31Observation(),tip=source31Tips(reordered)[0];tip.sourceRegionModelEvidence=Object.fromEntries(Object.entries(tip.sourceRegionModelEvidence).reverse());syncSource31(reordered);
+  assert.equal(verifyTalentObservation(reordered,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);
+});
+test('source31 tooltip actual clock fields PNG order and cross-kind original path reuse reject',()=>{
+  for(const change of [t=>t.readTiming=null,t=>t.readTiming.pairAccepted=false,t=>t.readTiming.pairEvaluatedAt=t.observedAt+1501,t=>t.readTiming.readerStartedAt=true,t=>t.readTiming.diagnosticPngCompletedAt=BASE+2700]){const raw=source31Observation();change(source31Tips(raw)[1]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  const raw=source31Observation(),tip=source31Tips(raw)[0];tip.privateCapture={...structuredClone(timedPreviews(raw)[0].privateCapture),observedAt:tip.observedAt};syncSource31(raw);
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000),/path_reused/);
+});
+test('source31 unknown raw remains unchanged with null costs and zero completed upgrades',async()=>{
+  const raw=source31Observation();raw.status='unknown';const before=structuredClone(raw);
+  const result=await readTalentPreview({now:()=>BASE+4000,inspectTalentUpgrade:async()=>raw},'芭芭拉','元素战技',BASE,BASE+5000);
+  assert.equal(result.evidenceVerified,false);assert.equal(result.costs,null);assert.equal(result.completedUpgrades,0);assert.deepEqual(result.nativeObservation,before);
+});
+test('source31 all-null fields keep legacy compatibility and original whole crop clipping still rejects',()=>{
+  const raw=fixture();Object.assign(raw,{previewMarkerMethod:null,tooltipQuantityMethod:null,tooltipTimingMethod:null});
+  for(const f of [...timedPreviews(raw),...source31Tips(raw)])Object.assign(f,{sourceRegionModelEvidence:null,markerRoleEvidence:null,footerQuantityEvidence:null});syncSource31(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);
+  timedPreviews(raw)[0].rows.push({text:'匿名旧截断背景',bounds:{x:419,y:400,width:90,height:25}});
+  assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+});
 test('timing29 validates protocol sequence and original PNG metadata shape without claiming disk IO or BitBlt ownership',()=>{
   const raw=timedObservation(),before=structuredClone(raw);
   assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).currentBaseLevel,1);

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "validated-source-patch-sequence",
+  "scope": "validated-source-candidate-patch-sequence",
   "snapshotDate": "2026-10-11",
   "sourceRepository": "https://github.com/bianwuqiong/better-genshin-impact",
   "sourceBaseCommit": "d8c0aa238a949d7d74bfe5087f3a48e39771575a",
@@ -151,6 +151,16 @@
       "order": 29,
       "path": "patches/local-talent-preview-timing-2026-10-12.patch",
       "sha256": "0c0def69d8c76c2bef5b9e00a1a005c24557238c7963523d4a9b657e60c7ae90"
+    },
+    {
+      "order": 30,
+      "path": "patches/local-named-full-title-2026-10-13.patch",
+      "sha256": "bd90b967fbf8afc6fbeec1adc1ff0474b36e686625783a6b7f48603968e9c666"
+    },
+    {
+      "order": 31,
+      "path": "patches/local-talent-footer-marker-2026-10-13.patch",
+      "sha256": "5af9aca903ab09930aa473954c95c1903dc79c2f7cf7e1418fe52e3b9838bad0"
     }
   ],
   "offlineValidation": {
@@ -454,5 +464,36 @@
     "selectedPureTests": 209,
     "newPureCases": 17,
     "actualSceneRoleLiveVerified": false
+  },
+  "namedFullTitleExtension": {
+    "schemaVersion": 2,
+    "method": "pinned_v6_raw_named_stack_rect_v1",
+    "formalBuildPerformed": true,
+    "formalTestsPerformed": true,
+    "actualOriginalImageReaderExperimentPerformed": true,
+    "actualLiveVerified": false,
+    "deployed": false,
+    "consumerEnabled": false,
+    "actualOriginalImageComponentsAccepted": true,
+    "selectedPureTests": 249
+  },
+  "talentFooterMarkerExtension": {
+    "tooltipQuantityMethod": "existing_full_footer_v1",
+    "previewMarkerMethod": "whole_marker_required_roles_v1",
+    "tooltipTimingMethod": "capture_read_evaluate_then_private_png_v1",
+    "originalPairGapMilliseconds": 5000,
+    "originalFreshnessMilliseconds": 1500,
+    "sourcePixelMargin": 2,
+    "actualPinnedAssets": 6,
+    "formalBuildPerformed": true,
+    "formalTestsPerformed": true,
+    "actualOriginalImageReaderExperimentPerformed": true,
+    "actualLiveVerified": false,
+    "deployed": false,
+    "consumerEnabled": false,
+    "actualOriginalImageComponentsAccepted": true,
+    "selectedPureTests": 249,
+    "privatePreviewSourcesRead": 4,
+    "privateTooltipSourcesRead": 2
   }
 }

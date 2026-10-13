@@ -2,10 +2,13 @@ from copy import deepcopy
 from datetime import datetime,timezone
 from pathlib import Path
 import os
+import math
 import tempfile
 import json,shutil,subprocess
 import unittest
-from scripts.named_inventory import prepare_named_request,verify_named_inventory,verify_bound_mora
+from scripts.named_inventory import prepare_named_request,verify_named_inventory,verify_bound_mora,named_title_contract,RAW_DETECTOR
+from scripts.named_count_model_assets import COUNT_MODEL_ASSETS
+from scripts.weekly_inventory import frame_count
 from scripts.named_inventory_capture import rectangle_core
 from tests.named_inventory_fixture import fixture,mora_fixture,BASE
 
@@ -31,6 +34,98 @@ class NamedInventoryTests(unittest.TestCase):
     def test_complete_original_png_catalog_models_os_receipt_and_ui_pairs_pass_without_live_or_consumer_claim(self):
         result=self.verify();self.assertEqual(result['status'],'success',result.get('reason'));self.assertEqual(result['inventory']['104301']['count'],7)
         for key in ('liveVerified','sessionAfterVerified','consumptionVerified','targetReached'):self.assertFalse(result[key])
+    def test_named_schema2_is_required_while_binding_receipt_remains_schema1(self):
+        self.assertEqual(self.packet['nativeObservation']['schemaVersion'],2)
+        self.assertEqual(self.packet['bindingReceipt']['schemaVersion'],1)
+        for version in (None,1,True,2.0,'2',3):
+            with self.subTest(version=version):
+                p=deepcopy(self.packet);p['nativeObservation']['schemaVersion']=version
+                self.assertEqual(self.verify(p)['status'],'unknown')
+        p=deepcopy(self.packet);p['bindingReceipt']['schemaVersion']=2
+        self.assertEqual(self.verify(p)['status'],'unknown')
+    def test_named_title_method_exact_roi_and_same_six_asset_scope_are_mandatory(self):
+        for frame_key in ('first','second'):
+            for change in (lambda f:f.pop('nameRegionMethod'),lambda f:f.update(nameRegionMethod=None),
+                lambda f:f.update(nameRegionMethod='raw_ocr_without_detector'),lambda f:f.pop('initialNameRegion'),
+                lambda f:f['initialNameRegion'].update(x=1309),lambda f:f['initialNameRegion'].update(width=540.0),
+                lambda f:f['initialNameRegion'].update(y=True),lambda f:f.pop('nameModelEvidence'),
+                lambda f:f['nameModelEvidence'].update(loadMethod='cached_singleton'),
+                lambda f:f['nameModelEvidence'].update(rawModel='V4'),lambda f:f['nameModelEvidence'].update(detectorModel='V6'),
+                lambda f:f['nameModelEvidence'].update(provider='Cuda'),
+                lambda f:f['nameModelEvidence']['rawDetectorAsset'].update(sha256='0'*64),
+                lambda f:f['nameModelEvidence']['rawDetectorAsset'].update(length=float(f['nameModelEvidence']['rawDetectorAsset']['length'])),
+                lambda f:f['nameModelEvidence']['countModels']['assets'].pop(),
+                lambda f:f['nameModelEvidence']['countModels']['assets'][0].update(sha256='0'*64)):
+                p=deepcopy(self.packet);change(p['nativeObservation']['observations']['104301']['pair'][frame_key])
+                result=self.verify(p);self.assertEqual(result['status'],'unknown');self.assertIsNone(result['inventory']['104301']['count'])
+    def test_both_original_frames_initial_and_final_titles_require_one_complete_row(self):
+        for frame_key in ('first','second'):
+            for stack_key in ('initialStack','stack'):
+                for rows_value in ([],None,[{'text':'合成'}],[{'text':'另一完整名字'}],
+                    [{'text':'合成教导','x':1300,'y':130,'width':150,'height':25}]*2):
+                    with self.subTest(frame=frame_key,stack=stack_key,rows=rows_value):
+                        p=deepcopy(self.packet);p['nativeObservation']['observations']['104301']['pair'][frame_key][stack_key]['nameRows']=rows_value
+                        result=self.verify(p);self.assertEqual(result['status'],'unknown');self.assertIsNone(result['inventory']['104301']['count'])
+                for change in (lambda r:r.update(text='合成'),lambda r:r.update(text='另一完整名字'),
+                    lambda r:r.update(width=0),lambda r:r.update(height=-1),lambda r:r.update(x=True),lambda r:r.update(y=130.0)):
+                    p=deepcopy(self.packet);change(p['nativeObservation']['observations']['104301']['pair'][frame_key][stack_key]['nameRows'][0])
+                    self.assertEqual(self.verify(p)['status'],'unknown')
+    def test_four_title_edges_accept_exact_two_pixels_and_reject_touch_cross_or_short_margin(self):
+        p=deepcopy(self.packet)
+        for f in (p['nativeObservation']['observations']['104301']['pair'][k] for k in ('first','second')):
+            for key in ('initialStack','stack'):f[key]['nameRows'][0].update(x=1282,y=112,width=536,height=74)
+        self.assertEqual(self.verify(p)['status'],'success')
+        for frame_key in ('first','second'):
+            for stack_key in ('initialStack','stack'):
+                for distance in (1,0,-1,-2):
+                    for change in (lambda r,d:r.update(x=1280+d),lambda r,d:r.update(y=110+d),
+                        lambda r,d:r.update(width=1820-d-r['x']),lambda r,d:r.update(height=188-d-r['y'])):
+                        bad=deepcopy(self.packet);change(bad['nativeObservation']['observations']['104301']['pair'][frame_key][stack_key]['nameRows'][0],distance)
+                        self.assertEqual(self.verify(bad)['status'],'unknown')
+    def test_scaled_title_roi_uses_source_rounding_and_scaled_two_pixel_margin(self):
+        original=self.packet['nativeObservation'];target=original['requestedMaterials'][0];strict=original['strictModels']
+        for width,height in ((960,540),(1600,900),(1920,1080),(2560,1440)):
+            f=deepcopy(original['observations']['104301']['pair']['first']);f.update(width=width,height=height)
+            scale=width/1920;x,y,w,h=(round(v*scale) for v in (1280,110,540,78));margin=math.ceil(2*scale)
+            f['initialNameRegion']={'x':x,'y':y,'width':w,'height':h}
+            for key in ('initialStack','stack'):
+                f[key]['nameRegion']=deepcopy(f['initialNameRegion']);f[key]['nameRows']=[{'text':target['materialName'],'x':x+margin,'y':y+margin,'width':w-2*margin,'height':h-2*margin}]
+            named_title_contract(f,target,BASE,BASE+4000,strict)
+            f['initialStack']['nameRows'][0]['x']=x+margin-1
+            with self.assertRaises(ValueError):named_title_contract(f,target,BASE,BASE+4000,strict)
+    def test_bad_initial_quantity_stays_raw_but_geometry_and_complete_conflict_reject(self):
+        self.assertEqual(self.verify()['status'],'success')
+        p=deepcopy(self.packet);f=p['nativeObservation']['observations']['104301']['pair']['first']
+        f['initialStack'].update(rawCountText='8',countRows=[{'text':'8','x':145,'y':432,'width':10,'height':13}])
+        self.assertEqual(self.verify(p)['status'],'unknown')
+        f['initialStack']['countRows'][0]['text']='7';f['initialStack']['rawCountText']='7'
+        self.assertEqual(self.verify(p)['status'],'success')
+        for change in (lambda s:s['countRows'][0].update(x=114),lambda s:s['countRows'][0].update(y=427),
+            lambda s:s['countRows'][0].update(width=True),lambda s:s['countRegion'].update(width=116),
+            lambda s:s.update(selectedItemVerified=1),lambda s:s.update(observedAt=float(s['observedAt']))):
+            bad=deepcopy(p);change(bad['nativeObservation']['observations']['104301']['pair']['first']['initialStack'])
+            self.assertEqual(self.verify(bad)['status'],'unknown')
+    def test_named_optin_preserves_weekly_legacy_initial_roi(self):
+        raw=self.packet['nativeObservation'];pair=raw['observations']['104301']['pair'];target=raw['requestedMaterials'][0]
+        assets=raw['strictModels']['countModels']['assets'];f=deepcopy(pair['first'])
+        with self.assertRaises(ValueError):frame_count(f,target,pair['selection'],BASE,BASE+4000,assets)
+        f['initialStack']['nameRegion']={'x':1309,'y':120,'width':491,'height':60}
+        f['initialStack']['nameRows'][0]['x']=1320
+        self.assertEqual(frame_count(f,target,pair['selection'],BASE,BASE+4000,assets),7)
+        with self.assertRaises(ValueError):frame_count(f,target,pair['selection'],BASE,BASE+4000,assets,named_title=True)
+    def test_all_six_loaded_model_bytes_are_checked_against_runtime(self):
+        for relative in [path for unused,path in COUNT_MODEL_ASSETS]+[RAW_DETECTOR]:
+            with self.subTest(asset=relative):
+                path=self.root/relative;original=path.read_bytes()
+                try:
+                    path.write_bytes(original+b'changed');self.assertEqual(self.verify()['status'],'unknown')
+                finally:path.write_bytes(original)
+    def test_recognized_frame_geometry_must_match_each_original_png(self):
+        p=deepcopy(self.packet)
+        for key in ('first','second'):
+            p['nativeObservation']['observations']['104301']['pair'][key].update(width=960,height=540)
+        result=self.verify(p);self.assertEqual(result['status'],'unknown')
+        self.assertIn('dimensions differ from original pixels',result['reason'])
     def test_actual_twelve_field_native_rect_keeps_all_metadata_and_rejects_inconsistent_derived_edges(self):
         rectangle=self.packet['bindingReceipt']['gameBinding']['captureRectangle']
         self.assertEqual(len(rectangle),12);self.assertEqual(rectangle_core(rectangle),self.context['captureRectangle'])

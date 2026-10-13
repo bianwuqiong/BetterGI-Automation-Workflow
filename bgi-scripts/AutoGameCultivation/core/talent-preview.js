@@ -48,10 +48,19 @@ const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(val
 const PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1';
 const READ_TIMING_FIELDS=['captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'];
 const PRIVATE_CAPTURE_FIELDS=['observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'];
+const FOOTER_METHOD='existing_full_footer_v1',MARKER_METHOD='whole_marker_required_roles_v1';
+const SOURCE31_METHODS={previewMarkerMethod:MARKER_METHOD,tooltipQuantityMethod:FOOTER_METHOD,tooltipTimingMethod:PREVIEW_TIMING_METHOD};
+const SOURCE31_FRAME_FIELDS=['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'];
+const FOOTER_FIELDS=['method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'];
+const MARKER_ROLES=[['attribute_heading','属性变更',[870,295,180,70]],['material_heading','所需材料',[870,575,180,60]],
+  ['cancel_label','取消',[620,875,170,70]],['confirm_label','确认',[1170,875,180,70]]];
 function previewTiming(raw,previews,start,finish){
   if(raw.previewTimingMethod==null&&previews.every(p=>p.readTiming==null))return;
   if(raw.previewTimingMethod!==PREVIEW_TIMING_METHOD)fail('talent_modern_preview_timing_method_required');
   if(costMethod(raw)!=='pinned_v6_v4_slash_integer_split'||previews.some(p=>costMethod(p)!=='pinned_v6_v4_slash_integer_split'))fail('talent_modern_preview_timing_cannot_authenticate_legacy_costs');
+  retainedPairTiming(raw,previews,start,finish);
+}
+function retainedPairTiming(raw,previews,start,finish){
   const paths=new Set(),clock=(v)=>{if(!Number.isSafeInteger(v)||v<start||v>finish)fail('talent_preview_actual_clock_invalid');return v;};
   for(let offset=0;offset<previews.length;offset+=2){
     const frames=previews.slice(offset,offset+2),times=[];
@@ -79,7 +88,7 @@ function previewTiming(raw,previews,start,finish){
         ||b.pairEvaluatedAt-frames[1].observedAt<0||b.pairEvaluatedAt-frames[1].observedAt>1500)fail('talent_preview_actual_pair_freshness_or_evaluate_before_png_invalid');
     const following=raw.evidence.rawFrames.find(f=>f.observedAt>frames[1].observedAt);
     if(following){
-      const nextCapture='materials' in following&&'current' in following?clock(following.readTiming?.captureCallStartedAt):following.observedAt;
+      const nextCapture=following.readTiming!=null||'materials' in following&&'current' in following?clock(following.readTiming?.captureCallStartedAt):following.observedAt;
       if(b.diagnosticPngCompletedAt>Math.min(nextCapture,following.observedAt))fail('talent_preview_png_completion_must_precede_next_original_capture');
     }
   }
@@ -89,7 +98,9 @@ function splitModelShape(q){
   if(!modernSplit(q))return false;
   if(q.splitRawModel!=='V6'||q.splitDetectorModel!=='V4'||q.splitRawPaddleReadback!==8||q.slashPixelVerified!==true
       ||q.splitRegionMethod!=='slash_vertical_band'||q.splitOcrScale!==4||q.splitVerticalPaddingReference!==6||(q.prefix??'')!=='')fail('talent_pinned_split_metadata_incomplete');
-  const proof=q.splitModelEvidence;
+  sourceModelShape(q.splitModelEvidence);return true;
+}
+function sourceModelShape(proof){
   if(!exactKeys(proof,['loadMethod','provider','rawModel','detectorModel','countModels','rawDetectorAsset'])
       ||proof.loadMethod!=='new_cpu_uncached_original_onnx_and_labels_under_read_pins'||proof.provider!=='Cpu'
       ||proof.rawModel!=='V6'||proof.detectorModel!=='V4')fail('talent_strict_model_evidence_incomplete');
@@ -103,6 +114,102 @@ function splitModelShape(q){
   }
   // JavaScript verifies protocol shape only. Host independently hashes the trusted runtime files.
   return true;
+}
+function sourceRect(value,expected=null){
+  const core=['x','y','width','height'],extra=['top','bottom','left','right','location','size','topLeft','bottomRight'];
+  if(!exactKeys(value,core)&&!exactKeys(value,[...core,...extra]))fail('talent_source_rect_serializer_fields_invalid');
+  for(const key of core)if(!Number.isSafeInteger(value[key]))fail('talent_source_rect_actual_integer_required');
+  const r=rect(value);if(!inside(r,{x:0,y:0,width:1920,height:1080})||expected&&core.some((key,i)=>r[key]!==expected[i]))fail('talent_source_rect_not_fixed_reviewed_region');
+  if(Object.hasOwn(value,'top')){
+    const x=value.x,y=value.y,w=value.width,h=value.height;
+    for(const [key,v] of Object.entries({top:y,bottom:y+h,left:x,right:x+w}))if(value[key]!==v)fail('talent_source_rect_derived_edges_changed');
+    for(const [key,p] of Object.entries({location:{x,y},size:{width:w,height:h},topLeft:{x,y},bottomRight:{x:x+w,y:y+h}}))
+      if(!exactKeys(value[key],Object.keys(p))||Object.entries(p).some(([k,v])=>value[key][k]!==v))fail('talent_source_rect_derived_coordinates_changed');
+  }
+  return r;
+}
+function sourceRow(row){if(!exactKeys(row,['text','bounds'])||typeof row.text!=='string'||!clean(row.text))fail('talent_modern_source_row_invalid');return sourceRect(row.bounds);}
+function margins(row,box){const r=sourceRow(row);return [r.x-box.x,box.x+box.width-r.x-r.width,r.y-box.y,box.y+box.height-r.y-r.height];}
+function sourceRows(rows,box,expected=null){
+  if(!Array.isArray(rows)||rows.length!==1||Math.min(...margins(rows[0],box))<2)fail('talent_source_single_row_four_two_pixel_edges_required');
+  const result=clean(rows[0].text);if(expected!=null&&result!==expected)fail('talent_independent_source_row_text_mismatch');return result;
+}
+function markerRoles(p){
+  const proof=p.markerRoleEvidence;
+  if(p.previewMarkerMethod!==MARKER_METHOD||!exactKeys(proof,['method','wholeRegion','roles','backgroundRows'])||proof.method!==MARKER_METHOD)fail('talent_modern_marker_role_proof_incomplete');
+  sourceModelShape(p.sourceRegionModelEvidence);
+  const whole=sourceRect(p.markerRegion,[420,235,1100,750]);sourceRect(proof.wholeRegion,[whole.x,whole.y,whole.width,whole.height]);
+  const rows=p.rows,roles=proof.roles,background=proof.backgroundRows;
+  if(!Array.isArray(rows)||!rows.length||!Array.isArray(roles)||roles.length!==4||!Array.isArray(background))fail('talent_marker_whole_rows_or_roles_missing');
+  rows.forEach(sourceRow);const picked=[];
+  for(const [offset,role] of roles.entries()){
+    const [kind,text,expected]=MARKER_ROLES[offset];
+    if(!exactKeys(role,['role','region','wholeRowIndex','observedAt','rawText','detectorRows'])||role.role!==kind||!Number.isSafeInteger(role.observedAt)||role.observedAt!==p.observedAt)fail('talent_marker_role_scope_incomplete');
+    const index=integer(role.wholeRowIndex,0,rows.length-1),box=sourceRect(role.region,expected),matches=rows.map((row,i)=>clean(row.text)===text?i:null).filter(i=>i!=null);
+    if(matches.length!==1||matches[0]!==index||Math.min(...margins(rows[index],whole))<2||Math.min(...margins(rows[index],box))<2)fail('talent_mandatory_marker_duplicated_clipped_or_wrong_role');
+    if(typeof role.rawText!=='string'||clean(role.rawText)!==text)fail('talent_marker_independent_raw_mismatch');
+    sourceRows(role.detectorRows,box,text);picked.push(index);
+  }
+  const remaining=rows.map((row,i)=>i).filter(i=>!picked.includes(i));if(background.length!==remaining.length)fail('talent_marker_background_rows_not_exhaustive');
+  for(const [offset,item] of background.entries()){
+    if(!exactKeys(item,['wholeRowIndex','insideWholeSource','leftMargin','rightMargin','topMargin','bottomMargin','claimsTitleOrInputEvidence'])||integer(item.wholeRowIndex,0,rows.length-1)!==remaining[offset])fail('talent_marker_background_index_changed');
+    const all=margins(rows[remaining[offset]],whole);
+    if(typeof item.insideWholeSource!=='boolean'||item.insideWholeSource!==(Math.min(...all)>=0)||item.claimsTitleOrInputEvidence!==false
+        ||['leftMargin','rightMargin','topMargin','bottomMargin'].some((key,i)=>!Number.isSafeInteger(item[key])||item[key]!==all[i]))fail('talent_marker_background_original_containment_changed');
+  }
+}
+function footerQuantity(tip,start,finish){
+  const proof=tip.footerQuantityEvidence,q=tip.quantity;
+  if(tip.tooltipQuantityMethod!==FOOTER_METHOD||!exactKeys(proof,FOOTER_FIELDS)||proof.method!==FOOTER_METHOD||!q||typeof q!=='object'||Array.isArray(q))fail('talent_modern_fixed_footer_proof_incomplete');
+  sourceModelShape(tip.sourceRegionModelEvidence);
+  const old=sourceRect(proof.oldRegion,[885,890,295,65]),box=sourceRect(proof.sourceRegion,[725,890,470,65]);sourceRect(tip.footerLabelRegion,[725,890,470,65]);sourceRect(q.bounds,[725,890,470,65]);
+  for(const value of [q,proof.initialReading]){
+    if(!value||typeof value!=='object'||Array.isArray(value)||!Number.isSafeInteger(value.observedAt)||value.observedAt!==tip.observedAt||value.width!==1920||value.height!==1080
+        ||value.prefix!=='培养需求'||typeof value.complete!=='boolean'||value.initialReading!=null||(value.cropMethod??'fixed_or_initial')!=='fixed_or_initial'
+        ||value.sourceCountRow!=null||quantityChainModern(value)||value.slashPixelVerified!==false
+        ||['slashBounds','numeratorRegion','denominatorRegion'].some(key=>value[key]!=null)||(value.splitRegionMethod===undefined?'none':value.splitRegionMethod)!=='none')fail('talent_footer_initial_final_image_or_whole_provenance_invalid');
+    dimensions(value,start,finish);
+  }
+  const initial=proof.initialReading;sourceRect(initial.bounds,[old.x,old.y,old.width,old.height]);
+  for(const [values,rawKey,detKey,accepted] of [[initial,'initialWholeRawText','initialWholeDetectorText',false],[q,'wholeRawText','wholeDetectorText',true]]){
+    const wholeRaw=proof[rawKey],wholeDetector=proof[detKey];
+    if(typeof wholeRaw!=='string'||typeof wholeDetector!=='string'||typeof values.raw!=='string'||typeof values.detectorRaw!=='string'||!Array.isArray(values.ocrRows))fail('talent_footer_original_full_raw_strings_required');
+    values.ocrRows.forEach(sourceRow);if(clean(wholeDetector)!==clean(values.ocrRows.map(row=>row.text).join('')))fail('talent_footer_detector_text_not_original_rows');
+    const strip=v=>clean(v).startsWith('培养需求')?clean(v).slice('培养需求'.length):'';
+    if(strip(wholeRaw)!==clean(values.raw)||strip(wholeDetector)!==clean(values.detectorRaw))fail('talent_footer_original_prefix_removal_changed');
+    if(accepted){if(clean(wholeRaw)!==clean(wholeDetector)||!/^培养需求(0|[1-9][0-9]{0,9})\/(0|[1-9][0-9]{0,9})$/.test(clean(wholeRaw)))fail('talent_footer_full_prefix_or_ratio_ambiguous');sourceRows(values.ocrRows,box,clean(wholeRaw));}
+  }
+  const actual=quantity(q,start,finish,'培养需求');
+  if(actual.required<1)fail('talent_modern_footer_aggregate_denominator_positive_required');
+  if(!initial.complete){if(initial.owned!=null||initial.required!=null)fail('talent_footer_failed_initial_quantities_not_null');}
+  else {
+    const whole=clean(proof.initialWholeRawText);
+    if(whole!==clean(proof.initialWholeDetectorText)||!/^培养需求(0|[1-9][0-9]{0,9})\/(0|[1-9][0-9]{0,9})$/.test(whole))fail('talent_footer_complete_initial_full_prefix_raw_detector_mismatch');
+    sourceRows(initial.ocrRows,old,whole);
+    if(!same(quantity(initial,start,finish,'培养需求'),actual))fail('talent_footer_initial_complete_conflict');
+  }
+  const name=sourceRect(tip.nameRegion,[730,168,440,67]),kind=sourceRect(tip.kindRegion,[730,230,440,65]),source=sourceRect(tip.sourceRegion,[730,690,460,65]);
+  for(const [key,rawKey] of [['nameRows','rawName'],['alternateNameRows','alternateRawName']]){
+    const observed=sourceRows(tip[key],name);if(observed!==clean(tip[rawKey])||canonical(observed)!==canonical(tip.name))fail('talent_both_modern_full_name_rows_and_raw_must_match');
+  }
+  if(tip.alternateNameScale!==4||tip.alternateNamePreprocessing!=='gray_threshold_210_inverse_cubic_4x')fail('talent_modern_alternate_name_preprocessing_required');
+  sourceRows(tip.kindRows,kind,tip.kind);sourceRows(tip.sourceRows,source,'来源');sourceRows(tip.footerLabelRows,box,clean(proof.wholeRawText));
+  if(!same(tip.footerLabelRows,q.ocrRows))fail('talent_modern_footer_label_is_not_final_quantity_original_rows');return actual;
+}
+function source31Protocol(raw,frames,previews,pinnedProof,start,finish){
+  const tips=frames.filter(f=>'kindRows' in f&&'footerLabelRows' in f),active=[...Object.keys(SOURCE31_METHODS),...SOURCE31_FRAME_FIELDS].some(k=>raw[k]!=null)||frames.some(f=>SOURCE31_FRAME_FIELDS.some(k=>f[k]!=null))||tips.some(f=>f.readTiming!=null);
+  if(!active)return false;
+  if(Object.entries(SOURCE31_METHODS).some(([k,v])=>raw[k]!==v)||raw.previewTimingMethod!==PREVIEW_TIMING_METHOD||costMethod(raw)!==PINNED_SPLIT_METHOD||pinnedProof==null)fail('talent_source31_payload_methods_and_pinned_costs_required');
+  const pairs=raw.evidence.materialTooltips;
+  if(!Array.isArray(pairs)||pairs.some(pair=>!Array.isArray(pair)||pair.length!==2)||!same(pairs.flat(),tips)||!tips.length)fail('talent_modern_tooltip_pairs_must_retain_all_actual_raw_frames');
+  const identity=proof=>{sourceModelShape(proof);return [...proof.countModels.assets,proof.rawDetectorAsset].map(a=>[a.modelName,a.relativePath,a.sha256,a.length]);};
+  for(const f of [...previews,...tips]){
+    if(!Number.isSafeInteger(f.observedAt)||f.width!==1920||f.height!==1080||!same(identity(f.sourceRegionModelEvidence),identity(pinnedProof)))fail('talent_source_regions_same_six_asset_scope_required');
+  }
+  previews.forEach(markerRoles);tips.forEach(tip=>footerQuantity(tip,start,finish));
+  const all=frames.filter(f=>previews.includes(f)||tips.includes(f));
+  for(let i=0;i<all.length;i+=2)if(('materials' in all[i])!==('materials' in all[i+1]))fail('talent_original_retained_pair_kinds_mixed');
+  retainedPairTiming(raw,all,start,finish);return true;
 }
 function costMethod(value){const marker=value.costQuantityMethod;if(marker!=null&&!['legacy_observed_ratio',PINNED_SPLIT_METHOD].includes(marker))fail('talent_cost_quantity_method_unreviewed');return marker??'legacy_observed_ratio';}
 function previewMaterials(p){if(!Array.isArray(p.materials)||p.materials.length<1||p.materials.length>4||p.materials.some(item=>!item||typeof item!=='object'||!item.quantity||typeof item.quantity!=='object'||Array.isArray(item.quantity)))fail('talent_native_material_quantity_objects_missing');return p.materials;}
@@ -294,7 +401,9 @@ function preview(p,current,start,finish){
   if(rowText(p.currentLevelRows,region(p,'currentLevelRegion',[760,245,160,65]),s,false)!==`等级${current}`
       ||rowText(p.nextLevelRows,region(p,'nextLevelRegion',[1000,245,170,65]),s,false)!==`等级${current+1}`
       ||clean(p.currentLevelRaw)!==`等级${current}`||clean(p.nextLevelRaw)!==`等级${current+1}`)fail('talent_next_level_raw_mismatch');
-  rowText(p.rows,region(p,'markerRegion',[420,235,1100,750]),s,false);const labels=p.rows.map(row=>clean(row.text));
+  if(['previewMarkerMethod','markerRoleEvidence','sourceRegionModelEvidence'].some(k=>p[k]!=null))markerRoles(p);
+  else rowText(p.rows,region(p,'markerRegion',[420,235,1100,750]),s,false);
+  const labels=p.rows.map(row=>clean(row.text));
   if(['属性变更','所需材料','取消','确认'].some(label=>labels.filter(value=>value===label).length!==1))fail('talent_popup_markers_missing');
   previewMaterials(p);
   const method=costMethod(p);
@@ -331,14 +440,16 @@ export function verifyTalentObservation(raw,character,type,start,finish){
   if(previews.length<2||previews.length%2||previews[0].observedAt<=details[1].observedAt||!same(e.preview,previews.at(-1)))fail('talent_popup_pair_missing');let costs;
   previewTiming(raw,previews,start,finish);
   if(previews.some(p=>costMethod(p)!==costMethod(raw)))fail('talent_payload_popup_quantity_method_mismatch');
-  let pinnedProof=null;
+  let pinnedProof=null,pinnedSourceProof=null;
   for(const p of previews)for(const item of previewMaterials(p))for(const reading of [item.quantity,item.quantity.initialReading])if(reading!=null&&modernSplit(reading)){
     splitModelShape(reading);
     // Asset field order is fixed here; JSON object property order carries no provenance.
     const identity=[...reading.splitModelEvidence.countModels.assets,reading.splitModelEvidence.rawDetectorAsset].map(a=>[a.modelName,a.relativePath,a.sha256,a.length]);
     if(pinnedProof!=null&&!same(pinnedProof,identity))fail('talent_all_material_popup_model_proofs_must_match');
     pinnedProof=identity;
+    pinnedSourceProof=reading.splitModelEvidence;
   }
+  const source31=source31Protocol(raw,frames,previews,pinnedSourceProof,start,finish);
   for(let i=0;i<previews.length;i+=2){pair(previews[i],previews[i+1]);for(const p of previews.slice(i,i+2)){const actual=preview(p,b.base,start,finish);if(costs&&!same(costs,actual))fail('talent_costs_changed');costs=actual;}}
   if(e.materialTooltips?.length!==costs.materials.length)fail('talent_fullnamed_tooltips_missing');
   for(const [i,two] of e.materialTooltips.entries()){
@@ -353,7 +464,10 @@ export function verifyTalentObservation(raw,character,type,start,finish){
       if(!candidates.includes(item.name)||kind!==tip.kind||!['角色天赋素材','角色与武器培养素材'].includes(kind)
           ||tip.sourceRows.filter(row=>clean(row.text)==='来源').length!==1)fail('talent_tooltip_fullname_unverified');
       if(!rowText(tip.footerLabelRows,region(tip,'footerLabelRegion',[725,890,470,65]),s,false).startsWith('培养需求'))fail('talent_footer_label_missing');
-      region(tip.quantity,'bounds',[885,890,295,65]);if(quantity(tip.quantity,start,finish,'培养需求').owned!==item.owned)fail('talent_popup_tooltip_owned_mismatch');
+      let owned;
+      if(source31)owned=footerQuantity(tip,start,finish).owned;
+      else{region(tip.quantity,'bounds',[885,890,295,65]);owned=quantity(tip.quantity,start,finish,'培养需求').owned;}
+      if(owned!==item.owned)fail('talent_popup_tooltip_owned_mismatch');
     }
     if(two[0].observedAt<=previews[1].observedAt||two[1].observedAt>=previews.at(-1).observedAt)fail('talent_tooltip_read_order_invalid');
   }

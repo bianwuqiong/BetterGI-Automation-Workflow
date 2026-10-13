@@ -168,12 +168,13 @@ def named_count(reading,item,scale,actual_assets):
     return integer(int(raw)),source
 
 
-def initial_stack(frame,stack,item,start,finish):
+def initial_stack(frame,stack,item,start,finish,*,named_title=False):
     initial=frame.get('initialStack')
     if not isinstance(initial,dict) or initial.get('observedAt')!=stack['observedAt'] or initial.get('countMethod')!='raw_ocr_without_detector':
         raise ValueError('weekly initial rejected stack/frame missing')
     w=frame['width'];x,y,width,height=item
     title=(math.trunc(w*.682),math.trunc(w*.0625),math.trunc(w*.256),math.trunc(w*.03125))
+    if named_title:title=tuple(round(v*w/1920) for v in (1280,110,540,78))
     amount=(x+math.trunc(width*5/125),y+math.trunc(height*128/153),math.trunc(width*120/125)-math.trunc(width*5/125),math.trunc(height*150/153)-math.trunc(height*128/153))
     if (rect(initial.get('nameRegion'))!=title or rect(initial.get('countRegion'))!=amount or not isinstance(initial.get('rawCountText'),str)
             or any(initial.get(k)!=stack.get(k) for k in ('selectedItemVerified','selectedItemRect','selectionEvidence'))):raise ValueError('weekly initial grid geometry/selection scope changed')
@@ -183,7 +184,7 @@ def initial_stack(frame,stack,item,start,finish):
     return initial
 
 
-def frame_count(frame, target, selection, start, finish,actual_assets=None):
+def frame_count(frame, target, selection, start, finish,actual_assets=None,*,named_title=False):
     s = dimensions(frame, start, finish)
     w, h = frame['width'], frame['height']
     stack = frame.get('stack', {})
@@ -203,16 +204,17 @@ def frame_count(frame, target, selection, start, finish,actual_assets=None):
     modern='countReading' in frame or 'initialStack' in frame or stack.get('countMethod')=='grid_hsv_foreground_exact_dual_ocr'
     initial=None;number=None
     if modern:
-        initial=initial_stack(frame,stack,item,start,finish)
+        initial=initial_stack(frame,stack,item,start,finish,named_title=named_title)
         number,expected_amount=named_count(frame.get('countReading'),item,s,actual_assets)
         expected_title=tuple(round(v*s) for v in (1280,110,540,78))
     else:expected_title = (math.trunc(w*.682), math.trunc(w*.0625), math.trunc(w*.256), math.trunc(w*.03125))
+    if named_title:expected_title=tuple(round(v*s) for v in (1280,110,540,78))
     if not modern:expected_amount = (x+math.trunc(width*5/125), y+math.trunc(height*128/153),
                        math.trunc(width*120/125)-math.trunc(width*5/125), math.trunc(height*150/153)-math.trunc(height*128/153))
     if (title != expected_title or amount != expected_amount or not _inside(title, (0, 0, w, h)) or not _inside(amount, (0,0,w,h) if modern else item)
             or icon != (x, y, width, round(height*125/153)) or frame.get('iconMethod') != 'cell_resize_125x153_top_125x125'
             or stack.get('selectedItemVerified') is not True or rect(stack.get('selectedItemRect')) != item
-            or rows(stack.get('nameRows'), title, s) != [target['materialName']]
+            or rows(stack.get('nameRows'), title, s) != [clean(target['materialName']) if named_title else target['materialName']]
             or stack.get('countMethod') != ('grid_hsv_foreground_exact_dual_ocr' if modern else 'raw_ocr_without_detector') or len(stack.get('countRows', [])) != 1):
         raise ValueError('weekly full named selected-stack geometry unverified')
     detected = rows(stack['countRows'], amount, s)[0]
@@ -223,7 +225,7 @@ def frame_count(frame, target, selection, start, finish,actual_assets=None):
         if stack['countRows']!=frame['countReading']['sourceRows'] or stack['rawCountText']!=frame['countReading']['raw'] or int(raw)!=number:
             raise ValueError('weekly stack summary not bound to original preprocessing reading')
         old_frame={k:v for k,v in frame.items() if k not in ('countReading','initialStack')};old_frame['stack']=initial
-        try:old_count=frame_count(old_frame,target,selection,start,finish)
+        try:old_count=frame_count(old_frame,target,selection,start,finish,named_title=named_title)
         except ValueError:old_count=None
         if old_count is not None and old_count!=number:raise ValueError('complete initial weekly count conflicts with final count')
     border(stack.get('selectionEvidence'), item, w, h)
