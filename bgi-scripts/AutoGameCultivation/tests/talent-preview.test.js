@@ -554,6 +554,17 @@ test('single readonly skill preview saves raw evidence with zero upgrades, no no
   assert.deepEqual(r.steps,[]);assert.equal(r.targetReached,false);assert.equal(r.talentPreview.completedUpgrades,0);
   assert.ok(JSON.parse(h.files['record/talent-preview-fixture.json']).talentPreview.nativeObservation.evidence.rawFrames.length);
 });
+test('verified single preview derives only its required materials and never enables a consumer',async()=>{
+  const h=harness(),raw=fixture();
+  const catalog=Object.fromEntries(raw.materials.map((m,i)=>[String(104301+i),{name:m.name}]));
+  catalog['113060']={name:'unrelated material'};
+  const r=await runCultivation(h.settings,h.api,{materials:catalog});
+  assert.equal(r.status,'success');assert.equal(h.calls,1);
+  assert.equal(r.singleTalentNextStep.namedInventoryScope.materials.length,raw.materials.length);
+  assert.equal(r.singleTalentNextStep.executionEnabled,false);
+  assert.equal(r.singleTalentNextStep.targetReached,false);
+  assert.deepEqual(r.steps,[]);
+});
 test('execute, mixed diagnostic, nonzero budget and invalid type cannot reach readonly preview',async()=>{
   for(const change of [{mode:'execute'},{resourceDiagnosticOnly:true},{resinDiagnosticOnly:true},{talentPreviewType:'全部'},
       {policyJson:JSON.stringify({originalResinBudget:20,condensedResinBudget:0})}]){

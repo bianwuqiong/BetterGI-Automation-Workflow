@@ -4,6 +4,7 @@ import { verifyWeaponGuideSession } from './weapon-guide.js';
 import { verifyBackpackInventory } from './backpack-evidence.js';
 import { readResourceCoverage } from './resource-coverage.js';
 import { readTalentPreview } from './talent-preview.js';
+import { deriveSingleTalentStep } from './single-talent-plan.js';
 import { readWeeklyInventory } from './weekly-inventory.js';
 import { readNamedInventory,readBoundMora } from './named-inventory.js';
 import {parseInputs,readProfile,makeRequirements,scanGroups,normalizeCounts,buildPlan,candidateDomains,candidateBosses,candidateCrafting,createDomainParam,createBossParam,verifiedGain,verifiedCraft,gameWeekday,normalizeResinSnapshot,observedBudgetBlocker} from './safe.js';
@@ -81,6 +82,8 @@ export async function runCultivation(settings,api,data) {
       report.metadata.diagnostic='talent-upgrade-preview-only';
       report.metadata.calculationScope='当前目标单项天赋的下一基础等级所需材料与摩拉，只读预览';
       report.talentPreview=await readTalentPreview(api,input.target.characterName,settings.talentPreviewType||'元素战技',started,started+input.policy.maxMinutes*60000);
+      if(report.talentPreview.evidenceVerified&&data.materials)
+        report.singleTalentNextStep=deriveSingleTalentStep(input.target,report.talentPreview.selectedTalentType,report.talentPreview.costs,data.materials);
       report.status=report.talentPreview.evidenceVerified?'success':'unknown';
       report.blockers.push({code:'talent_preview_only',message:'只核验下一等级预览，不确认升级、消费资源或宣称培养目标完成'});
     } else if(settings.resourceDiagnosticOnly===true || settings.resourceDiagnosticOnly==='true' || settings.resourceDiagnosticOnly==='True') {

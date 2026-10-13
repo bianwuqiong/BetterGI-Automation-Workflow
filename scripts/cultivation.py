@@ -777,6 +777,17 @@ def verify_cultivation_report(event, bettergi_dir, run_id, mode, expected_target
                 from talent_preview import verify_talent_preview
             preview_verified=verify_talent_preview(raw.get('talentPreview'),target['characterName'],expected_talent_type,
                 raw.get('startedAt'),raw.get('finishedAt'),trusted_runtime_root=root)
+            if 'singleTalentNextStep' in raw:
+                if not preview_verified:
+                    raise ValueError('single talent plan requires independently verified preview')
+                if __package__:
+                    from .single_talent_plan import derive_single_talent_step
+                else:
+                    from single_talent_plan import derive_single_talent_step
+                expected_step=derive_single_talent_step(target,expected_talent_type,raw['talentPreview']['costs'],
+                    _static_data(plugin,'materials.json'))
+                if json.dumps(raw['singleTalentNextStep'],sort_keys=True,allow_nan=False) != json.dumps(expected_step,sort_keys=True,allow_nan=False):
+                    raise ValueError('single talent next scope differs from verified costs or target')
             if claimed=='success' and not preview_verified:
                 raise ValueError('talent preview success contradicts unknown raw evidence')
             if claimed=='success':
