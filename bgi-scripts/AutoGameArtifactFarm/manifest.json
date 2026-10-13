@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "name": "圣遗物刷取",
+  "version": "0.1.0",
+  "bgi_version": "0.64.2",
+  "description": "可替换目标、有界浓缩合成与单次秘境领奖，独立核验树脂和奖励。",
+  "authors": [{"name": "BetterGI Automation Workflow contributors"}],
+  "settings_ui": "settings.json",
+  "main": "main.js"
+}

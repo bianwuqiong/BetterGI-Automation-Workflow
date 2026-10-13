@@ -1,0 +1,4 @@
+# Real PNG/JPEG attachment integrity checks used by explicit source-phase review.
+Pillow>=12.3.0,<13
+# Independent original-PNG matching uses the same OpenCV 4.11 template algorithms as native.
+opencv-python-headless==4.11.0.86

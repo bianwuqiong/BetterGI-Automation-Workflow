@@ -1,0 +1,170 @@
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs
+@@ -9,7 +9,7 @@
+ /// <summary>Read-only bottom-left currency crops, calibrated to the observed precious-items page.</summary>
+ public sealed class MoraSnapshotRequest
+ {
+-    public BackpackRect BalanceRegion { get; set; } = new(397, 1000, 140, 40);
++    public BackpackRect BalanceRegion { get; set; } = new(392, 1000, 168, 40);
+     public BackpackRect IconRegion { get; set; } = new(354, 1000, 37, 37);
+     public void Validate()
+     {
+@@ -37,30 +37,66 @@
+     }
+     public static int? Read(MoraFrameEvidence frame)
+     {
+-        if (frame.Width < 800 || frame.Width * 9 != frame.Height * 16 || !frame.BackpackTabVerified || frame.PromptVisible ||
+-            frame.ObservedAt < 0 || frame.HeaderRows.Count(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == "贵重道具") != 1 ||
+-            frame.IconName != "摩拉" || !double.IsFinite(frame.IconScore) || frame.IconScore < .75 || frame.BalanceRows.Length != 1 ||
+-            frame.IconRegion.X + frame.IconRegion.Width > frame.BalanceRegion.X ||
++        return ReadWithReason(frame).Value;
++    }
++    public static (int? Value,string Reason) ReadWithReason(MoraFrameEvidence frame)
++    {
++        if(frame.Width<800 || frame.Width*9!=frame.Height*16 || frame.ObservedAt<0)return(null,"unsupported_capture_geometry_or_time");
++        if(!frame.BackpackTabVerified)return(null,"precious_page_unverified");
++        if(frame.PromptVisible)return(null,"prompt_visible");
++        if(frame.HeaderRows.Count(r=>BackpackInventoryEvidenceSafety.Normalize(r.Text)=="贵重道具")!=1)return(null,"precious_header_unverified");
++        if(frame.IconName!="摩拉" || !double.IsFinite(frame.IconScore) || frame.IconScore<.75)return(null,"mora_icon_unverified");
++        if(frame.BalanceRows.Length!=1)return(null,"balance_ocr_row_count");
++        if (frame.IconRegion.X + frame.IconRegion.Width > frame.BalanceRegion.X ||
+             frame.IconRegion.X < 330 * frame.Width / 1920d - 1 || frame.IconRegion.Y < 970 * frame.Width / 1920d - 1 ||
+             frame.IconRegion.X + frame.IconRegion.Width > 420 * frame.Width / 1920d + 1 ||
+             frame.BalanceRegion.X < 390 * frame.Width / 1920d - 1 ||
+             frame.BalanceRegion.X + frame.BalanceRegion.Width > 750 * frame.Width / 1920d + 1)
+-            return null;
++            return(null,"currency_regions_invalid");
+         var row = frame.BalanceRows[0];
+         if (!BackpackInventoryEvidenceSafety.Inside(new(row.X, row.Y, row.Width, row.Height), frame.BalanceRegion) ||
+             row.X - frame.BalanceRegion.X < 2 * frame.Width / 1920d ||
+             frame.BalanceRegion.X + frame.BalanceRegion.Width - row.X - row.Width < 2 * frame.Width / 1920d)
+-            return null; // Digits at a crop boundary may be truncated; never recover a shorter balance.
++            return(null,"balance_digits_touch_crop_edge_or_outside"); // Never recover a truncated balance.
+         var raw = ParseBalance(frame.RawBalanceText);
+-        return raw.HasValue && raw == ParseBalance(row.Text) ? raw : null;
++        if(!raw.HasValue)return(null,"balance_integer_unparsed");
++        return raw==ParseBalance(row.Text)?(raw,"verified"):(null,"balance_ocr_methods_disagree");
+     }
+     public static int? Pair(MoraFrameEvidence? first, MoraFrameEvidence? second, long now)
+     {
+-        if (first is null || second is null || first.Width != second.Width || first.Height != second.Height ||
++        if (first is null || second is null || ReferenceEquals(first,second) || first.Width != second.Width || first.Height != second.Height ||
+             first.BalanceRegion != second.BalanceRegion || first.IconRegion != second.IconRegion || second.ObservedAt <= first.ObservedAt ||
+             second.ObservedAt - first.ObservedAt > 5000 || now < second.ObservedAt || now - second.ObservedAt > 1500)
+             return null;
+         var value = Read(first);
+         return value.HasValue && value == Read(second) ? value : null;
+     }
++    public static string PairReason(MoraFrameEvidence? first,MoraFrameEvidence? second,long now)
++    {
++        if(first is null || second is null)return "independent_frame_pair_missing";
++        if(ReferenceEquals(first,second))return "duplicate_capture_record";
++        if(first.Width!=second.Width || first.Height!=second.Height || first.BalanceRegion!=second.BalanceRegion || first.IconRegion!=second.IconRegion)
++            return "capture_geometry_changed";
++        if(second.ObservedAt<=first.ObservedAt)return "independent_frame_timestamps_required";
++        if(second.ObservedAt-first.ObservedAt>5000)return "frame_pair_interval_too_long";
++        if(now<second.ObservedAt)return "capture_timestamp_in_future";
++        if(now-second.ObservedAt>1500)return "latest_frame_stale";
++        var a=ReadWithReason(first);if(!a.Value.HasValue)return a.Reason;
++        var b=ReadWithReason(second);if(!b.Value.HasValue)return b.Reason;
++        return a.Value==b.Value?"verified":"balance_changed_between_frames";
++    }
+ }
++
++/// <summary>Keeps the actual preceding and current captures even when the last observation fails.</summary>
++public sealed class MoraFramePairCollector
++{
++    public MoraFrameEvidence? First {get;private set;}
++    public MoraFrameEvidence? Second {get;private set;}
++    public string Reason {get;private set;}="independent_frame_pair_missing";
++    public int? Observe(MoraFrameEvidence current,long now)
++    {
++        First=Second;Second=current;
++        Reason=MoraSnapshotEvidence.PairReason(First,Second,now);
++        return MoraSnapshotEvidence.Pair(First,Second,now);
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+@@ -71,15 +71,16 @@
+             using (var frame = TaskControl.CaptureToRectArea(forceNew: true))
+                 frame.MoveTo(frame.Width / 2, frame.Height - 40); // Removes cursor occlusion; no click.
+             await Task.Delay(200, timeout.Token);
++            var collected=new MoraFramePairCollector();
+             for (int i = 0; i < 5; i++)
+             {
+                 timeout.Token.ThrowIfCancellationRequested();
+-                second = ReadFrame(request, recognizer, timeout.Token);
+-                balance = MoraSnapshotEvidence.Pair(first, second, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++                var current=ReadFrame(request, recognizer, timeout.Token);
++                balance=collected.Observe(current,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++                first=collected.First;second=collected.Second;reason=collected.Reason;
+                 if (balance.HasValue) { reason = "stable_precious_page_mora_model_and_integer"; break; }
+-                first = second; await Task.Delay(250, timeout.Token);
++                if(i+1<5)await Task.Delay(250,timeout.Token);
+             }
+-            if (!balance.HasValue) reason = "mora_icon_or_full_integer_pair_unverified";
+         }
+         catch (Exception ex)
+         {
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraCropPairRegressionTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraCropPairRegressionTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraCropPairRegressionTests.cs
+@@ -0,0 +1,54 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class MoraCropPairRegressionTests
++{
++    private static MoraFrameEvidence Frame(long at,string raw="12345678") => new(at,1920,1080,true,false,
++        [new("贵重道具",143,30,105,30)],"摩拉",.9,new(354,1000,37,37),
++        new MoraSnapshotRequest().BalanceRegion,[new(raw,398,1004,135,31)],raw);
++    [Fact]
++    public void ExpandedCropPreservesBothDigitMarginsWithoutLoweringTheEdgeRule()
++    {
++        var frame=Frame(1000);
++        Assert.Equal(12345678,MoraSnapshotEvidence.Read(frame));
++        Assert.Equal("verified",MoraSnapshotEvidence.ReadWithReason(frame).Reason);
++        var old=frame with {BalanceRegion=new(397,1000,140,40)};
++        Assert.Null(MoraSnapshotEvidence.Read(old));
++        Assert.Equal("balance_digits_touch_crop_edge_or_outside",MoraSnapshotEvidence.ReadWithReason(old).Reason);
++        new MoraSnapshotRequest().Validate();
++    }
++    [Fact]
++    public void FinalFailedAttemptStillReturnsTheTwoDistinctActualCaptures()
++    {
++        var collector=new MoraFramePairCollector();
++        var a=Frame(1000,"unreadable");var b=Frame(1300,"unreadable");var c=Frame(1600,"unreadable");
++        Assert.Null(collector.Observe(a,1100));Assert.Null(collector.Observe(b,1400));Assert.Null(collector.Observe(c,1700));
++        Assert.Same(b,collector.First);Assert.Same(c,collector.Second);Assert.NotSame(collector.First,collector.Second);
++        Assert.Equal(1300,collector.First!.ObservedAt);Assert.Equal(1600,collector.Second!.ObservedAt);
++        Assert.Equal("balance_integer_unparsed",collector.Reason);
++    }
++    [Fact]
++    public void SameObjectOrSameTimestampCannotSupplyAnIndependentPair()
++    {
++        var a=Frame(1000);var collector=new MoraFramePairCollector();
++        Assert.Null(collector.Observe(a,1100));Assert.Null(collector.Observe(a,1100));
++        Assert.Equal("duplicate_capture_record",collector.Reason);
++        var b=Frame(1000);
++        Assert.Null(MoraSnapshotEvidence.Pair(a,b,1100));
++        Assert.Equal("independent_frame_timestamps_required",MoraSnapshotEvidence.PairReason(a,b,1100));
++    }
++    [Fact]
++    public void IndependentFreshPairSucceedsAndUncertainIdentityNeverGetsReused()
++    {
++        var collector=new MoraFramePairCollector();
++        Assert.Null(collector.Observe(Frame(1000),1100));
++        Assert.Equal(12345678,collector.Observe(Frame(1300),1400));
++        Assert.Equal("verified",collector.Reason);
++        Assert.Null(collector.Observe(Frame(1600) with {IconName="其他物品",IconScore=.99},1700));
++        Assert.Equal("mora_icon_unverified",collector.Reason);
++        Assert.Null(collector.Observe(Frame(1900),2000));
++        Assert.Equal("mora_icon_unverified",collector.Reason);
++        Assert.Equal(12345678,collector.Observe(Frame(2200),2300));
++    }
++}

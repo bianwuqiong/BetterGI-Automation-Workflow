@@ -1,0 +1,201 @@
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -369,7 +369,28 @@
+   
+         CancellationToken cancellationToken = customCt ?? CancellationContext.Instance.Cts.Token;  
+         ArtifactClaimObservation.ValidateCorrelation(param.ArtifactRunId, param.ArtifactStepId);
+-        var rewards = await new AutoDomainTask(param).Start(cancellationToken);
++        Dictionary<string,int> rewards;
++        try { rewards = await new AutoDomainTask(param).Start(cancellationToken); }
++        catch(Exception failure) when(failure is not OperationCanceledException && param.RequireZhongliShieldCast)
++        {
++            // Diagnose the UI after a protected failure, without changing the original exception,
++            // claiming any resource result or replaying the failed task.
++            try
++            {
++                var network=await new ReadGameNetworkSnapshotTask().Start(cancellationToken);
++                if(network.Status=="blocked_network")
++                    _logger.LogWarning("[AUTO_GAME_EVENT] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(new {
++                        task="domain-network-interruption",status="blocked_network",evidenceVerified=true,
++                        runId=param.ArtifactRunId,stepId=param.ArtifactStepId,
++                        stage=failure.Message.Contains("钟离",StringComparison.Ordinal)?"shield_identity":"domain_execution",
++                        source="complete_disconnect_modal",observedAt=network.ObservedAt,
++                        first=network.First,second=network.Second,connectivityVerified=false,
++                        resourceOutcome="unknown",originalFailure=failure.Message
++                    }));
++            }
++            catch(Exception diagnosticFailure) {_logger.LogWarning("Network UI diagnosis unavailable: {Failure}",diagnosticFailure.GetType().Name);}
++            throw;
++        }
+         if (!string.IsNullOrEmpty(param.ArtifactRunId))
+         {
+             var verified = rewards.Count > 0 && rewards.All(pair => pair.Value > 0);
+@@ -498,6 +519,13 @@
+         return await new ReadMoraSnapshotTask().Start(request, linked.Token);
+     }
+ 
++    public async Task<string> ReadGameNetworkSnapshot(CancellationToken? customCt = null)
++    {
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,
++            CancellationContext.Instance.Cts.Token);
++        return ReadGameNetworkSnapshotTask.Serialize(await new ReadGameNetworkSnapshotTask().Start(linked.Token));
++    }
++
+     public async Task<object?> RunCountInventoryItemTask(CountInventoryItemParam param, CancellationToken? customCt = null)
+     {
+         if (param == null)
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadGameNetworkSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadGameNetworkSnapshotTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadGameNetworkSnapshotTask.cs
+@@ -0,0 +1,75 @@
++using System;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++public sealed record NetworkDisconnectFrame(long ObservedAt, int Width, int Height, bool PromptDialog,
++    string Header, string Body);
++public sealed record GameNetworkSnapshot(string Status, bool ReadOnly, bool EvidenceVerified,
++    bool ConnectivityVerified, string? ObservedAt, NetworkDisconnectFrame? First, NetworkDisconnectFrame? Second,
++    string Reason);
++
++public static class NetworkDisconnectEvidence
++{
++    public static bool Positive(NetworkDisconnectFrame f) => f.Width>=800 && f.Width*9==f.Height*16 &&
++        f.PromptDialog && f.ObservedAt>=0 && BackpackInventoryEvidenceSafety.Normalize(f.Header)=="连接已断开" &&
++        BackpackInventoryEvidenceSafety.Normalize(f.Body)=="连接超时";
++    public static bool Pair(NetworkDisconnectFrame? first, NetworkDisconnectFrame? second, long now) =>
++        first is not null && second is not null && Positive(first) && Positive(second) &&
++        first.Width==second.Width && first.Height==second.Height && second.ObservedAt>first.ObservedAt &&
++        second.ObservedAt-first.ObservedAt<=5000 && now>=second.ObservedAt && now-second.ObservedAt<=1500;
++}
++
++/// <summary>Only observes the complete disconnect modal. Does not reconnect, confirm, move or consume.</summary>
++public sealed class ReadGameNetworkSnapshotTask
++{
++    public static string Serialize(GameNetworkSnapshot result) => JsonConvert.SerializeObject(result,
++        new JsonSerializerSettings {ContractResolver=new CamelCasePropertyNamesContractResolver()});
++    public async Task<GameNetworkSnapshot> Start(CancellationToken ct)
++    {
++        NetworkDisconnectFrame? first=null,second=null;
++        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
++        timeout.CancelAfter(TimeSpan.FromSeconds(5));
++        try
++        {
++            for(int i=0;i<3;i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                using var frame=TaskControl.CaptureToRectArea(forceNew:true);
++                if(!SystemControl.IsGenshinImpactActiveByProcess())return Result("unknown",false,"game_not_focused");
++                var hasDialog=Bv.IsInPromptDialog(frame);
++                second=ReadFrame(frame,OcrFactory.Paddle,hasDialog,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++                timeout.Token.ThrowIfCancellationRequested();
++                if(NetworkDisconnectEvidence.Pair(first,second,DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
++                    return Result("blocked_network",true,"complete_disconnect_and_timeout_modal_pair");
++                // No modal is an absence observation only, never proof of online connectivity.
++                if(i>0 && first?.PromptDialog==false && !hasDialog)
++                    return Result("not_observed",false,"disconnect_modal_not_observed_connectivity_unverified");
++                first=second; await Task.Delay(250,timeout.Token);
++            }
++            return Result("unknown",false,"modal_text_pair_unverified");
++        }
++        catch(OperationCanceledException) when(!ct.IsCancellationRequested) {return Result("unknown",false,"observation_timeout");}
++        catch(OperationCanceledException){throw;}
++        catch(Exception ex){return Result("unknown",false,"observation_failed:"+ex.GetType().Name);}
++        GameNetworkSnapshot Result(string status,bool verified,string reason) => new(status,true,verified,false,
++            verified && second is not null?DateTimeOffset.FromUnixTimeMilliseconds(second.ObservedAt).ToString("O"):null,
++            first,second,reason);
++    }
++    internal static NetworkDisconnectFrame ReadFrame(ImageRegion frame, IOcrService ocr, bool prompt, long at)
++    {
++        if(!prompt)return new(at,frame.Width,frame.Height,false,"","");
++        Rect Scaled(int x,int y,int w,int h)=>new((int)Math.Round(x*frame.Width/1920d),(int)Math.Round(y*frame.Width/1920d),
++            (int)Math.Round(w*frame.Width/1920d),(int)Math.Round(h*frame.Width/1920d));
++        using var header=frame.DeriveCrop(Scaled(740,260,450,80));
++        using var body=frame.DeriveCrop(Scaled(780,460,360,110));
++        return new(at,frame.Width,frame.Height,true,ocr.Ocr(header.SrcMat).Trim(),ocr.Ocr(body.SrcMat).Trim());
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectEvidenceTests.cs
+@@ -0,0 +1,32 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class NetworkDisconnectEvidenceTests
++{
++    private static NetworkDisconnectFrame Frame(long at) => new(at,1920,1080,true,"连接已断开","连接超时");
++    [Fact]
++    public void CompleteModalAndTwoIndependentFreshFramesClassifyOnlyTheDisconnect()
++    {
++        Assert.True(NetworkDisconnectEvidence.Pair(Frame(1000),Frame(1300),1400));
++        Assert.False(NetworkDisconnectEvidence.Pair(Frame(1000),Frame(1000),1400));
++        Assert.False(NetworkDisconnectEvidence.Pair(Frame(1000),Frame(1300),3000));
++        Assert.False(NetworkDisconnectEvidence.Pair(Frame(1000),Frame(6300),6400));
++        Assert.False(NetworkDisconnectEvidence.Pair(Frame(1000),null,1400));
++    }
++    [Theory]
++    [InlineData("连接成功","连接超时")]
++    [InlineData("是否退出秘境","连接超时")]
++    [InlineData("连接已断开","是否使用脆弱树脂")]
++    [InlineData("连接已断开","可能连接超时")]
++    [InlineData("连接已断开","连接超时确认")]
++    public void PartialOrForeignDialogDoesNotAuthorizeNetworkClassification(string title,string body) =>
++        Assert.False(NetworkDisconnectEvidence.Positive(Frame(1000) with {Header=title,Body=body}));
++    [Fact]
++    public void PromptMarkerAndAspectRatioRemainRequired()
++    {
++        Assert.False(NetworkDisconnectEvidence.Positive(Frame(1000) with {PromptDialog=false}));
++        Assert.False(NetworkDisconnectEvidence.Positive(Frame(1000) with {Width=1280,Height=800}));
++        Assert.True(NetworkDisconnectEvidence.Positive(Frame(1000) with {Header="连接已 断开",Body="连接 超时"}));
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NetworkDisconnectPrivateImageTests.cs
+@@ -0,0 +1,32 @@
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class NetworkDisconnectPrivateImageTests(ITestOutputHelper output)
++{
++    [Fact]
++    [Trait("Fixture","PrivateNetworkDisconnect")]
++    public void ActualRetainedDisconnectModalUsesProductionReaderWithoutAnyInput()
++    {
++        var directory=Environment.GetEnvironmentVariable("BETTERGI_PRIVATE_NETWORK_FIXTURE_DIR");
++        Assert.False(string.IsNullOrWhiteSpace(directory),"Retained private frame is required; missing image is not a pass.");
++        using var screenshot=Cv2.ImRead(Path.Combine(directory!,"disconnect-during-shield-proof.png"));
++        Assert.Equal(new Size(1538,895),screenshot.Size());
++        using var client=new Mat(screenshot,new Rect(1,30,1536,864));
++        using var ocr=new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),PaddleOcrService.PaddleOcrModelType.V6);
++        foreach(var width in new[]{1536,1920})
++        {
++            using var scaled=new Mat();Cv2.Resize(client,scaled,new Size(width,width*9/16));
++            using var capture=new ImageRegion(scaled.Clone(),0,0);
++            var frame=ReadGameNetworkSnapshotTask.ReadFrame(capture,ocr,Bv.IsInPromptDialog(capture),1000);
++            output.WriteLine(Newtonsoft.Json.JsonConvert.SerializeObject(frame));
++            Assert.True(NetworkDisconnectEvidence.Positive(frame));
++        }
++    }
++}

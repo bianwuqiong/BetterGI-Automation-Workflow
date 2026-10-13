@@ -1,0 +1,560 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -110,6 +110,8 @@
+ 
+ - 第十九层在一次天赋导航之后采用原只读查找器的12秒/300ms有界新帧观察，完整原始行与候选、官方全名、场景和时间均保留；只接受连续两张恰好三条完整等级且同序位置稳定的列表，点击前第三张再核对完整名称、原始列表和目标位置绑定。不重按导航或确认，失败明确区分数量、位置、页面和新鲜度，未观察到的动画原因不推断。已核实角色列表、已核实选中材料提示页和四个固定周本物品的已核实选中背包场景新增私有原PNG/时间/双SHA诊断；数量或字框裁边仍unknown/null，所有旧数字/矿石读取及币模型标准不改。图片不能代替成功证据或公开。仍未增加最终升级、转化或消费确认。
+ 
++- 第二十层仅修复独立周本具名库存读取：旧完整标题/115×22数量原文与字框保存，新标题留自然边距；数量从实际选中卡底带上下各8px真实背景，复用3xHSV及轮廓定位、48px字形和24px留白，记录全部组件/来源/投影/像素SHA。配置V6无检测读数与固定已有V4检测识别必须同一输入完整ASCII整数一致，不采用1/7结构替换、全角替换、去波浪符或模型择优；源框与归一化框四边2px保持。明确模型身份、五个实际bundle文件的只读锁/哈希及配置前后读回，当前受审cfg8之外保持未知，不改全局OCR/矿石读取。官方姓名改最多12秒、300ms只读滚动三张连续完整exact全名，标点失败及私有原PNG保留，首次有效三张即停止，无重选或最终确认。真实原PNG回放不代表新鲜实时通过；通用8材料读取、转化及实际升级未纳入本层。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -223,7 +223,7 @@
+         official=target.Name;type=talentType;
+         bool restored=false,verified=false;string primaryReason="unverified",cleanupReason="cleanup_not_started";
+         UpgradePreviewDetail? detailReceipt=null;UpgradePreviewFrame? previewReceipt=null;
+-        UpgradePreviewCharacter[] names=[];var tooltips=new List<UpgradePreviewTooltip[]>();
++        UpgradePreviewCharacter[] names=[];var nameList=new List<UpgradePreviewCharacter>();var tooltips=new List<UpgradePreviewTooltip[]>();
+         var saved=new ConcurrentDictionary<string,ITaskTrigger>(GameTaskManager.TriggerDictionary??new());
+         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(TimeSpan.FromSeconds(150));token=timeout.Token;
+         try
+@@ -234,13 +234,18 @@
+             inspectionPhase="select_character";
+             await new CharacterDevelopmentStateMachineTask([official],CharacterDevelopmentCategory.Attribute|CharacterDevelopmentCategory.Weapon,true).Start(token);
+             inspectionPhase="character_identity";
+-            var nameList=new List<UpgradePreviewCharacter>();
+-            for(int i=0;i<3;i++)
++            var identityTimer=System.Diagnostics.Stopwatch.StartNew();
++            for(int i=0;i<41&&identityTimer.ElapsedMilliseconds<12000;i++)
+             {
+                 using var frame=Capture();var read=Character(frame);
+-                nameList.Add(read);frames.Add(read);await Delay(200);
+-            }
+-            names=nameList.ToArray();if(!TalentUpgradePreviewEvidence.CharacterTriple(names,official,Now()))throw new InvalidOperationException("full_official_character_name_triple_unverified");
++                if(read.Overview&&!Bv.IsInPromptDialog(frame)&&!Bv.IsInRevivePrompt(frame))read=read with{PrivateCapture=RetainDiagnosticCapture(frame,read.ObservedAt)};
++                nameList.Add(read);frames.Add(read);
++                if(identityTimer.ElapsedMilliseconds>=12000)break;
++                if(nameList.Count>=3&&TalentUpgradePreviewEvidence.CharacterTriple(nameList.TakeLast(3).ToArray(),official,Now()))
++                {names=nameList.TakeLast(3).ToArray();break;}
++                await Delay(300);
++            }
++            if(!TalentUpgradePreviewEvidence.CharacterTriple(names,official,Now()))throw new InvalidOperationException("full_official_character_name_triple_unverified");
+             await OpenTalent();inspectionPhase="detail_read";var detail=await DetailPair();detailReceipt=detail.Second;selectedDetail=detailReceipt;
+             inspectionPhase="preview_navigation";
+             await ClickKnownText("升级",new(0,975,560,100));
+@@ -280,7 +285,8 @@
+             evidenceVerified=verified,mainUiRestored=restored,confirmationSubmitted=false,primaryReason,cleanupReason,phase=inspectionPhase,
+             reason=primaryReason!="verified_read_only_preview"?primaryReason:restored?primaryReason:cleanupReason,
+             observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
+-            evidence=new{characterIdentity=names,twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
++            evidence=new{characterIdentityMethod="bounded_rolling_exact_triple",characterIdentityObservationLimitMs=12000,characterIdentityPollMs=300,
++                characterIdentityTrials=nameList,characterIdentity=names,twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+         },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
+         try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -53,7 +53,10 @@
+     public Rect FooterLabelRegion{get;init;}public UpgradePreviewRow[] FooterLabelRows{get;init;}=[];
+ }
+ public sealed record UpgradePreviewCharacter(long ObservedAt,bool Overview,string Name)
+-{public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public UpgradePreviewRow[] NameRows{get;init;}=[];}
++{
++    public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public UpgradePreviewRow[] NameRows{get;init;}=[];
++    public string Phase{get;init;}="character_identity_observation";public InspectionPrivateCapture? PrivateCapture{get;init;}
++}
+ 
+ /// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
+ public static class TalentUpgradePreviewEvidence
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+@@ -7,6 +7,8 @@
+ using System.Threading;
+ using System.Threading.Tasks;
+ using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
+ using BetterGenshinImpact.Core.Config;
+ using BetterGenshinImpact.Core.Simulator;
+ using BetterGenshinImpact.Core.Simulator.Extensions;
+@@ -16,6 +18,7 @@
+ using BetterGenshinImpact.GameTask.Model.Area;
+ using BetterGenshinImpact.GameTask.Model.GameUI;
+ using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.DependencyInjection;
+ using Newtonsoft.Json;
+ using Newtonsoft.Json.Serialization;
+ using OpenCvSharp;
+@@ -109,6 +112,8 @@
+             Simulation.SendInput.SimulateAction(GIActions.OpenInventory); opened = true;
+             await Task.Delay(800, timeout.Token);
+             using var recognizer = new ItemRecognizer();
++            using var countModelPin=new NamedCountModelPin();
++            using var fixedCountDetector=CreateCountDetector();
+             var targets = WeeklyInventoryCatalog.Materials.Where(m => request.Materials.Any(r => r.MaterialId == m.MaterialId)).ToArray();
+             foreach (var group in targets.GroupBy(m => m.Category))
+             {
+@@ -143,7 +148,7 @@
+                             () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), timeout.Token);
+                     }
+                     // Captures are independent and contain same-frame model/header/title/border/raw count evidence.
+-                    var pair = await ObservePair(selection, (s, token) => ReadFrame(s, group.Key, recognizer, token),
++                    var pair = await ObservePair(selection, (s, token) => ReadFrame(s, group.Key, recognizer, token,fixedCountDetector,countModelPin),
+                         (ms, token) => Task.Delay(ms, token), timeout.Token);
+                     var count = WeeklyConversionInventoryEvidence.Count(pair, target);
+                     if (count.HasValue) { result.Observations.Add(target.MaterialId, pair); result.Inventory[target.MaterialId] = count; }
+@@ -197,7 +202,7 @@
+         return new(selection, first, second);
+     }
+     internal static WeeklyInventoryFrameEvidence ReadFrame(BackpackSelection selection, string category,
+-        ItemRecognizer recognizer, CancellationToken ct)
++        ItemRecognizer recognizer, CancellationToken ct,IOcrService fixedCountDetector,NamedCountModelPin countModelPin)
+     {
+         ct.ThrowIfCancellationRequested(); using var frame = TaskControl.CaptureToRectArea(forceNew: true);
+         long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); ct.ThrowIfCancellationRequested();
+@@ -217,7 +222,16 @@
+             SelectedItemVerified = tab && active && !prompt && border.Verified,
+             SelectedItemRect = border.Verified ? selection.ItemRect : new(0, 0, 0, 0), SelectionEvidence = border };
+         var iconRegion=new BackpackRect(selection.ItemRect.X,selection.ItemRect.Y,selection.ItemRect.Width,(int)Math.Round(selection.ItemRect.Height*125d/153));
+-        var read=new WeeklyInventoryFrameEvidence(stack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion);
++        countModelPin.Readback();
++        var refinedCount=NamedStackCountReader.Read(frame.SrcMat,selection.ItemRect.ToRect(),OcrFactory.Paddle,fixedCountDetector)
++            with{ModelEvidence=countModelPin.Evidence,RawPaddleReadback=countModelPin.Readback()};
++        var expandedNameRect=NamedStackCountReader.NameRect(frame.Width);var expandedNames=Rows(frame,expandedNameRect);
++        var refinedStack=new BackpackFrameEvidence{ObservedAt=at,NameRegion=BackpackRect.From(expandedNameRect),NameRows=expandedNames,
++            CountRegion=refinedCount.SourceRegion,CountRows=refinedCount.SourceRows,RawCountText=refinedCount.Raw,
++            CountMethod="grid_hsv_foreground_exact_dual_ocr",SelectedItemVerified=stack.SelectedItemVerified,
++            SelectedItemRect=stack.SelectedItemRect,SelectionEvidence=stack.SelectionEvidence};
++        var read=new WeeklyInventoryFrameEvidence(refinedStack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion)
++            {InitialStack=stack,CountReading=refinedCount};
+         if(WeeklyConversionInventoryEvidence.CanRetainDiagnostic(read))
+         {
+             // The complete known bag, model, selected outline and actual name identify this private diagnostic scene.
+@@ -234,6 +248,7 @@
+         }
+         return read;
+     }
++    internal static PaddleOcrService CreateCountDetector()=>new(App.ServiceProvider.GetRequiredService<BgiOnnxFactory>(),PaddleOcrService.PaddleOcrModelType.V4);
+     private static async Task<bool> Restore(bool opened,WeeklyConversionInventoryResult result)
+     {
+         using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(6)); bool escaped = false;WeeklyInventoryWorldFrame? previous=null;int bagFrames=0;
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+@@ -60,6 +60,8 @@
+ {
+     public string IconMethod {get;init;}="cell_resize_125x153_top_125x125";
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
++    public BackpackFrameEvidence? InitialStack{get;init;}
++    public NamedStackCountReading? CountReading{get;init;}
+ }
+ public sealed record WeeklyInventoryObservation(BackpackSelection Selection,
+     WeeklyInventoryFrameEvidence First, WeeklyInventoryFrameEvidence Second);
+@@ -110,6 +112,22 @@
+             f.Category != target.Category || f.IconName != target.MaterialName || !double.IsFinite(f.IconScore)||f.IconScore<.75||
+             f.HeaderRegion != HeaderRect(f.Width) || !HeaderVerified(f.HeaderRows, f.HeaderRegion, target.Category)) return false;
+         var stack = f.Stack;
++        if(f.CountReading is { } refined)
++        {
++            var initial=f.InitialStack;
++            if(!NamedCountModelPin.Verified(refined.ModelEvidence)||refined.RawPaddleReadback!=8||
++                initial is null||initial.ObservedAt!=stack.ObservedAt||initial.SelectedItemRect!=stack.SelectedItemRect||
++                initial.SelectedItemVerified!=stack.SelectedItemVerified||!Equals(initial.SelectionEvidence,stack.SelectionEvidence)||
++                initial.NameRegion!=BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(f.Width))||
++                initial.CountRegion!=BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(stack.SelectedItemRect.ToRect()))||
++                initial.CountMethod!="raw_ocr_without_detector"||stack.NameRegion!=BackpackRect.From(NamedStackCountReader.NameRect(f.Width))||
++                stack.CountMethod!="grid_hsv_foreground_exact_dual_ocr"||stack.CountRegion!=refined.SourceRegion||
++                stack.RawCountText!=refined.Raw||!stack.CountRows.SequenceEqual(refined.SourceRows)||
++                !NamedStackCountReader.Exact(refined,stack.SelectedItemRect.ToRect(),f.Width).HasValue)return false;
++            if(FrameVerified(f with{Stack=initial,InitialStack=null,CountReading=null},target)&&
++                int.TryParse(BackpackInventoryEvidenceSafety.Normalize(initial.RawCountText),out var original)&&
++                original!=NamedStackCountReader.Exact(refined,stack.SelectedItemRect.ToRect(),f.Width))return false;
++        }
+         var selected=stack.SelectedItemRect;
+         var expectedIcon=new BackpackRect(selected.X,selected.Y,selected.Width,(int)Math.Round(selected.Height*125d/153));
+         if(f.IconRegion!=expectedIcon||f.IconMethod!="cell_resize_125x153_top_125x125")return false;
+@@ -130,8 +148,8 @@
+         }
+         if(!Side("x",rect.X)||!Side("x",rect.Right-1)||!Side("y",rect.Y)||!Side("y",rect.Bottom-1))return false;
+         if(!Regex.IsMatch(BackpackInventoryEvidenceSafety.Normalize(stack.RawCountText),@"\A(?:0|[1-9][0-9]{0,8})\z"))return false;
+-        if (stack.NameRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(f.Width)) ||
+-            stack.CountRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(stack.SelectedItemRect.ToRect())) ||
++        if (stack.NameRegion != BackpackRect.From(f.CountReading is null?BackpackInventoryEvidenceSafety.NameRect(f.Width):NamedStackCountReader.NameRect(f.Width)) ||
++            stack.CountRegion != BackpackRect.From(f.CountReading is null?BackpackInventoryEvidenceSafety.RawCountRect(stack.SelectedItemRect.ToRect()):NamedStackCountReader.SourceRect(stack.SelectedItemRect.ToRect())) ||
+             stack.CountRows.Length != 1) return false;
+         var names = stack.NameRows.Where(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == target.MaterialName).ToArray();
+         var name = names.Length == 1 ? names[0] : null;
+@@ -144,6 +162,18 @@
+         if (ReferenceEquals(pair.First, pair.Second) || pair.First.Width != pair.Second.Width ||
+             pair.First.Height != pair.Second.Height || !FrameVerified(pair.First, target) || !FrameVerified(pair.Second, target)) return null;
+         var backpackPair = new BackpackObservation(pair.Selection, pair.First.Stack, pair.Second.Stack);
++        if(pair.First.CountReading is not null||pair.Second.CountReading is not null)
++        {
++            if(pair.First.CountReading is null||pair.Second.CountReading is null)return null;
++            var selected=pair.Selection;var a=pair.First.Stack;var b=pair.Second.Stack;
++            if(!double.IsFinite(selected.X)||!double.IsFinite(selected.Y)||selected.ItemRect.Width<=0||selected.ItemRect.Height<=0||
++                selected.X<selected.ItemRect.X||selected.X>selected.ItemRect.X+selected.ItemRect.Width||
++                selected.Y<selected.ItemRect.Y||selected.Y>selected.ItemRect.Y+selected.ItemRect.Height||
++                a.SelectedItemRect!=selected.ItemRect||b.SelectedItemRect!=selected.ItemRect||a.NameRegion!=b.NameRegion||a.CountRegion!=b.CountRegion||
++                a.ObservedAt-selected.ClickedAt is <100 or >5000||b.ObservedAt-a.ObservedAt is <100 or >5000)return null;
++            var first=NamedStackCountReader.Exact(pair.First.CountReading,selected.ItemRect.ToRect(),pair.First.Width);
++            return first.HasValue&&first==NamedStackCountReader.Exact(pair.Second.CountReading,selected.ItemRect.ToRect(),pair.Second.Width)?first:null;
++        }
+         return BackpackInventoryEvidenceSafety.Verified(backpackPair, target.MaterialName)
+             ? BackpackInventoryEvidenceSafety.RawCount(pair.Second.Stack, target.MaterialName, pair.Selection) : null;
+     }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedStackCountReader.cs
+@@ -0,0 +1,117 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: geometry-only grid count preprocessing and independent exact OCR.
++using System;
++using System.Linq;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++public sealed record NamedStackCountReading(BackpackRect SourceRegion,BackpackRect[] AllComponents,
++    BackpackRect[] Components,BackpackRect ForegroundBounds,BackpackRect ForegroundSourceBounds,
++    int NormalizedWidth,int NormalizedHeight,int GlyphWidth,string Raw,BackpackOcrRow[] DetectorRows,
++    BackpackOcrRow[] SourceRows,string SourcePixelsSha256,string MaskPixelsSha256,string NormalizedPixelsSha256)
++{
++    public string Method{get;init;}="grid_hsv_foreground_exact_dual_ocr";
++    public int SourceScale{get;init;}=3;public int MaximumSaturation{get;init;}=140;public int MaximumValue{get;init;}=210;
++    public int MinimumComponentArea{get;init;}=20;public int MinimumComponentHeight{get;init;}=12;
++    public double MinimumComponentBottomRatio{get;init;}=.55;public double MaximumComponentAspectRatio{get;init;}=3;
++    public int GlyphHeight{get;init;}=48;public int HorizontalPadding{get;init;}=24;public int VerticalPadding{get;init;}=24;
++    public int BottomPaddingReference{get;init;}=8;
++    public int TopPaddingReference{get;init;}=8;
++    public int OcrScale{get;init;}=1;
++    public string DetectorModel{get;init;}="PaddleV4_fixed";
++    public string RawModel{get;init;}="configured_native_paddle_without_detector";
++    public int OcrInputWidth=>NormalizedWidth*OcrScale;public int OcrInputHeight=>NormalizedHeight*OcrScale;
++    public string SourceInterpolation{get;init;}="linear";public string GlyphInterpolation{get;init;}="nearest";
++    public string OcrInterpolation{get;init;}="nearest";public string OcrInputPixelsSha256{get;init;}="";
++    public NamedCountModelEvidence? ModelEvidence{get;init;}public int? RawPaddleReadback{get;init;}
++}
++
++/// <summary>Reuses grid geometry/HSV rules only. Never performs one/seven substitutions or cleans numeric text.</summary>
++public static class NamedStackCountReader
++{
++    public static Rect NameRect(int width)=>new((int)Math.Round(1280*width/1920d),(int)Math.Round(110*width/1920d),
++        (int)Math.Round(540*width/1920d),(int)Math.Round(78*width/1920d));
++    public static Rect SourceRect(Rect item)
++    {
++        var old=BackpackInventoryEvidenceSafety.RawCountRect(item);
++        int pad=Math.Max(1,(int)Math.Round(8*item.Width/125d));
++        return new(old.X,old.Y-pad,old.Width,old.Height+pad*2);
++    }
++    internal static NamedStackCountReading Read(Mat full,Rect item,IOcrService ocr,IOcrService fixedDetector)
++    {
++        var source=SourceRect(item);using var crop=new Mat(full,source);using var enlarged=new Mat();
++        Cv2.Resize(crop,enlarged,new Size(crop.Width*3,crop.Height*3));
++        using var hsv=new Mat();Cv2.CvtColor(enlarged,hsv,ColorConversionCodes.BGR2HSV);using var mask=new Mat();
++        Cv2.InRange(hsv,new Scalar(0,0,0),new Scalar(180,140,210),mask);
++        var all=mask.FindContoursAsArray(RetrievalModes.External,ContourApproximationModes.ApproxSimple)
++            .Select(Cv2.BoundingRect).OrderBy(r=>r.X).ThenBy(r=>r.Y).ToArray();
++        var components=all.Where(r=>r.Width>1&&r.Height>=12&&r.Width*r.Height>=20&&r.Bottom>=mask.Height*.55&&r.Width/(double)r.Height<=3).ToArray();
++        var zero=new BackpackRect(0,0,0,0);var sourceHash=InspectionNativeFrameEncoding.Encode(crop).NativePixelsSha256;
++        var maskHash=InspectionNativeFrameEncoding.Encode(mask).NativePixelsSha256;
++        if(components.Length==0)return new(BackpackRect.From(source),all.Select(BackpackRect.From).ToArray(),[],zero,zero,0,0,0,"",[],[],sourceHash,maskHash,"");
++        var bounds=new Rect(components.Min(r=>r.Left),components.Min(r=>r.Top),
++            components.Max(r=>r.Right)-components.Min(r=>r.Left),components.Max(r=>r.Bottom)-components.Min(r=>r.Top));
++        using var foreground=new Mat(mask,bounds);using var inverted=new Mat();Cv2.BitwiseNot(foreground,inverted);
++        int glyphWidth=Math.Max(1,(int)Math.Round(inverted.Width*48d/inverted.Height));using var glyph=new Mat();
++        Cv2.Resize(inverted,glyph,new Size(glyphWidth,48),0,0,InterpolationFlags.Nearest);
++        using var normalized=new Mat(96,glyphWidth+48,MatType.CV_8UC1,Scalar.White);using(var target=new Mat(normalized,new Rect(24,24,glyphWidth,48)))glyph.CopyTo(target);
++        using var input=normalized.Clone();
++        string raw=ocr.OcrWithoutDetector(input);
++        var rows=fixedDetector.OcrResult(input).Regions.Select(r=>{var b=r.Rect.BoundingRect();return new BackpackOcrRow(r.Text,b.X,b.Y,b.Width,b.Height);}).ToArray();
++        int left=source.X+(int)Math.Floor(bounds.Left/3d),top=source.Y+(int)Math.Floor(bounds.Top/3d);
++        var original=new Rect(left,top,source.X+(int)Math.Ceiling(bounds.Right/3d)-left,source.Y+(int)Math.Ceiling(bounds.Bottom/3d)-top);
++        var projected=rows.Select(r=>{
++            int x=source.X+(int)Math.Floor((bounds.X+(r.X-24)*bounds.Width/(double)glyphWidth)/3),
++                y=source.Y+(int)Math.Floor((bounds.Y+(r.Y-24)*bounds.Height/48d)/3);
++            int right=source.X+(int)Math.Ceiling((bounds.X+(r.X+r.Width-24)*bounds.Width/(double)glyphWidth)/3),
++                bottom=source.Y+(int)Math.Ceiling((bounds.Y+(r.Y+r.Height-24)*bounds.Height/48d)/3);
++            return new BackpackOcrRow(r.Text,x,y,right-x,bottom-y);
++        }).ToArray();
++        return new(BackpackRect.From(source),all.Select(BackpackRect.From).ToArray(),components.Select(BackpackRect.From).ToArray(),
++            BackpackRect.From(bounds),BackpackRect.From(original),normalized.Width,normalized.Height,glyphWidth,raw,rows,projected,
++            sourceHash,maskHash,InspectionNativeFrameEncoding.Encode(normalized).NativePixelsSha256)
++            {OcrInputPixelsSha256=InspectionNativeFrameEncoding.Encode(input).NativePixelsSha256};
++    }
++    private static bool Away(BackpackOcrRow row,BackpackRect box,double margin)=>row.Width>0&&row.Height>0&&
++        row.X-box.X>=margin&&row.Y-box.Y>=margin&&box.X+box.Width-row.X-row.Width>=margin&&box.Y+box.Height-row.Y-row.Height>=margin;
++    public static int? Exact(NamedStackCountReading reading,Rect item,int width)
++    {
++        if(reading.Method!="grid_hsv_foreground_exact_dual_ocr"||reading.SourceRegion!=BackpackRect.From(SourceRect(item))||
++            reading.SourceScale!=3||reading.MaximumSaturation!=140||reading.MaximumValue!=210||reading.MinimumComponentArea!=20||
++            reading.MinimumComponentHeight!=12||reading.MinimumComponentBottomRatio!=.55||reading.MaximumComponentAspectRatio!=3||
++            reading.GlyphHeight!=48||reading.HorizontalPadding!=24||reading.VerticalPadding!=24||reading.TopPaddingReference!=8||reading.BottomPaddingReference!=8||reading.OcrScale!=1||
++            reading.DetectorModel!="PaddleV4_fixed"||reading.RawModel!="configured_native_paddle_without_detector"||
++            reading.SourceInterpolation!="linear"||reading.GlyphInterpolation!="nearest"||reading.OcrInterpolation!="nearest"||
++            reading.NormalizedHeight!=96||reading.NormalizedWidth!=reading.GlyphWidth+48||reading.Components.Length==0||
++            reading.DetectorRows.Length!=1||reading.SourceRows.Length!=1||reading.ForegroundBounds.Width<=0||reading.ForegroundBounds.Height<=0)return null;
++        var expected=reading.AllComponents.Where(r=>r.Width>1&&r.Height>=12&&r.Width*r.Height>=20&&
++            r.Y+r.Height>=reading.SourceRegion.Height*3*.55&&r.Width/(double)r.Height<=3).ToArray();
++        if(!expected.SequenceEqual(reading.Components)||expected.Length==0||
++            reading.AllComponents.Any(r=>r.Width<=0||r.Height<=0||r.X<0||r.Y<0||r.X+r.Width>reading.SourceRegion.Width*3||r.Y+r.Height>reading.SourceRegion.Height*3)||
++            !reading.AllComponents.SequenceEqual(reading.AllComponents.OrderBy(r=>r.X).ThenBy(r=>r.Y))||
++            new[]{reading.SourcePixelsSha256,reading.MaskPixelsSha256,reading.NormalizedPixelsSha256,reading.OcrInputPixelsSha256}.Any(s=>s.Length!=64||s.Any(c=>!Uri.IsHexDigit(c))))return null;
++        var f=reading.ForegroundBounds;
++        if(f.X!=expected.Min(r=>r.X)||f.Y!=expected.Min(r=>r.Y)||f.X+f.Width!=expected.Max(r=>r.X+r.Width)||f.Y+f.Height!=expected.Max(r=>r.Y+r.Height)||
++            reading.GlyphWidth!=Math.Max(1,(int)Math.Round(f.Width*48d/f.Height)))return null;
++        double margin=2*width/1920d;
++        var row=reading.DetectorRows[0];var sourceRow=reading.SourceRows[0];
++        var source=reading.SourceRegion;
++        var expectedForeground=new BackpackRect(source.X+(int)Math.Floor(f.X/3d),source.Y+(int)Math.Floor(f.Y/3d),
++            (int)Math.Ceiling((f.X+f.Width)/3d)-(int)Math.Floor(f.X/3d),(int)Math.Ceiling((f.Y+f.Height)/3d)-(int)Math.Floor(f.Y/3d));
++        int x=source.X+(int)Math.Floor((f.X+(row.X-24)*f.Width/(double)reading.GlyphWidth)/3),
++            y=source.Y+(int)Math.Floor((f.Y+(row.Y-24)*f.Height/48d)/3),
++            right=source.X+(int)Math.Ceiling((f.X+(row.X+row.Width-24)*f.Width/(double)reading.GlyphWidth)/3),
++            bottom=source.Y+(int)Math.Ceiling((f.Y+(row.Y+row.Height-24)*f.Height/48d)/3);
++        if(reading.ForegroundSourceBounds!=expectedForeground||sourceRow!=new BackpackOcrRow(row.Text,x,y,right-x,bottom-y))return null;
++        if(!Away(row,new(0,0,reading.NormalizedWidth,reading.NormalizedHeight),Math.Max(2,margin*48*3/f.Height))||
++            !Away(sourceRow,reading.SourceRegion,margin)||!Away(new("",reading.ForegroundSourceBounds.X,reading.ForegroundSourceBounds.Y,
++                reading.ForegroundSourceBounds.Width,reading.ForegroundSourceBounds.Height),reading.SourceRegion,margin))return null;
++        if(BackpackInventoryEvidenceSafety.Normalize(reading.Raw)!=BackpackInventoryEvidenceSafety.Normalize(row.Text)||row.Text!=sourceRow.Text)return null;
++        var raw=BackpackInventoryEvidenceSafety.Normalize(reading.Raw);
++        return System.Text.RegularExpressions.Regex.IsMatch(raw,@"\A(?:0|[1-9][0-9]{0,8})\z")&&int.TryParse(raw,out var value)?value:null;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedCountModelPin.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedCountModelPin.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedCountModelPin.cs
+@@ -0,0 +1,58 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: actual bundled count OCR model read locks and version evidence.
++using System;
++using System.Collections.Generic;
++using System.IO;
++using System.Linq;
++using System.Security.Cryptography;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Recognition;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++public sealed record NamedOcrModelAsset(string ModelName,string RelativePath,string Sha256,long Length);
++public sealed record NamedCountModelEvidence(int RawPaddleConfig,string RawPaddleName,int FixedDetectorConfig,string FixedDetectorName,
++    string PinMethod,NamedOcrModelAsset[] Assets);
++
++internal sealed class NamedCountModelPin:IDisposable
++{
++    private readonly List<FileStream> streams=[];
++    public NamedCountModelEvidence Evidence{get;}
++    internal static (string Name,string Path)[] ExpectedAssets()=>[
++        (BgiOnnxModel.PaddleOcrDetV4.Name,BgiOnnxModel.PaddleOcrDetV4.ModelRelativePath.Replace('\\','/')),
++        (BgiOnnxModel.PaddleOcrRecV4.Name,BgiOnnxModel.PaddleOcrRecV4.ModelRelativePath.Replace('\\','/')),
++        (BgiOnnxModel.PaddleOcrRecV6.Name,BgiOnnxModel.PaddleOcrRecV6.ModelRelativePath.Replace('\\','/')),
++        ("PpOcrRecV4-labels",Path.ChangeExtension(BgiOnnxModel.PaddleOcrRecV4.ModelRelativePath,"yml").Replace("slim.yml","inference.yml").Replace('\\','/')),
++        ("PpOcrRecV6-labels",Path.ChangeExtension(BgiOnnxModel.PaddleOcrRecV6.ModelRelativePath,"yml").Replace("slim.yml","inference.yml").Replace('\\','/'))];
++    internal NamedCountModelPin()
++    {
++        RequireConfiguredV6();
++        try
++        {
++            var assets=ExpectedAssets().Select(asset=>{
++                var stream=File.Open(Global.Absolute(asset.Path),FileMode.Open,FileAccess.Read,FileShare.Read);streams.Add(stream);
++                var sha=Convert.ToHexString(SHA256.HashData(stream));stream.Position=0;
++                return new NamedOcrModelAsset(asset.Name,asset.Path,sha,stream.Length);
++            }).ToArray();
++            Evidence=new(8,"V6",7,"V4","actual_bundled_open_read_sha256_hold_session",assets);
++        }
++        catch{Dispose();throw;}
++    }
++    internal int Readback(){RequireConfiguredV6();return (int)TaskContext.Instance().Config.OtherConfig.OcrConfig.PaddleOcrModelConfig;}
++    private static void RequireConfiguredV6()
++    {
++        if(TaskContext.Instance().Config.OtherConfig.OcrConfig.PaddleOcrModelConfig!=PaddleOcrModelConfig.V6)
++            throw new InvalidOperationException("named_count_configured_paddle_v6_required_for_verified_profile");
++    }
++    internal static bool Verified(NamedCountModelEvidence? evidence)
++    {
++        if(evidence is null||evidence.RawPaddleConfig!=8||evidence.RawPaddleName!="V6"||evidence.FixedDetectorConfig!=7||evidence.FixedDetectorName!="V4"||
++            evidence.PinMethod!="actual_bundled_open_read_sha256_hold_session"||evidence.Assets.Length!=5)return false;
++        var expected=ExpectedAssets();
++        return evidence.Assets.Zip(expected).All(p=>p.First.ModelName==p.Second.Name&&p.First.RelativePath==p.Second.Path&&
++            p.First.Length>0&&p.First.Sha256.Length==64&&p.First.Sha256.All(Uri.IsHexDigit));
++    }
++    public void Dispose(){foreach(var stream in streams)stream.Dispose();streams.Clear();}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedStackCountReaderTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedStackCountReaderTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/NamedStackCountReaderTests.cs
+@@ -0,0 +1,108 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class NamedStackCountReaderTests
++{
++    private static readonly Rect Item=new(400,200,125,153);
++    private static NamedStackCountReading Reading(string raw="8",string detected="8")
++    {
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.White);var source=NamedStackCountReader.SourceRect(Item);
++        Cv2.Rectangle(image,new Rect(source.X+35,source.Y+15,12,16),Scalar.Black,-1);
++        var ocr=new NumericOcr(raw,detected);return NamedStackCountReader.Read(image,Item,ocr,ocr);
++    }
++    [Fact] public void GeometryAndTwoExactMethodsPermitAnonymousInteger()
++    {
++        var read=Reading();Assert.Equal(8,NamedStackCountReader.Exact(read,Item,1920));
++        Assert.Equal(38,read.SourceRegion.Height);Assert.Equal(96,read.NormalizedHeight);
++        Assert.NotEmpty(read.AllComponents);Assert.Equal(64,read.SourcePixelsSha256.Length);
++    }
++    [Theory] [InlineData("~8~","8")] [InlineData("8","9")] [InlineData("08","08")] [InlineData("8日","8日")]
++    [InlineData("1","7")] [InlineData("+8","+8")]
++    [InlineData("８","８")]
++    public void NumericDisagreementOrExtraSymbolsNeverGetCleaned(string raw,string detector)=>
++        Assert.Null(NamedStackCountReader.Exact(Reading(raw,detector),Item,1920));
++    [Fact] public void TrueObservedZeroIsNotMissing()=>Assert.Equal(0,NamedStackCountReader.Exact(Reading("0","0"),Item,1920));
++    [Fact] public void EmptyActualForegroundCannotBeZero()
++    {
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.White);
++        var ocr=new NumericOcr("0","0");Assert.Null(NamedStackCountReader.Exact(NamedStackCountReader.Read(image,Item,ocr,ocr),Item,1920));
++    }
++    [Theory] [InlineData("source")] [InlineData("union")] [InlineData("projection")] [InlineData("hash")]
++    [InlineData("parameter")] [InlineData("components")]
++    public void DerivedPixelGeometryCannotBeRewritten(string fault)
++    {
++        var read=Reading();read=fault switch{
++            "source"=>read with{SourceRegion=read.SourceRegion with{Height=read.SourceRegion.Height-1}},
++            "union"=>read with{ForegroundBounds=read.ForegroundBounds with{Width=read.ForegroundBounds.Width+1}},
++            "projection"=>read with{SourceRows=[read.SourceRows[0] with{Y=read.SourceRows[0].Y+1}]},
++            "hash"=>read with{MaskPixelsSha256="not-a-hash"},"parameter"=>read with{MaximumValue=220},
++            _=>read with{AllComponents=[]}};
++        Assert.Null(NamedStackCountReader.Exact(read,Item,1920));
++    }
++    [Fact] public void NameExpansionIsSpecificToIndependentReader()
++    {
++        Assert.Equal(new Rect(1280,110,540,78),NamedStackCountReader.NameRect(1920));
++        Assert.Equal(new Rect(1309,120,491,60),BackpackInventoryEvidenceSafety.NameRect(1920));
++    }
++    [Fact] public void FixedModelProofRequiresActualProfileIdentifiersAndFiveExactPaths()
++    {
++        var assets=NamedCountModelPin.ExpectedAssets().Select(a=>new NamedOcrModelAsset(a.Name,a.Path,new string('A',64),1)).ToArray();
++        var proof=new NamedCountModelEvidence(8,"V6",7,"V4","actual_bundled_open_read_sha256_hold_session",assets);
++        Assert.True(NamedCountModelPin.Verified(proof));
++        Assert.False(NamedCountModelPin.Verified(proof with{RawPaddleConfig=1}));
++        Assert.False(NamedCountModelPin.Verified(proof with{FixedDetectorName="V6"}));
++        Assert.False(NamedCountModelPin.Verified(proof with{Assets=assets.Skip(1).ToArray()}));
++    }
++    private static WeeklyInventoryFrameEvidence Frame(long at)
++    {
++        var proof=new NamedCountModelEvidence(8,"V6",7,"V4","actual_bundled_open_read_sha256_hold_session",
++            NamedCountModelPin.ExpectedAssets().Select(a=>new NamedOcrModelAsset(a.Name,a.Path,new string('A',64),1)).ToArray());
++        var count=Reading() with{ModelEvidence=proof,RawPaddleReadback=8};
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.White);
++        var border=BackpackInventoryEvidenceSafety.ReadSelectedBorder(image,Item);var selected=BackpackRect.From(Item);
++        var initial=new BackpackFrameEvidence{ObservedAt=at,NameRegion=BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920)),
++            NameRows=[new("残火灯烛",1309,125,160,35)],CountRegion=BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(Item)),
++            RawCountText="~8~",CountRows=[],SelectedItemVerified=true,SelectedItemRect=selected,SelectionEvidence=border};
++        var stack=new BackpackFrameEvidence{ObservedAt=at,NameRegion=BackpackRect.From(NamedStackCountReader.NameRect(1920)),
++            NameRows=[new("残火灯烛",1330,125,160,35)],CountRegion=count.SourceRegion,RawCountText=count.Raw,CountRows=count.SourceRows,
++            CountMethod="grid_hsv_foreground_exact_dual_ocr",SelectedItemVerified=true,SelectedItemRect=selected,SelectionEvidence=border};
++        return new(stack,1920,1080,"characterDevelopmentItems",true,false,true,WeeklyConversionInventoryEvidence.HeaderRect(1920),
++            [new("养成道具",120,30,200,25)],"残火灯烛",.9,new(400,200,125,125)){InitialStack=initial,CountReading=count};
++    }
++    [Fact] public void NewWeeklyPairPublishesOnlyTheRefinedExactCountAndRetainsInitialFailure()
++    {
++        var first=Frame(400);var second=Frame(700);var selected=new BackpackSelection(BackpackRect.From(Item),462,265,100);
++        Assert.Equal(8,WeeklyConversionInventoryEvidence.Count(new(selected,first,second),WeeklyInventoryCatalog.Materials[0]));
++        Assert.Equal("~8~",first.InitialStack!.RawCountText);Assert.Equal(1309,first.InitialStack.NameRegion.X);
++    }
++    [Fact] public void NewWeeklyPairCannotDowngradeOrLoseItsModelAndInitialScope()
++    {
++        var first=Frame(400);var second=Frame(700);var selected=new BackpackSelection(BackpackRect.From(Item),462,265,100);
++        foreach(var bad in new[]{second with{InitialStack=null},second with{CountReading=null},
++            second with{CountReading=second.CountReading! with{RawPaddleReadback=1}},
++            second with{CountReading=second.CountReading! with{ModelEvidence=null}},second with{IconScore=.74}})
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(selected,first,bad),WeeklyInventoryCatalog.Materials[0]));
++    }
++    [Fact] public void ExactIdentityRollingWindowRetainsPhantomPunctuation()
++    {
++        UpgradePreviewCharacter Name(long at,string text)=>new(at,true,text){Width=1920,Height=1080,
++            NameRegion=TalentUpgradePreviewEvidence.InspectionNameReference,NameRows=[new(text,new(1460,125,180,38))]};
++        var trials=new[]{Name(100,"目标角色。"),Name(400,"目标角色"),Name(700,"目标角色"),Name(1000,"目标角色")};
++        Assert.False(TalentUpgradePreviewEvidence.CharacterTriple(trials.Take(3).ToArray(),"目标角色",700));
++        Assert.True(TalentUpgradePreviewEvidence.CharacterTriple(trials.TakeLast(3).ToArray(),"目标角色",1000));
++        Assert.Equal("目标角色。",trials[0].Name);
++    }
++    private sealed class NumericOcr(string raw,string detector):IOcrService
++    {
++        public string Ocr(Mat m)=>detector;public string OcrWithoutDetector(Mat m)=>raw;
++        public OcrResult OcrResult(Mat m)
++        {
++            var b=new Rect(24,24,m.Width-48,48);
++            return new([new(new RotatedRect(new Point2f(b.X+b.Width/2f,b.Y+b.Height/2f),new Size2f(b.Width,b.Height),0),detector,.99f)]);
++        }
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native20PrivateCountTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native20PrivateCountTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/Native20PrivateCountTests.cs
+@@ -0,0 +1,46 @@
++using BetterGenshinImpact.UnitTest.CoreTests.RecognitionTests.OCRTests;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using OpenCvSharp;
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++public class Native20PrivateCountTests
++{
++    [Fact] [Trait("Fixture","PrivateNative20Count")]
++    public void ActualSelectedNativePixelsUseProductionExactCountAndRetainPrivateExpectations()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_NATIVE20_COUNT_MANIFEST");Assert.False(string.IsNullOrWhiteSpace(path));
++        var fixture=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        Assert.NotEmpty(fixture.Samples);var readings=new List<object>();var models=new PaddleFixture();
++        var diagnosticRejectedV6=new List<object>();
++        foreach(var sample in fixture.Samples)
++        {
++            using var image=Cv2.ImRead(sample.Image);var item=new Rect(sample.Item[0],sample.Item[1],sample.Item[2],sample.Item[3]);
++            foreach(var version in new[]{"V4","V5","V6"})
++            {
++                var ocr=version=="V6"?new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),PaddleOcrService.PaddleOcrModelType.V6):models.Get(version:version);
++                var read=NamedStackCountReader.Read(image,item,ocr,models.Get(version:"V4"));
++                if(version=="V6")
++                {
++                    var rejected=NamedStackCountReader.Read(image,item,ocr,ocr) with{DetectorModel="V6_configured_diagnostic_only"};
++                    diagnosticRejectedV6.Add(new{sample.Image,source="actual_native_png_offline_original_v6_detector_not_live",rejected});
++                    File.WriteAllText(fixture.RejectedV6DiagnosticPath,Newtonsoft.Json.JsonConvert.SerializeObject(diagnosticRejectedV6));
++                }
++                var exact=NamedStackCountReader.Exact(read,item,image.Width);
++                var nameBox=NamedStackCountReader.NameRect(image.Width);using var nameCrop=new Mat(image,nameBox);
++                var names=ocr.OcrResult(nameCrop).Regions.Select(r=>new{r.Text,bounds=r.Rect.BoundingRect()}).ToArray();
++                readings.Add(new{sample.Image,version,read,exact,nameBox,names});
++                File.WriteAllText(fixture.DiagnosticPath,Newtonsoft.Json.JsonConvert.SerializeObject(readings));
++                Assert.Equal(sample.ExpectedCount,exact);
++                if(version is "V4" or "V6")
++                {
++                    var name=Assert.Single(names);Assert.Equal(sample.ExpectedName,name.Text);
++                    Assert.True(name.bounds.Left>=2&&name.bounds.Top>=2&&nameBox.Width-name.bounds.Right>=2&&nameBox.Height-name.bounds.Bottom>=2);
++                }
++            }
++        }
++        Assert.Equal(fixture.Samples.Length*3,readings.Count);
++    }
++    private sealed class Fixture{public Sample[] Samples{get;set;}=[];public string DiagnosticPath{get;set;}="";public string RejectedV6DiagnosticPath{get;set;}="";}
++    private sealed class Sample{public string Image{get;set;}="";public int[] Item{get;set;}=[];public int? ExpectedCount{get;set;}public string ExpectedName{get;set;}="";}
++}

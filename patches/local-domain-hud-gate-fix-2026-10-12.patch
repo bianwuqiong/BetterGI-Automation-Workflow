@@ -1,0 +1,245 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -97,6 +97,7 @@
+ - 第八层在单浓缩路径识别当前完整的三次产出文案、同排唯一按钮及新鲜双帧。新增只从真实古树选择页起步的单浓缩领奖入口，不导航、不战斗、不点通用确认；提交后异常仍未知。原单20第一资源行合同不变。
+ - 第十层仅扩宽只读摩拉整数区域并保留真实前后独立截图记录，仍核验具名图标、完整页标、整数边缘与新鲜双帧，不降低模型阈值。实时只读货币与三种经验矿的验收结果由独立记录给出；不执行升级或资源消费。
+ - 第十一层复用既有有限角色切换调度：身份首帧待核验时不重发目标键，重发或有限刷新区域后重新取得严格两帧。失败只保留本机私有编号区域截图及标量诊断，不把单张旧图当实时双帧。精确单轮入口用实例所属的单调奖励交互阶段、提交请求闩锁和计数提供提交前中止事件；进入奖励流程或提交后不得借战斗异常声称未提交。严格身份、掉线保护及护盾冷却标准不变，实际切换效果仍待新鲜实机验收，未知步骤不自动重放。
++- 第十二层修复挑战启动前HUD未通过第十一层场景门控的回归：复用上游出口图形的二值轮廓及镜像方向，保持0.8模板阈值并限定上左位置/尺寸；同时核验新鲜四槽编号/出战箭头几何，排除弹窗、复苏、地图和可关闭菜单。队伍栏单独出现不允许输入。旧主界面及已开战秘境判据不改，严格角色双帧标准不改；独立记录每项场景门控，静态页面通过不等于实时开盾或付费领奖验收。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs b/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
+--- a/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
++++ b/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
+@@ -369,8 +369,8 @@
+             {
+                 Ct.ThrowIfCancellationRequested();using var region=CaptureToRectArea(forceNew:true);
+                 ThrowWhenDefeated(region,Ct);
+-                var ready=SystemControl.IsGenshinImpactActiveByProcess() && !Bv.IsInPromptDialog(region) &&
+-                    !Bv.IsInRevivePrompt(region) && (Bv.IsInDomain(region)||Bv.IsInMainUi(region));
++                var hud=ProtectedShieldHudEvidence.Read(region,CombatScenes.CurrentMultiGameStatus,CombatScenes.ExpectedTeamAvatarNum,Logger);
++                var ready=hud.Ready;
+                 var rects=CombatScenes.GetAvatars().Select(a=>a.IndexRect).ToArray();
+                 var color=ready?PartyAvatarSideIndexHelper.FindActiveIndexRectByColor(region,rects,true):-1;
+                 var arrow=ready?PartyAvatarSideIndexHelper.FindActiveIndexRectByArrow(region,rects):-1;
+@@ -378,7 +378,7 @@
+                 if(ready)active=CombatScenes.GetActiveAvatarIndex(region,context);else context.ResetStrictCandidate();
+                 var changed=!rects.SequenceEqual(CombatScenes.GetAvatars().Select(a=>a.IndexRect));
+                 if(changed){context.ResetStrictCandidate();active=-1;}
+-                previous=current;current=new(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),timer.ElapsedMilliseconds,Index,active,color,arrow,ready,changed,presses,ProtectedSwitchDiagnostics.Pixels(region,rects));
++                previous=current;current=new(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),timer.ElapsedMilliseconds,Index,active,color,arrow,ready,changed,presses,ProtectedSwitchDiagnostics.Pixels(region,rects),hud);
+                 previousCrop?.Dispose();previousCrop=currentCrop;
+                 var left=Math.Max(0,rects.Min(r=>r.X)-150);var top=Math.Max(0,rects.Min(r=>r.Y)-50);
+                 var right=Math.Min(region.Width,rects.Max(r=>r.Right)+4);var bottom=Math.Min(region.Height,rects.Max(r=>r.Bottom)+35);
+diff --git a/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs
+--- a/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs
++++ b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs
+@@ -7,7 +7,7 @@
+ 
+ public sealed record StrictSlotPixels(int Slot,Rect Bounds,double WhiteFraction,double WhiteEdgeFraction,int ExactDarkDigitPixels);
+ public sealed record StrictSwitchFrame(long ObservedAt,long ElapsedMs,int Target,int Active,int ColorCandidate,
+-    int ArrowCandidate,bool UiReady,bool GeometryChanged,int Presses,StrictSlotPixels[] Slots);
++    int ArrowCandidate,bool UiReady,bool GeometryChanged,int Presses,StrictSlotPixels[] Slots,ProtectedShieldHudFrame? Scene=null);
+ 
+ /// <summary>Scalar diagnostics only; identity rules are still the existing strict helper.</summary>
+ public static class ProtectedSwitchDiagnostics
+diff --git a/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedShieldHudEvidence.cs b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedShieldHudEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedShieldHudEvidence.cs
+@@ -0,0 +1,84 @@
++using System;
++using System.Linq;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Microsoft.Extensions.Logging;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.AutoFight.Model;
++
++/// <summary>Domain entrance HUD is distinct from the legacy timed-domain/main-world detectors.</summary>
++public sealed record ProtectedShieldHudFrame(bool Focused,bool MainUi,bool TimedDomain,bool DomainExitHud,
++    bool FullParty,bool Prompt,bool Revive,bool MapOrMenu,string PartyReason,double DomainMarkerScore=0)
++{
++    public bool Ready=>Focused && (MainUi||TimedDomain||DomainExitHud) && FullParty && !Prompt && !Revive && !MapOrMenu;
++}
++
++public static class ProtectedShieldHudEvidence
++{
++    public static bool ExitIsDomainHud(Rect bounds,int width,int height)
++    {
++        double s=width/1920d;
++        return width>=800 && width*9==height*16 && bounds.Width>=18*s && bounds.Height>=18*s &&
++            bounds.Width<=100*s && bounds.Height<=100*s && bounds.X>=0 && bounds.Y>=0 &&
++            bounds.Right<=width*.20 && bounds.Bottom<=height*.20;
++    }
++    public static bool CompleteParty(Rect[] rects,int expected,int width,int height)
++    {
++        if(expected!=4 || rects.Length!=4 || width<800 || width*9!=height*16)return false;
++        double s=width/1920d;
++        for(int i=0;i<4;i++)
++        {
++            var r=rects[i];
++            if(r.Width<8*s || r.Width>50*s || r.Height<8*s || r.Height>50*s ||
++                r.Left<width*.85 || r.Right>width || r.Top<height*.12 || r.Bottom>height*.8)return false;
++            if(i>0 && (Math.Abs(r.X-rects[i-1].X)>16*s || r.Y-rects[i-1].Y<60*s || r.Y-rects[i-1].Y>140*s))return false;
++        }
++        return true;
++    }
++    internal static ProtectedShieldHudFrame Read(ImageRegion frame,MultiGameStatus? status,int expected,ILogger logger)
++        =>ReadFrame(frame,status,expected,logger,SystemControl.IsGenshinImpactActiveByProcess());
++    internal static ProtectedShieldHudFrame ReadFrame(ImageRegion frame,MultiGameStatus? status,int expected,ILogger logger,bool focused)
++    {
++        using var exit=frame.Find(ElementRecognition.Get("BtnExitDoor",frame));
++        using var confirm=frame.Find(ElementRecognition.Get("BtnBlackConfirm",frame));
++        bool party=false;string reason="fresh_full_party_unverified";
++        try
++        {
++            if(status is not null && !status.IsInMultiGame)
++            {
++                // New helper requires actual numbered templates or the active-arrow reconstruction;
++                // it never falls back to default/cache rectangles here.
++                var (rects,icons)=PartyAvatarSideIndexHelper.GetAllIndexRectsNew(frame,status,logger,TaskContext.Instance().SystemInfo);
++                party=icons.Count==4 && CompleteParty(rects.ToArray(),expected,frame.Width,frame.Height);
++                if(party)reason="fresh_numbered_slots_and_active_arrow_geometry";
++            }
++        }
++        catch(Exception ex){reason="fresh_party_detection_failed:"+ex.GetType().Name;}
++        var marker=FindDomainExitGlyph(frame);
++        return new(focused,Bv.IsInMainUi(frame),Bv.IsInDomain(frame),
++            (exit.IsExist() && ExitIsDomainHud(exit.ToRect(),frame.Width,frame.Height)) ||
++            marker.Score>=.8 && ExitIsDomainHud(marker.Bounds,frame.Width,frame.Height),party,
++            Bv.IsInPromptDialog(frame)||confirm.IsExist(),Bv.IsInRevivePrompt(frame),
++            Bv.IsInBigMapUi(frame)||Bv.IsInAnyClosableUi(frame)||Bv.IsInPartyViewUi(frame),reason,marker.Score);
++    }
++    internal static (Rect Bounds,double Score) FindDomainExitGlyph(ImageRegion frame)
++    {
++        // Reuse the upstream exit glyph. Binarizing foreground excludes the obsolete green
++        // backing plane; both door directions exist across UI versions. No account image asset.
++        var ro=ElementRecognition.Get("InDomain",frame);
++        using var template=ro.TemplateImageGreyMat!.Threshold(235,255,ThresholdTypes.Binary);
++        using var upperLeft=new Mat(frame.CacheGreyMat,new Rect(0,0,(int)(frame.Width*.20),(int)(frame.Height*.20)));
++        using var ink=upperLeft.Threshold(235,255,ThresholdTypes.Binary);
++        Rect best=default;double score=-1;
++        for(int mirror=0;mirror<2;mirror++)
++        {
++            using var glyph=mirror==0?template.Clone():template.Flip(FlipMode.Y);
++            using var result=new Mat();Cv2.MatchTemplate(ink,glyph,result,TemplateMatchModes.CCoeffNormed);
++            Cv2.MinMaxLoc(result,out _,out var peak,out _,out var at);
++            if(peak>score){score=peak;best=new(at.X,at.Y,glyph.Width,glyph.Height);}
++        }
++        return(best,score);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudEvidenceTests.cs
+@@ -0,0 +1,42 @@
++using BetterGenshinImpact.GameTask.AutoFight.Model;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class ProtectedShieldHudEvidenceTests
++{
++    private static ProtectedShieldHudFrame Entrance()=>new(true,false,false,true,true,false,false,false,"verified");
++    [Fact] public void EntranceHudDoesNotRequireTheLegacyTimedDomainOrPaimonMarker()=>Assert.True(Entrance().Ready);
++    [Theory]
++    [InlineData(0)] [InlineData(1)] [InlineData(2)] [InlineData(3)] [InlineData(4)]
++    public void SceneFocusPartyAndModalEachIndependentlyBlockInput(int failure)
++    {
++        var scene=Entrance();
++        scene=failure switch {0=>scene with{Focused=false},1=>scene with{DomainExitHud=false},
++            2=>scene with{FullParty=false},3=>scene with{Prompt=true},_=>scene with{Revive=true}};
++        Assert.False(scene.Ready);
++    }
++    [Fact] public void MapOrClosableMenuCannotBorrowUnderlyingDomainMarkers()=>Assert.False((Entrance() with{MapOrMenu=true}).Ready);
++    [Fact] public void ExitButtonOnResultsPageOrMiddleOfScreenIsNotDomainHud()
++    {
++        Assert.True(ProtectedShieldHudEvidence.ExitIsDomainHud(new(20,20,45,45),1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.ExitIsDomainHud(new(20,800,45,45),1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.ExitIsDomainHud(new(850,20,45,45),1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.ExitIsDomainHud(new(20,20,200,200),1920,1080));
++    }
++    [Fact] public void FullPartyRequiresFreshFourOrderedNumberedSlots()
++    {
++        Rect[] slots=[new(1860,260,16,17),new(1860,352,16,17),new(1860,444,16,17),new(1860,536,16,17)];
++        Assert.True(ProtectedShieldHudEvidence.CompleteParty(slots,4,1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.CompleteParty(slots,3,1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.CompleteParty(slots[..3],4,1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.CompleteParty([slots[0],slots[2],slots[1],slots[3]],4,1920,1080));
++        Assert.False(ProtectedShieldHudEvidence.CompleteParty([default,slots[1],slots[2],slots[3]],4,1920,1080));
++    }
++    [Fact] public void SceneProofDoesNotReplaceTwoFreshIdentityCandidates()
++    {
++        Assert.True(Entrance().Ready);var context=new AvatarActiveCheckContext{StrictIdentity=true};
++        Assert.Equal(-2,context.ObserveStrictCandidate(4));Assert.Equal(4,context.ObserveStrictCandidate(4));
++        context.ResetStrictCandidate();Assert.Equal(-2,context.ObserveStrictCandidate(4));
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldHudPrivateImageTests.cs
+@@ -0,0 +1,58 @@
++using BetterGenshinImpact.GameTask;
++using BetterGenshinImpact.GameTask.AutoFight.Model;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Microsoft.Extensions.Logging.Abstractions;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class ProtectedShieldHudPrivateImageTests(ITestOutputHelper output)
++{
++    [Fact] [Trait("Fixture","PrivateDomainHud")]
++    public void RetainedChallengeEntranceHasCompleteDomainHudWithoutClaimingFreshPair()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_DOMAIN_HUD_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Explicit private fixture manifest required.");
++        var fixture=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        Assert.Equal(4,fixture.ClientRect.Length);
++        using var source=Cv2.ImRead(fixture.File);var r=fixture.ClientRect;
++        using var client=new Mat(source,new Rect(r[0],r[1],r[2],r[3]));
++        var context=TaskContext.Instance();var original=context.SystemInfo;
++        try
++        {
++            foreach(int width in new[]{1536,1920})
++            {
++                using var resized=new Mat();Cv2.Resize(client,resized,new Size(width,width*9/16));
++                context.SystemInfo=new FakeSystemInfo(new Vanara.PInvoke.RECT(0,0,width,width*9/16),width/1920d);
++                using var frame=new ImageRegion(resized.Clone(),0,0);
++                var scene=ProtectedShieldHudEvidence.ReadFrame(frame,new MultiGameStatus(),4,NullLogger.Instance,true);
++                output.WriteLine("Static domain HUD width={0}; {1}",width,Newtonsoft.Json.JsonConvert.SerializeObject(scene));
++                Assert.True(scene.Ready,"Complete private static domain HUD must pass every scene gate.");
++                Assert.True(scene.FullParty);
++                Assert.True(scene.DomainExitHud);
++                Assert.True(scene.DomainMarkerScore>=.8);
++                using var noMarker=resized.Clone();
++                noMarker[new Rect(0,0,width/5,(width*9/16)/5)].SetTo(Scalar.All(40));
++                using var unknown=new ImageRegion(noMarker.Clone(),0,0);
++                var unknownScene=ProtectedShieldHudEvidence.ReadFrame(unknown,new MultiGameStatus(),4,NullLogger.Instance,true);
++                Assert.True(unknownScene.FullParty);
++                Assert.False(unknownScene.Ready,"Complete party alone must never permit input on unknown UI.");
++                using var noParty=resized.Clone();
++                noParty[new Rect(width*4/5,(width*9/16)/5,width/5,(width*9/16)*3/5)].SetTo(Scalar.All(40));
++                using var partial=new ImageRegion(noParty.Clone(),0,0);
++                Assert.False(ProtectedShieldHudEvidence.ReadFrame(partial,new MultiGameStatus(),4,NullLogger.Instance,true).Ready);
++                // A single image only proves the static gate, never active-avatar pair or live resource safety.
++            }
++        }
++        finally{context.SystemInfo=original;}
++    }
++    [Theory] [InlineData(0)] [InlineData(255)]
++    public void ConstantBackgroundCannotBeAnExitGlyph(int shade)
++    {
++        using var image=new Mat(1080,1920,MatType.CV_8UC3,Scalar.All(shade));
++        using var frame=new ImageRegion(image.Clone(),0,0);
++        Assert.True(ProtectedShieldHudEvidence.FindDomainExitGlyph(frame).Score<.8);
++    }
++    private sealed class Fixture {public string File{get;set;}="";public int[] ClientRect{get;set;}=[];}
++}

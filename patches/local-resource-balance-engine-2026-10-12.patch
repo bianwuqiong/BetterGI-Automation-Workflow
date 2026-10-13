@@ -1,0 +1,718 @@
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -490,6 +490,14 @@
+         return await new ReadBackpackInventoryTask(request).Start(customCt ?? CancellationContext.Instance.Cts.Token);
+     }
+ 
++    public async Task<string> ReadMoraSnapshot(string requestJson = "{}", CancellationToken? customCt = null)
++    {
++        var request = ReadMoraSnapshotTask.ParseRequest(requestJson);
++        using var linked = CancellationTokenSource.CreateLinkedTokenSource(customCt ?? CancellationToken.None,
++            CancellationContext.Instance.Cts.Token);
++        return await new ReadMoraSnapshotTask().Start(request, linked.Token);
++    }
++
+     public async Task<object?> RunCountInventoryItemTask(CountInventoryItemParam param, CancellationToken? customCt = null)
+     {
+         if (param == null)
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/BackpackInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/BackpackInventoryEvidence.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/BackpackInventoryEvidence.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/BackpackInventoryEvidence.cs
+@@ -9,14 +9,23 @@
+ public sealed class BackpackInventoryRequest
+ {
+     public BackpackMaterial[] Materials { get; set; } = [];
++    public string Category { get; set; } = "weaponAscension";
+     public void Validate()
+     {
++        var ores = new Dictionary<string, string>(StringComparer.Ordinal) {
++            ["104011"] = "精锻用杂矿", ["104012"] = "精锻用良矿", ["104013"] = "精锻用魔矿"
++        };
++        bool Allowed(BackpackMaterial m) => Category == "weaponAscension"
++            ? Regex.IsMatch(m.MaterialId ?? "", @"\A114[0-9]+\z")
++            : Category == "weaponExperience" && ores.TryGetValue(m.MaterialId ?? "", out var name) && m.MaterialName == name;
++        if (Category is not ("weaponAscension" or "weaponExperience") ||
++            Category == "weaponExperience" && Materials is { Length: > 3 }) throw new ArgumentException("Unsupported bounded inventory category.");
+         if (Materials is not { Length: > 0 and <= 8 } || Materials.Any(m=>m is null ||
+-                !Regex.IsMatch(m.MaterialId??"",@"\A114[0-9]+\z") || string.IsNullOrWhiteSpace(m.MaterialName) ||
++                !Allowed(m) || string.IsNullOrWhiteSpace(m.MaterialName) ||
+                 m.MaterialName!=m.MaterialName.Trim() || m.MaterialName.Length>64 || m.MaterialName.Any(char.IsControl)) ||
+             Materials.Select(m=>m.MaterialId).Distinct(StringComparer.Ordinal).Count()!=Materials.Length ||
+             Materials.Select(m=>m.MaterialName).Distinct(StringComparer.Ordinal).Count()!=Materials.Length)
+-            throw new ArgumentException("背包只读请求必须为1至8个不同114武器材料的完整名称，禁止坐标或其他资源");
++            throw new ArgumentException("背包只读请求必须为不同114武器材料完整名称，或weaponExperience的104011/104012/104013固定矿石ID与完整名称");
+     }
+ }
+ public sealed class BackpackMaterial { public string MaterialId { get; set; }=""; public string MaterialName { get; set; }=""; }
+@@ -48,6 +57,7 @@
+ public sealed class BackpackInventoryResult
+ {
+     public string Source { get; init; }="backpack_selected_stack";
++    public string Category { get; init; }="weaponAscension";
+     public bool ReadOnly { get; init; }=true;
+     public bool MainUiRestored { get; set; }
+     public bool CleanupCompleted { get; set; }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/CountInventoryItem.cs b/BetterGenshinImpact/GameTask/Common/Job/CountInventoryItem.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/CountInventoryItem.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/CountInventoryItem.cs
+@@ -81,6 +81,15 @@
+             return GridParams.Templates[this.gridScreenName];
+         }
+ 
++        // Reused by the bounded selected-stack reader; no scan or quantity is published here.
++        internal async Task ScrollToWeaponExperience(CancellationToken token)
++        {
++            this.ct = token;
++            token.ThrowIfCancellationRequested();
++            await PreScrollToBottomForWeaponOre();
++            token.ThrowIfCancellationRequested();
++        }
++
+         private async Task PreScrollToBottomForWeaponOre()
+         {
+             // 长按滑动栏底部，快速翻页到底部后，再继续滚动确保在最后一页
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/GoToCraftingBenchTask.cs b/BetterGenshinImpact/GameTask/Common/Job/GoToCraftingBenchTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/GoToCraftingBenchTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/GoToCraftingBenchTask.cs
+@@ -387,9 +387,15 @@
+         int consecutiveMatches = 0;
+         bool recognized = await NewRetry.WaitForAction(() =>
+         {
+-            using var capture = CaptureToRectArea();
+-            bool originalOk = TryReadOriginalResinCount(capture, out originalResin, out originalRaw);
+-            if (requireExactRecipeCost && !CondensedCraftPolicy.HasExactRecipeCost60(originalRaw)) originalOk = false;
++            using var capture = CaptureToRectArea(forceNew: requireExactRecipeCost);
++            bool originalOk;
++            if (requireExactRecipeCost)
++            {
++                var reading=ReadProtectedRecipeCost(capture, OcrFactory.Paddle);
++                originalOk=reading.Verified;originalResin=reading.OriginalResin??-1;
++                originalRaw=JsonConvert.SerializeObject(reading);
++            }
++            else originalOk = TryReadOriginalResinCount(capture, out originalResin, out originalRaw);
+             bool condensedOk = TryReadCondensedResinCount(capture, out condensedResin, out condensedRaw);
+             if (!originalOk || !condensedOk)
+             {
+@@ -468,6 +474,21 @@
+         using var countArea = region.DeriveCrop(icon.X, icon.Y + icon.Height, icon.Width, icon.Height);
+         raw = OcrFactory.Paddle.OcrWithoutDetector(countArea.SrcMat).Trim();
+         return TryParseCraftingOriginalResin(raw, out count);
++    }
++
++    internal static RecipeCostReading ReadProtectedRecipeCost(ImageRegion region, BetterGenshinImpact.Core.Recognition.OCR.IOcrService ocr)
++    {
++        using var recipe=region.Find(ElementRecognition.Get("CraftCondensedResin",region));
++        var originalRecognition=ElementRecognition.Get("fragileResinCount",region).Clone();
++        originalRecognition.DrawOnWindow=false;
++        using var original=region.Find(originalRecognition);
++        var unknown=new RecipeCostReading(false,null,null,"","","",new(false,new(),0,0));
++        if(!recipe.IsExist() || !original.IsExist())return unknown;
++        double scale=region.Width/1920d;
++        using var title=region.DeriveCrop(new Rect((int)(1180*scale),(int)(105*scale),(int)(520*scale),(int)(55*scale)));
++        if(StringUtils.RemoveAllSpace(ocr.Ocr(title.SrcMat))!="浓缩树脂")return unknown;
++        using var count=region.DeriveCrop(original.X,original.Y+original.Height,original.Width,original.Height);
++        return RecipeSlashCostEvidence.ReadCount(count.SrcMat,ocr);
+     }
+ 
+     internal static bool TryParseCraftingOriginalResin(string raw, out int count)
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/MoraSnapshotEvidence.cs
+@@ -0,0 +1,66 @@
++using System;
++using System.Linq;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.Helpers;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++/// <summary>Read-only bottom-left currency crops, calibrated to the observed precious-items page.</summary>
++public sealed class MoraSnapshotRequest
++{
++    public BackpackRect BalanceRegion { get; set; } = new(397, 1000, 140, 40);
++    public BackpackRect IconRegion { get; set; } = new(354, 1000, 37, 37);
++    public void Validate()
++    {
++        static bool Within(BackpackRect? r, int left, int top, int right, int bottom) => r is not null &&
++            r.Width >= 20 && r.Height >= 15 && r.X >= left && r.Y >= top && r.X + r.Width <= right && r.Y + r.Height <= bottom;
++        if (!Within(BalanceRegion, 390, 970, 750, 1070) || BalanceRegion.Width > 320 || BalanceRegion.Height > 70 ||
++            !Within(IconRegion, 330, 970, 420, 1070) || IconRegion.Width > 70 || IconRegion.Height > 70 ||
++            IconRegion.X + IconRegion.Width > BalanceRegion.X || BalanceRegion.X - IconRegion.X - IconRegion.Width > 25)
++            throw new ArgumentException("Mora observation requires adjacent bottom-left Mora icon/balance crops; primogem region is excluded.");
++    }
++    public static Rect Scale(BackpackRect r, int width) => new((int)Math.Round(r.X * width / 1920d),
++        (int)Math.Round(r.Y * width / 1920d), (int)Math.Round(r.Width * width / 1920d), (int)Math.Round(r.Height * width / 1920d));
++}
++
++public sealed record MoraFrameEvidence(long ObservedAt, int Width, int Height, bool BackpackTabVerified,
++    bool PromptVisible, BackpackOcrRow[] HeaderRows, string IconName, double IconScore, BackpackRect IconRegion,
++    BackpackRect BalanceRegion, BackpackOcrRow[] BalanceRows, string RawBalanceText);
++
++public static class MoraSnapshotEvidence
++{
++    public static int? ParseBalance(string? raw)
++    {
++        var text = StringUtils.ConvertFullWidthNumToHalfWidth(raw ?? "").Trim();
++        return Regex.IsMatch(text, @"\A(?:0|[1-9][0-9]{0,9})\z") && int.TryParse(text, out var count) ? count : null;
++    }
++    public static int? Read(MoraFrameEvidence frame)
++    {
++        if (frame.Width < 800 || frame.Width * 9 != frame.Height * 16 || !frame.BackpackTabVerified || frame.PromptVisible ||
++            frame.ObservedAt < 0 || frame.HeaderRows.Count(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == "贵重道具") != 1 ||
++            frame.IconName != "摩拉" || !double.IsFinite(frame.IconScore) || frame.IconScore < .75 || frame.BalanceRows.Length != 1 ||
++            frame.IconRegion.X + frame.IconRegion.Width > frame.BalanceRegion.X ||
++            frame.IconRegion.X < 330 * frame.Width / 1920d - 1 || frame.IconRegion.Y < 970 * frame.Width / 1920d - 1 ||
++            frame.IconRegion.X + frame.IconRegion.Width > 420 * frame.Width / 1920d + 1 ||
++            frame.BalanceRegion.X < 390 * frame.Width / 1920d - 1 ||
++            frame.BalanceRegion.X + frame.BalanceRegion.Width > 750 * frame.Width / 1920d + 1)
++            return null;
++        var row = frame.BalanceRows[0];
++        if (!BackpackInventoryEvidenceSafety.Inside(new(row.X, row.Y, row.Width, row.Height), frame.BalanceRegion) ||
++            row.X - frame.BalanceRegion.X < 2 * frame.Width / 1920d ||
++            frame.BalanceRegion.X + frame.BalanceRegion.Width - row.X - row.Width < 2 * frame.Width / 1920d)
++            return null; // Digits at a crop boundary may be truncated; never recover a shorter balance.
++        var raw = ParseBalance(frame.RawBalanceText);
++        return raw.HasValue && raw == ParseBalance(row.Text) ? raw : null;
++    }
++    public static int? Pair(MoraFrameEvidence? first, MoraFrameEvidence? second, long now)
++    {
++        if (first is null || second is null || first.Width != second.Width || first.Height != second.Height ||
++            first.BalanceRegion != second.BalanceRegion || first.IconRegion != second.IconRegion || second.ObservedAt <= first.ObservedAt ||
++            second.ObservedAt - first.ObservedAt > 5000 || now < second.ObservedAt || now - second.ObservedAt > 1500)
++            return null;
++        var value = Read(first);
++        return value.HasValue && value == Read(second) ? value : null;
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadBackpackInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadBackpackInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/ReadBackpackInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadBackpackInventoryTask.cs
+@@ -34,15 +34,16 @@
+         request.Validate();return request;
+     }
+     public static string Serialize(BackpackInventoryResult result)=>JsonConvert.SerializeObject(result,JsonSettings);
+-    private static bool Tab(ImageRegion frame,string suffix)
++    internal static bool Tab(ImageRegion frame,string suffix,string category="weaponAscension")
+     {
+-        using var found=frame.Find(ElementRecognition.Get("BagCharacterDevelopmentItem"+suffix,frame));
++        var prefix=category switch {"weaponExperience"=>"BagWeapon","preciousItems"=>"BagPreciousItem",_=>"BagCharacterDevelopmentItem"};
++        using var found=frame.Find(ElementRecognition.Get(prefix+suffix,frame));
+         return found.IsExist();
+     }
+-    private static bool World(ImageRegion frame)=>Bv.IsInMainUi(frame) && !Bv.IsInDomain(frame) && !Bv.IsInRevivePrompt(frame);
++    internal static bool World(ImageRegion frame)=>Bv.IsInMainUi(frame) && !Bv.IsInDomain(frame) && !Bv.IsInRevivePrompt(frame);
+     public async Task<string> Start(CancellationToken ct)
+     {
+-        var result=new BackpackInventoryResult(); bool opened=false;
++        var result=new BackpackInventoryResult {Category=request.Category}; bool opened=false;
+         var saved=new ConcurrentDictionary<string,ITaskTrigger>(GameTaskManager.TriggerDictionary??new());
+         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);
+         timeout.CancelAfter(TimeSpan.FromSeconds(120));
+@@ -67,14 +68,18 @@
+                 timeout.Token.ThrowIfCancellationRequested();
+                 if(Bv.IsInPromptDialog(frame)||Bv.IsInRevivePrompt(frame))
+                     throw new InvalidOperationException("背包出现未知或物品提示，禁止确认");
+-                if(Tab(frame,"Checked")){selected=true;break;}
+-                using var button=frame.Find(ElementRecognition.Get("BagCharacterDevelopmentItemUnchecked",frame));
++                if(Tab(frame,"Checked",request.Category)){selected=true;break;}
++                using var button=frame.Find(ElementRecognition.Get(request.Category=="weaponExperience"?"BagWeaponUnchecked":"BagCharacterDevelopmentItemUnchecked",frame));
+                 if(button.IsExist()) { timeout.Token.ThrowIfCancellationRequested();button.Click(); }
+                 await Task.Delay(250,timeout.Token);
+             }
+             if(!selected)throw new InvalidOperationException("未核验角色培养材料背包分类");
+             using var recognizer=ItemIconRecognizerFactory.Create(ItemIconRecognitionMode.Item);
+-            var gridParams=GridParams.Templates[GridScreenName.CharacterDevelopmentItems];
++            var gridParams=GridParams.Templates[request.Category=="weaponExperience"?GridScreenName.Weapons:GridScreenName.CharacterDevelopmentItems];
++            if(request.Category=="weaponExperience")
++                await new CountInventoryItem(new CountInventoryItemParam {
++                    GridScreenName=GridScreenName.Weapons, ItemNames=request.Materials.Select(m=>m.MaterialName).ToList(),
++                    IconRecognitionMode=ItemIconRecognitionMode.Item }).ScrollToWeaponExperience(timeout.Token);
+             var grid=new GridScreen(gridParams,logger,timeout.Token);int pages=0;
+             grid.OnAfterTurnToNewPage=_=> { if(++pages>30)throw new InvalidOperationException("背包只读达到30页上限"); };
+             await foreach(var (page,itemRect) in grid)
+@@ -88,7 +93,7 @@
+                 BackpackSelection selection;
+                 using(var fresh=TaskControl.CaptureToRectArea(forceNew:true))
+                 {
+-                    if(!Tab(fresh,"Checked")||Bv.IsInPromptDialog(fresh))throw new InvalidOperationException("选中前背包状态改变");
++                    if(!Tab(fresh,"Checked",request.Category)||Bv.IsInPromptDialog(fresh))throw new InvalidOperationException("选中前背包状态改变");
+                     using var cell=fresh.DeriveCrop(fullRect);
+                     // Prove persistent selection rather than the pointer's hover outline.
+                     // Moving to the known bottom margin sends no click, category change, or scroll.
+@@ -96,7 +101,7 @@
+                         ()=>fresh.MoveTo(fresh.Width/2,fresh.Height-40),()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),timeout.Token);
+                 }
+                 // No scrolling, category changes, or second click between these independent captures.
+-                var pair=await ObservePair(selection,ReadFrame,(milliseconds,token)=>Task.Delay(milliseconds,token),timeout.Token);
++                var pair=await ObservePair(selection,(s,c)=>ReadFrame(s,c,request.Category),(milliseconds,token)=>Task.Delay(milliseconds,token),timeout.Token);
+                 if(BackpackInventoryEvidenceSafety.Verified(pair,target.MaterialName))result.Observations.Add(target.MaterialId,pair);
+                 else logger.LogWarning("背包候选{name}完整标题、选中框或原始数量双帧未通过，数量保持未知",target.MaterialName);
+                 if(result.Observations.Count==request.Materials.Length)break;
+@@ -107,7 +112,7 @@
+         catch(Exception ex) { result.Status="unknown";result.Reason=ex is OperationCanceledException?"observation_cancelled_or_timeout":ex.Message; }
+         finally
+         {
+-            try { result.MainUiRestored=await Restore(opened);result.CleanupCompleted=result.MainUiRestored; }
++            try { result.MainUiRestored=await Restore(opened,request.Category);result.CleanupCompleted=result.MainUiRestored; }
+             catch(Exception ex) { result.MainUiRestored=false;result.Reason+="; cleanup: "+ex.Message; }
+             finally
+             {
+@@ -136,7 +141,7 @@
+         var second=capture(selection,ct);ct.ThrowIfCancellationRequested();
+         return new(selection,first,second);
+     }
+-    internal static BackpackFrameEvidence ReadFrame(BackpackSelection selection,CancellationToken ct)
++    internal static BackpackFrameEvidence ReadFrame(BackpackSelection selection,CancellationToken ct,string category="weaponAscension")
+     {
+         using var frame=TaskControl.CaptureToRectArea(forceNew:true);
+         long observedAt=DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();ct.ThrowIfCancellationRequested();
+@@ -149,10 +154,10 @@
+         var border=BackpackInventoryEvidenceSafety.ReadSelectedBorder(frame.SrcMat,selection.ItemRect.ToRect());
+         return new() {ObservedAt=observedAt,NameRegion=BackpackRect.From(nameRect),NameRows=names,
+             CountRegion=BackpackRect.From(countRect),CountRows=[new(raw,countRect.X,countRect.Y,countRect.Width,countRect.Height)],
+-            RawCountText=raw,SelectedItemVerified=Tab(frame,"Checked") && border.Verified,
++            RawCountText=raw,SelectedItemVerified=Tab(frame,"Checked",category) && border.Verified,
+             SelectedItemRect=border.Verified?selection.ItemRect:new(0,0,0,0),SelectionEvidence=border};
+     }
+-    private static async Task<bool> Restore(bool opened)
++    internal static async Task<bool> Restore(bool opened,string category="weaponAscension")
+     {
+         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(6));bool escape=false;int world=0;
+         for(var i=0;i<20;i++)
+@@ -163,7 +168,7 @@
+             else
+             {
+                 world=0;
+-                if(BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened,Tab(frame,"Checked")||Tab(frame,"Unchecked"),
++                if(BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened,Tab(frame,"Checked",category)||Tab(frame,"Unchecked",category),
+                     Bv.IsInPromptDialog(frame)||Bv.IsInRevivePrompt(frame),escape))
+                 {timeout.Token.ThrowIfCancellationRequested();Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);escape=true;}
+             }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadMoraSnapshotTask.cs
+@@ -0,0 +1,133 @@
++using System;
++using System.Collections.Concurrent;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Simulator;
++using BetterGenshinImpact.Core.Simulator.Extensions;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++/// <summary>Read the precious-items page's actual Mora coin and balance; no confirmation, spending or refill inputs.</summary>
++public sealed class ReadMoraSnapshotTask
++{
++    private static readonly JsonSerializerSettings JsonSettings = new() {
++        ContractResolver = new CamelCasePropertyNamesContractResolver(), MissingMemberHandling = MissingMemberHandling.Error };
++    public static MoraSnapshotRequest ParseRequest(string json)
++    {
++        var request = JsonConvert.DeserializeObject<MoraSnapshotRequest>(json, JsonSettings)
++            ?? throw new ArgumentException("Empty Mora snapshot request.");
++        request.Validate(); return request;
++    }
++    private static bool Page(ImageRegion image)
++    {
++        using var marker = image.Find(ElementRecognition.Get("BagPreciousItemChecked", image));
++        return marker.IsExist() && !Bv.IsInPromptDialog(image) && !Bv.IsInRevivePrompt(image);
++    }
++    public async Task<string> Start(MoraSnapshotRequest request, CancellationToken ct)
++    {
++        request.Validate(); bool opened = false, restored = false;
++        int? balance = null; MoraFrameEvidence? first = null, second = null;
++        string reason = "unverified";
++        var saved = new ConcurrentDictionary<string, ITaskTrigger>(GameTaskManager.TriggerDictionary ?? new());
++        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
++        timeout.CancelAfter(TimeSpan.FromSeconds(20));
++        try
++        {
++            TaskTriggerDispatcher.Instance().ClearTriggers(); Simulation.ReleaseAllKey();
++            for (int i = 0; i < 2; i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++                if (!SystemControl.IsGenshinImpactActiveByProcess() || !ReadBackpackInventoryTask.World(frame))
++                    throw new InvalidOperationException("Mora snapshot needs fresh outside-world frames.");
++                await Task.Delay(200, timeout.Token);
++            }
++            timeout.Token.ThrowIfCancellationRequested();
++            Simulation.SendInput.SimulateAction(GIActions.OpenInventory); opened = true;
++            await Task.Delay(800, timeout.Token);
++            bool selected = false;
++            for (int i = 0; i < 8; i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++                if (!SystemControl.IsGenshinImpactActiveByProcess()) throw new InvalidOperationException("Game focus changed.");
++                if (Bv.IsInPromptDialog(frame) || Bv.IsInRevivePrompt(frame)) throw new InvalidOperationException("Unknown inventory dialog.");
++                if (Page(frame)) { selected = true; break; }
++                using var tab = frame.Find(ElementRecognition.Get("BagPreciousItemUnchecked", frame));
++                if (tab.IsExist()) { timeout.Token.ThrowIfCancellationRequested(); tab.Click(); }
++                await Task.Delay(250, timeout.Token);
++            }
++            if (!selected) throw new InvalidOperationException("Precious-items page unverified.");
++            using var recognizer = new ItemRecognizer();
++            using (var frame = TaskControl.CaptureToRectArea(forceNew: true))
++                frame.MoveTo(frame.Width / 2, frame.Height - 40); // Removes cursor occlusion; no click.
++            await Task.Delay(200, timeout.Token);
++            for (int i = 0; i < 5; i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                second = ReadFrame(request, recognizer, timeout.Token);
++                balance = MoraSnapshotEvidence.Pair(first, second, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
++                if (balance.HasValue) { reason = "stable_precious_page_mora_model_and_integer"; break; }
++                first = second; await Task.Delay(250, timeout.Token);
++            }
++            if (!balance.HasValue) reason = "mora_icon_or_full_integer_pair_unverified";
++        }
++        catch (Exception ex)
++        {
++            balance = null; reason = ex is OperationCanceledException ? "observation_timeout_or_cancelled" : ex.Message;
++        }
++        finally
++        {
++            try { restored = await ReadBackpackInventoryTask.Restore(opened, "preciousItems"); }
++            catch { restored = false; }
++            Simulation.ReleaseAllKey(); TaskTriggerDispatcher.Instance().ClearTriggers();
++            GameTaskManager.TriggerDictionary = saved;
++            TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t => t.Priority).ToList());
++        }
++        ct.ThrowIfCancellationRequested();
++        if (!restored) { balance = null; reason += "; world_restore_unverified"; }
++        return JsonConvert.SerializeObject(new {
++            source = "precious_items_bottom_mora", readOnly = true, status = balance.HasValue ? "verified" : "unknown",
++            materialId = "202", materialName = "摩拉", balance, verified = balance.HasValue && restored,
++            observedAt = balance.HasValue && second is not null ? DateTimeOffset.FromUnixTimeMilliseconds(second.ObservedAt).ToString("O") : null,
++            mainUiRestored = restored, cleanupCompleted = restored, reason, first, second
++        }, JsonSettings);
++    }
++    internal static MoraFrameEvidence ReadFrame(MoraSnapshotRequest request, ItemRecognizer recognizer, CancellationToken ct)
++    {
++        using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++        long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); ct.ThrowIfCancellationRequested();
++        if (!SystemControl.IsGenshinImpactActiveByProcess()) throw new InvalidOperationException("Game focus changed.");
++        var iconRect = MoraSnapshotRequest.Scale(request.IconRegion, frame.Width);
++        var balanceRect = MoraSnapshotRequest.Scale(request.BalanceRegion, frame.Width);
++        var candidate = ReadCoinCandidate(frame, request, recognizer);
++        using var amount = frame.DeriveCrop(balanceRect);
++        var raw = OcrFactory.Paddle.OcrWithoutDetector(amount.SrcMat);
++        BackpackOcrRow[] Rows(Rect rect)
++        {
++            using var crop = frame.DeriveCrop(rect);
++            return OcrFactory.Paddle.OcrResult(crop.SrcMat).Regions.Select(r => {
++                var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + rect.X, b.Y + rect.Y, b.Width, b.Height);
++            }).ToArray();
++        }
++        var headerRect = MoraSnapshotRequest.Scale(new(100, 0, 350, 100), frame.Width);
++        var header = Rows(headerRect); var numbers = Rows(balanceRect); ct.ThrowIfCancellationRequested();
++        return new(at, frame.Width, frame.Height, Page(frame), Bv.IsInPromptDialog(frame) || Bv.IsInRevivePrompt(frame),
++            header, candidate.Name, candidate.Score, BackpackRect.From(iconRect), BackpackRect.From(balanceRect), numbers, raw);
++    }
++    internal static ItemIconCandidate ReadCoinCandidate(ImageRegion frame, MoraSnapshotRequest request, ItemRecognizer recognizer)
++    {
++        using var coin = frame.DeriveCrop(MoraSnapshotRequest.Scale(request.IconRegion, frame.Width));
++        using var normalized = coin.SrcMat.Resize(new Size(125, 125));
++        return recognizer.Match(normalized);
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/RecipeSlashCostEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/RecipeSlashCostEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/RecipeSlashCostEvidence.cs
+@@ -0,0 +1,60 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Helpers;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++public sealed record RecipeSlashEvidence(bool Verified, Rect Bounds, double Correlation, int InkPixels);
++public sealed record RecipeCostReading(bool Verified, int? OriginalResin, int? RecipeCost,
++    string RawWhole, string RawNumerator, string RawDenominator, RecipeSlashEvidence Slash);
++
++/// <summary>Geometric slash proof plus separately cropped complete numerator and denominator, never digit replacement.</summary>
++public static class RecipeSlashCostEvidence
++{
++    public static RecipeSlashEvidence FindSlash(Mat count)
++    {
++        using var gray = count.Channels()==1 ? count.Clone() : count.CvtColor(ColorConversionCodes.BGR2GRAY);
++        using var ink = gray.Threshold(140,255,ThresholdTypes.BinaryInv);
++        using var labels=new Mat(); using var stats=new Mat(); using var centroids=new Mat();
++        int n=Cv2.ConnectedComponentsWithStats(ink,labels,stats,centroids);
++        var candidates=new List<RecipeSlashEvidence>();
++        for(int k=1;k<n;k++)
++        {
++            int x=stats.At<int>(k,0), y=stats.At<int>(k,1), w=stats.At<int>(k,2), h=stats.At<int>(k,3), area=stats.At<int>(k,4);
++            if(w<2 || h<6 || h/(double)w is <1.5 or >5 || area<6 || x<count.Width*.2 || x+w>count.Width*.85)continue;
++            var points=new List<Point>();
++            for(int yy=y;yy<y+h;yy++)for(int xx=x;xx<x+w;xx++)if(labels.At<int>(yy,xx)==k)points.Add(new(xx,yy));
++            double mx=points.Average(p=>p.X), my=points.Average(p=>p.Y);
++            double vx=0,vy=0,cov=0;
++            foreach(var p in points){vx+=(p.X-mx)*(p.X-mx);vy+=(p.Y-my)*(p.Y-my);cov+=(p.X-mx)*(p.Y-my);}
++            double correlation=vx*vy>0?cov/Math.Sqrt(vx*vy):0;
++            if(correlation<=-.75)candidates.Add(new(true,new(x,y,w,h),correlation,area));
++        }
++        return candidates.Count==1?candidates[0]:new(false,new(),0,0);
++    }
++    public static RecipeCostReading ReadCount(Mat count, IOcrService ocr)
++    {
++        var slash=FindSlash(count);
++        var whole=ocr.OcrWithoutDetector(count).Trim();
++        if(!slash.Verified)return new(false,null,null,whole,"","",slash);
++        var b=slash.Bounds;int pad=Math.Max(2,count.Width/30);
++        int y=Math.Max(0,b.Y-pad), bottom=Math.Min(count.Height,b.Bottom+pad);
++        int leftEnd=b.X-1, rightStart=b.Right+1;
++        if(leftEnd<8 || rightStart>=count.Width-8)return new(false,null,null,whole,"","",slash);
++        using var numerator=new Mat(count,new Rect(0,y,leftEnd,bottom-y));
++        using var denominator=new Mat(count,new Rect(rightStart,y,count.Width-rightStart,bottom-y));
++        using var largeNumerator=numerator.Resize(new Size(numerator.Width*4,numerator.Height*4),0,0,InterpolationFlags.Cubic);
++        using var largeDenominator=denominator.Resize(new Size(denominator.Width*4,denominator.Height*4),0,0,InterpolationFlags.Cubic);
++        var num=StringUtils.ConvertFullWidthNumToHalfWidth(ocr.OcrWithoutDetector(largeNumerator)).Trim();
++        var den=StringUtils.ConvertFullWidthNumToHalfWidth(ocr.OcrWithoutDetector(largeDenominator)).Trim();
++        var original=ParseNumerator(num);
++        bool verified=original.HasValue && den=="60";
++        return new(verified,verified?original:null,verified?60:null,whole,num,den,slash);
++    }
++    public static int? ParseNumerator(string raw) => Regex.IsMatch(raw,@"\A(?:0|[1-9][0-9]{0,2})\z") &&
++        int.TryParse(raw,out var value) && value<=200 ? value : null;
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotEvidenceTests.cs
+@@ -0,0 +1,51 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class MoraSnapshotEvidenceTests
++{
++    private static MoraFrameEvidence Frame(long at, string raw = "12345678") => new(at, 1920, 1080, true, false,
++        [new("贵重道具", 143, 30, 105, 30)], "摩拉", .9, new(354, 1000, 37, 37),
++        new(397, 1000, 140, 40), [new(raw, 401, 1005, 113, 24)], raw);
++    [Fact]
++    public void NamedCoinFullIntegerAndTwoIndependentFramesAreRequired()
++    {
++        Assert.Equal(12345678, MoraSnapshotEvidence.Pair(Frame(1000), Frame(1300), 1400));
++        Assert.Null(MoraSnapshotEvidence.Pair(Frame(1000), Frame(1000), 1400));
++        Assert.Null(MoraSnapshotEvidence.Pair(Frame(1000), Frame(1300, "12345677"), 1400));
++        Assert.Null(MoraSnapshotEvidence.Pair(Frame(1000), Frame(1300), 3000));
++        Assert.Null(MoraSnapshotEvidence.Pair(Frame(1000), Frame(6500), 6600));
++    }
++    [Theory]
++    [InlineData("0", 0)]
++    [InlineData("12345678", 12345678)]
++    [InlineData("１２３４５６７８", 12345678)]
++    [InlineData("2147483647", 2147483647)]
++    public void CompleteNonnegativeIntegerParses(string raw, int expected) => Assert.Equal(expected, MoraSnapshotEvidence.ParseBalance(raw));
++    [Theory]
++    [InlineData("")]
++    [InlineData("12万")]
++    [InlineData("12,345,678")]
++    [InlineData("12345678/2000")]
++    [InlineData("余额12345678")]
++    [InlineData("123 45678")]
++    [InlineData("01")]
++    [InlineData("2147483648")]
++    public void UnknownOrAbbreviatedTextIsNeverZero(string raw) => Assert.Null(MoraSnapshotEvidence.ParseBalance(raw));
++    [Fact]
++    public void PrimogemWrongPageAndInsufficientCoinScoreNeverSupplyMora()
++    {
++        var f = Frame(1000);
++        foreach (var invalid in new[] {f with {IconName="原石"}, f with {IconScore=.74}, f with {IconScore=double.NaN},
++            f with {BackpackTabVerified=false}, f with {PromptVisible=true}, f with {HeaderRows=[new("武器", 143, 30, 80, 30)]},
++            f with {IconRegion=new(150,1000,37,37)}, f with {BalanceRows=[new("12345678",397,1005,140,24)]}})
++            Assert.Null(MoraSnapshotEvidence.Read(invalid));
++    }
++    [Fact]
++    public void OnlyObservedBottomMoraRegionsAndKnownRequestFieldsAreAccepted()
++    {
++        ReadMoraSnapshotTask.ParseRequest("{}").Validate();
++        Assert.Throws<ArgumentException>(() => new MoraSnapshotRequest {BalanceRegion=new(150,1000,140,40)}.Validate());
++        Assert.Throws<Newtonsoft.Json.JsonSerializationException>(() => ReadMoraSnapshotTask.ParseRequest("{\"x\":123}"));
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/MoraSnapshotPrivateImageTests.cs
+@@ -0,0 +1,28 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class MoraSnapshotPrivateImageTests(ITestOutputHelper output)
++{
++    [Theory]
++    [Trait("Fixture", "PrivateMora")]
++    [InlineData("valuable-mora-hover-1.png")]
++    [InlineData("valuable-mora-hover-2.png")]
++    public void RealLocalCoinMustBeClassifiedAsMoraByTheProductionModel(string file)
++    {
++        var directory=Environment.GetEnvironmentVariable("BETTERGI_PRIVATE_MORA_FIXTURE_DIR");
++        Assert.False(string.IsNullOrWhiteSpace(directory), "Provide retained private raw UI frames; missing images are not a pass.");
++        using var screenshot=Cv2.ImRead(Path.Combine(directory!,file));
++        Assert.Equal(new Size(1538,895),screenshot.Size());
++        using var client=new Mat(screenshot,new Rect(1,30,1536,864));
++        using var capture=new ImageRegion(client.Clone(),0,0);
++        using var recognizer=new ItemRecognizer();
++        var candidate=ReadMoraSnapshotTask.ReadCoinCandidate(capture,new MoraSnapshotRequest(),recognizer);
++        output.WriteLine("Actual Mora coin model name={0}; score={1:R}",candidate.Name,candidate.Score);
++        Assert.Equal("摩拉",candidate.Name);
++        Assert.True(candidate.Score>=.75,"The actual small currency icon must independently meet the identity threshold.");
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashCostEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashCostEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashCostEvidenceTests.cs
+@@ -0,0 +1,36 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class RecipeSlashCostEvidenceTests
++{
++    [Fact]
++    public void SlantedSlashPixelsAreIndependentOfTheMisreadWholeText()
++    {
++        using var image=new Mat(25,75,MatType.CV_8UC3,Scalar.All(235));
++        Cv2.Line(image,new Point(33,19),new Point(39,6),Scalar.All(20),2);
++        var slash=RecipeSlashCostEvidence.FindSlash(image);
++        Assert.True(slash.Verified);Assert.True(slash.Correlation<-.75);
++    }
++    [Fact]
++    public void AVerticalOneBlankOrMultipleSlashDoesNotProveASeparator()
++    {
++        using var image=new Mat(25,75,MatType.CV_8UC3,Scalar.All(235));
++        Cv2.Line(image,new Point(35,19),new Point(35,6),Scalar.All(20),2);
++        Assert.False(RecipeSlashCostEvidence.FindSlash(image).Verified);
++        image.SetTo(Scalar.All(235));Assert.False(RecipeSlashCostEvidence.FindSlash(image).Verified);
++        Cv2.Line(image,new Point(30,19),new Point(36,6),Scalar.All(20),2);
++        Cv2.Line(image,new Point(47,19),new Point(53,6),Scalar.All(20),2);
++        Assert.False(RecipeSlashCostEvidence.FindSlash(image).Verified);
++    }
++    [Theory]
++    [InlineData("73",73)]
++    [InlineData("0",0)]
++    [InlineData("200",200)]
++    [InlineData("73160",null)]
++    [InlineData("201",null)]
++    [InlineData("7 3",null)]
++    public void NumeratorCropNeedsItsOwnCompleteCount(string text,int? expected) =>
++        Assert.Equal(expected,RecipeSlashCostEvidence.ParseNumerator(text));
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/RecipeSlashPrivateImageTests.cs
+@@ -0,0 +1,48 @@
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class RecipeSlashPrivateImageTests(ITestOutputHelper output)
++{
++    [Theory]
++    [Trait("Fixture","PrivateRecipeCost")]
++    [InlineData(0)]
++    [InlineData(1)]
++    public void RetainedMicroRegionProvesSeparateInventoryAndFixedRecipeCost(int caseIndex)
++    {
++        var manifestPath=Environment.GetEnvironmentVariable("BGI_PRIVATE_RECIPE_FIXTURE_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(manifestPath),"An explicit ignored private fixture manifest is required; missing fixtures cannot pass.");
++        var manifest=Newtonsoft.Json.JsonConvert.DeserializeObject<PrivateManifest>(File.ReadAllText(manifestPath!));
++        Assert.NotNull(manifest);Assert.Equal(2,manifest.Cases.Length);
++        var fixture=manifest.Cases[caseIndex];
++        Assert.False(string.IsNullOrWhiteSpace(fixture.File));
++        Assert.True(fixture.ExpectedOriginalResin.HasValue && fixture.ExpectedOriginalResin is >=0 and <=200,
++            "A private expected inventory must be explicitly present; never default to zero.");
++        var file=Path.IsPathRooted(fixture.File)?fixture.File:Path.Combine(Path.GetDirectoryName(Path.GetFullPath(manifestPath!))!,fixture.File);
++        Assert.True(File.Exists(file));
++        using var image=Cv2.ImRead(file);
++        Assert.Equal(new Size(1538,895),image.Size());
++        using var nativeCrop=new Mat(image,new Rect(935,760,73,24));
++        using var ocr=new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),PaddleOcrService.PaddleOcrModelType.V6);
++        foreach(var width in new[]{1536,1920})
++        {
++            using var crop=new Mat();Cv2.Resize(nativeCrop,crop,new Size((int)Math.Round(73*width/1536d),(int)Math.Round(24*width/1536d)));
++            var reading=RecipeSlashCostEvidence.ReadCount(crop,ocr);
++            output.WriteLine("width={0}; {1}",width,Newtonsoft.Json.JsonConvert.SerializeObject(reading));
++            Assert.True(reading.Verified);Assert.Equal(fixture.ExpectedOriginalResin,reading.OriginalResin);Assert.Equal(60,reading.RecipeCost);
++            using var client=new Mat(image,new Rect(1,30,1536,864));using var full=new Mat();
++            Cv2.Resize(client,full,new Size(width,width*9/16));
++            using var capture=new ImageRegion(full.Clone(),0,0);
++            var production=GoToCraftingBenchTask.ReadProtectedRecipeCost(capture,ocr);
++            output.WriteLine("Full production reader width={0}; {1}",width,Newtonsoft.Json.JsonConvert.SerializeObject(production));
++            Assert.True(production.Verified);Assert.Equal(fixture.ExpectedOriginalResin,production.OriginalResin);Assert.Equal(60,production.RecipeCost);
++        }
++    }
++    private sealed class PrivateManifest {public PrivateCase[] Cases {get;set;}=[];}
++    private sealed class PrivateCase {public string File {get;set;}="";public int? ExpectedOriginalResin {get;set;}}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeaponExperienceInventoryRequestTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeaponExperienceInventoryRequestTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeaponExperienceInventoryRequestTests.cs
+@@ -0,0 +1,34 @@
++using BetterGenshinImpact.GameTask.Common.Job;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class WeaponExperienceInventoryRequestTests
++{
++    [Fact]
++    public void ExplicitExperienceCategoryAcceptsOnlyTheThreeFixedIdsAndNames()
++    {
++        var request = ReadBackpackInventoryTask.ParseRequest("""
++            {"category":"weaponExperience","materials":[
++              {"materialId":"104011","materialName":"精锻用杂矿"},
++              {"materialId":"104012","materialName":"精锻用良矿"},
++              {"materialId":"104013","materialName":"精锻用魔矿"}]}
++            """);
++        Assert.Equal("weaponExperience", request.Category);
++        Assert.Equal(3, request.Materials.Length);
++    }
++    [Theory]
++    [InlineData("104013", "精锻用杂矿")]
++    [InlineData("202", "摩拉")]
++    [InlineData("114001", "高塔孤王的破瓦")]
++    public void ForeignOrCrossedResourceCannotEnterExperienceScan(string id, string name) =>
++        Assert.Throws<ArgumentException>(() => new BackpackInventoryRequest {
++            Category="weaponExperience",Materials=[new() {MaterialId=id,MaterialName=name}]}.Validate());
++    [Fact]
++    public void ExistingAscensionDefaultRemainsDistinctAndNullMaterialsFailCleanly()
++    {
++        new BackpackInventoryRequest {Materials=[new() {MaterialId="114001",MaterialName="高塔孤王的破瓦"}]}.Validate();
++        Assert.Throws<ArgumentException>(() => new BackpackInventoryRequest {
++            Materials=[new() {MaterialId="104013",MaterialName="精锻用魔矿"}]}.Validate());
++        Assert.Throws<ArgumentException>(() => new BackpackInventoryRequest {Category="weaponExperience",Materials=null!}.Validate());
++    }
++}

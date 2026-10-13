@@ -1,0 +1,669 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -100,6 +100,10 @@
+ - 第十二层修复挑战启动前HUD未通过第十一层场景门控的回归：复用上游出口图形的二值轮廓及镜像方向，保持0.8模板阈值并限定上左位置/尺寸；同时核验新鲜四槽编号/出战箭头几何，排除弹窗、复苏、地图和可关闭菜单。队伍栏单独出现不允许输入。旧主界面及已开战秘境判据不改，严格角色双帧标准不改；独立记录每项场景门控，静态页面通过不等于实时开盾或付费领奖验收。
+ - 第十三层为受保护切换单独表示尚未发送目标键的状态，修复把负数哨兵传给仅支持已有按键时间的材料重试策略而永远不发首键的问题。仅目标号位的pending候选等待第二帧，明确其他号位的候选允许有界请求目标键，随后重置身份序列并重获两张新鲜目标帧。场景门控、五秒期限、一秒重发间隔、材料路径、身份阈值及技能冷却核验均保留。
+ 
++第十三层后本机新授权运行已分别完成实时开盾/补盾、受保护浓缩领奖及限额浓缩合成的独立余额和实际目标圣遗物奖励验收。历史失败/unknown不回写；只记录验收范围，不公开实际账户余额、掉落数量、运行标识或截图。
++
++- 第十四层增加仅用于观测的天赋升级预览入口，复用角色导航，再核验完整官方角色名三帧、详情类型/完整标题/基础等级两帧及预览等级、具名材料tooltip和摩拉。提供尺寸、OCR字框/数字边缘、斜杠分离整数、等级字形颜色/加成及恢复世界的原始标量，供上层独立核验。未知字段为null；小币模型及稀字OCR/完整数量失败保持未知，不降低阈值。只有已核实页面的导航/材料tooltip/取消输入，未接入最终确认或升级消费。压缩静态回放存在失败，不等于物理新鲜截图通过；单角色实时预览仍待单独验收。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -519,6 +519,12 @@
+         return await new ReadMoraSnapshotTask().Start(request, linked.Token);
+     }
+ 
++    public async Task<string> InspectTalentUpgrade(string characterName,string talentType,CancellationToken? customCt=null)
++    {
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
++        return await new GameTask.CharacterDevelopment.InspectTalentUpgradeTask().Start(characterName,talentType,linked.Token);
++    }
++
+     public async Task<string> ReadGameNetworkSnapshot(CancellationToken? customCt = null)
+     {
+         using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -0,0 +1,93 @@
++using System;
++using System.Linq;
++using System.Text;
++using System.Text.RegularExpressions;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++public sealed record UpgradePreviewRow(string Text,Rect Bounds);
++public sealed record UpgradePreviewRatio(long ObservedAt,string Raw,Rect Bounds,int? Owned,int? Required,bool Complete,
++    bool SlashPixelVerified=false,string NumeratorRaw="",string DenominatorRaw="")
++{
++    public int Width{get;init;}public int Height{get;init;}public string DetectorRaw{get;init;}="";
++    public UpgradePreviewRow[] OcrRows{get;init;}=[];
++    public Rect? SlashBounds{get;init;}public double SlashCorrelation{get;init;}public int SlashInkPixels{get;init;}
++    public Rect? NumeratorRegion{get;init;}public Rect? DenominatorRegion{get;init;}
++    public UpgradePreviewRow[] NumeratorRows{get;init;}=[];public UpgradePreviewRow[] DenominatorRows{get;init;}=[];
++    public int SplitOcrScale{get;init;}public string Prefix{get;init;}="";
++}
++public sealed record UpgradePreviewMaterial(string Name,double IconScore,Rect Card,UpgradePreviewRatio Quantity)
++{public Rect IconRegion{get;init;}}
++public sealed record UpgradePreviewDetail(long ObservedAt,bool Page,string Type,string Title,int? DisplayLevel,int? BaseLevel)
++{
++    public int Width{get;init;}public int Height{get;init;}public Rect TypeRegion{get;init;}public Rect TitleRegion{get;init;}
++    public UpgradePreviewRow[] TypeRows{get;init;}=[];public UpgradePreviewRow[] TitleRows{get;init;}=[];
++    public Rect LevelRegion{get;init;}public string LevelRaw{get;init;}="";public UpgradePreviewRow[] LevelRows{get;init;}=[];
++    public Rect ColorSampleRegion{get;init;}public Rect GlyphRegion{get;init;}public string GlyphColor{get;init;}="Unknown";
++    public int BrightPixels{get;init;}public int NeutralPixels{get;init;}public int CyanPixels{get;init;}public int DarkConflicts{get;init;}
++    public Rect BonusRegion{get;init;}public string BonusRaw{get;init;}="";public bool? HasFixedPlusThree{get;init;}
++}
++public sealed record UpgradePreviewFrame(long ObservedAt,bool Page,int? Current,int? Next,
++    UpgradePreviewMaterial[] Materials,UpgradePreviewRatio Mora,string CoinName,double CoinScore,UpgradePreviewRow[] Rows)
++{
++    public int Width{get;init;}public int Height{get;init;}public Rect MarkerRegion{get;init;}public Rect CoinRegion{get;init;}
++    public Rect CurrentLevelRegion{get;init;}public Rect NextLevelRegion{get;init;}
++    public UpgradePreviewRow[] CurrentLevelRows{get;init;}=[];public UpgradePreviewRow[] NextLevelRows{get;init;}=[];
++    public string CurrentLevelRaw{get;init;}="";public string NextLevelRaw{get;init;}="";
++}
++public sealed record UpgradePreviewTooltip(long ObservedAt,bool Page,string Name,string Kind,UpgradePreviewRatio Quantity,string RawName="",string AlternateRawName="")
++{
++    public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public Rect KindRegion{get;init;}public Rect SourceRegion{get;init;}
++    public UpgradePreviewRow[] NameRows{get;init;}=[];public UpgradePreviewRow[] AlternateNameRows{get;init;}=[];
++    public int AlternateNameScale{get;init;}public UpgradePreviewRow[] KindRows{get;init;}=[];public UpgradePreviewRow[] SourceRows{get;init;}=[];
++    public string AlternateNamePreprocessing{get;init;}="";
++    public Rect FooterLabelRegion{get;init;}public UpgradePreviewRow[] FooterLabelRows{get;init;}=[];
++}
++public sealed record UpgradePreviewCharacter(long ObservedAt,bool Overview,string Name)
++{public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public UpgradePreviewRow[] NameRows{get;init;}=[];}
++
++/// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
++public static class TalentUpgradePreviewEvidence
++{
++    public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
++    public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
++    public static void ValidateRequest(string name,string type)
++    {
++        if(string.IsNullOrWhiteSpace(name)||name!=name.Trim()||name.Length>80||name.Any(char.IsControl))
++            throw new ArgumentException("A bounded complete character name is required.");
++        if(type is not("普通攻击" or "元素战技" or "元素爆发"))throw new ArgumentException("Only combat talents are supported.");
++    }
++    public static int? Integer(string text)=>Regex.IsMatch(Normalize(text),@"\A(?:0|[1-9][0-9]{0,9})\z") &&
++        int.TryParse(Normalize(text),out var n)?n:null;
++    public static (int? Owned,int? Required) Ratio(string text)
++    {
++        var m=Regex.Match(Normalize(text),@"\A(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})\z");
++        return m.Success?(Integer(m.Groups[1].Value),Integer(m.Groups[2].Value)):(null,null);
++    }
++    public static bool Fresh(long first,long second,long now)=>first>=0 && second>first && second-first<=5000 &&
++        now>=second && now-second<=1500;
++    public static bool CharacterTriple(UpgradePreviewCharacter[] frames,string official,long now)=>frames.Length==3 &&
++        frames.All(f=>f.Overview&&Normalize(f.Name)==Normalize(official)) && Fresh(frames[0].ObservedAt,frames[1].ObservedAt,frames[1].ObservedAt) &&
++        Fresh(frames[1].ObservedAt,frames[2].ObservedAt,now) && frames[2].ObservedAt-frames[0].ObservedAt<=5000;
++    public static bool DetailPair(UpgradePreviewDetail a,UpgradePreviewDetail b,string type,long now)=>
++        a.Page&&b.Page&&a.Type==type&&b.Type==type&&a.Title.Length>0&&a.Title==b.Title&&
++        a.DisplayLevel==b.DisplayLevel&&a.BaseLevel is >=1 and <=9&&a.BaseLevel==b.BaseLevel&&Fresh(a.ObservedAt,b.ObservedAt,now);
++    public static bool QuantityPair(UpgradePreviewRatio a,UpgradePreviewRatio b,long now)=>a.Complete&&b.Complete&&
++        a.Owned is >=0&&a.Required is >0&&a.Owned==b.Owned&&a.Required==b.Required&&Fresh(a.ObservedAt,b.ObservedAt,now);
++    public static bool PreviewPair(UpgradePreviewFrame a,UpgradePreviewFrame b,int current,long now)=>
++        a.Page&&b.Page&&a.Current==current&&b.Current==current&&a.Next==current+1&&b.Next==current+1&&current is >=1 and <=9&&
++        Fresh(a.ObservedAt,b.ObservedAt,now)&&a.Materials.Length is >=1 and <=4&&a.Materials.Length==b.Materials.Length&&
++        a.Materials.Select(m=>m.Name).Distinct().Count()==a.Materials.Length &&
++        a.Materials.Zip(b.Materials).All(p=>p.First.Name.Length>0&&p.First.Name==p.Second.Name&&double.IsFinite(p.First.IconScore)&&double.IsFinite(p.Second.IconScore)&&p.First.IconScore>=.75&&p.Second.IconScore>=.75&&
++            QuantityPair(p.First.Quantity,p.Second.Quantity,now))&&a.CoinName=="摩拉"&&b.CoinName=="摩拉"&&double.IsFinite(a.CoinScore)&&double.IsFinite(b.CoinScore)&&a.CoinScore>=.75&&b.CoinScore>=.75&&
++        QuantityPair(a.Mora,b.Mora,now);
++    public static bool SameCosts(UpgradePreviewFrame a,UpgradePreviewFrame b)=>a.Current==b.Current&&a.Next==b.Next&&
++        a.Mora.Owned==b.Mora.Owned&&a.Mora.Required==b.Mora.Required&&a.Materials.Length==b.Materials.Length&&
++        a.Materials.Zip(b.Materials).All(p=>p.First.Name==p.Second.Name&&p.First.Quantity.Owned==p.Second.Quantity.Owned&&p.First.Quantity.Required==p.Second.Quantity.Required);
++    public static bool TooltipPair(UpgradePreviewTooltip a,UpgradePreviewTooltip b,UpgradePreviewMaterial item,long now)=>
++        a.Page&&b.Page&&a.Name==item.Name&&b.Name==item.Name&&a.Kind==b.Kind&&
++        a.Quantity.Complete&&b.Quantity.Complete&&a.Quantity.Owned==item.Quantity.Owned&&b.Quantity.Owned==item.Quantity.Owned&&
++        Fresh(a.ObservedAt,b.ObservedAt,now);
++    // Tooltip's aggregate cultivation denominator is intentionally not the next-upgrade requirement.
++}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -0,0 +1,185 @@
++using System;
++using System.Linq;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++/// <summary>Shared production/offline parser of the observed talent detail, preview and material tooltip.</summary>
++internal static class TalentUpgradePreviewReader
++{
++    private static UpgradePreviewRow[] Project(OcrResultRegion[] rows,Rect box,int scale=1)=>rows.Select(r=>{
++        var b=r.Rect.BoundingRect();int left=box.X+(int)Math.Floor(b.Left/(double)scale),top=box.Y+(int)Math.Floor(b.Top/(double)scale);
++        return new UpgradePreviewRow(r.Text,new(left,top,box.X+(int)Math.Ceiling(b.Right/(double)scale)-left,box.Y+(int)Math.Ceiling(b.Bottom/(double)scale)-top));}).ToArray();
++    internal static Rect Scale(Rect r,int width)=>new((int)Math.Round(r.X*width/1920d),(int)Math.Round(r.Y*width/1920d),
++        (int)Math.Round(r.Width*width/1920d),(int)Math.Round(r.Height*width/1920d));
++    internal static UpgradePreviewRow[] Rows(ImageRegion frame,Rect reference,IOcrService ocr)
++    {
++        var rect=Scale(reference,frame.Width);using var crop=frame.DeriveCrop(rect);
++        return Project(ocr.OcrResult(crop.SrcMat).Regions,rect);
++    }
++    private static bool Full(UpgradePreviewRow row,Rect box,double s)=>row.Bounds.Width>0&&row.Bounds.Height>0&&
++        row.Bounds.Left-box.Left>=2*s&&box.Right-row.Bounds.Right>=2*s&&row.Bounds.Top>=box.Top&&row.Bounds.Bottom<=box.Bottom;
++    private static string OneName(ImageRegion frame,Rect reference,IOcrService ocr)
++    {
++        var box=Scale(reference,frame.Width);var rows=Rows(frame,reference,ocr);
++        return rows.Length==1&&Full(rows[0],box,frame.Width/1920d)?TalentUpgradePreviewEvidence.Normalize(rows[0].Text):"";
++    }
++    private static (string Name,UpgradePreviewRow[] Rows) EnlargedName(ImageRegion frame,Rect reference,IOcrService ocr)
++    {
++        using var crop=frame.DeriveCrop(Scale(reference,frame.Width));
++        using var gray=crop.SrcMat.CvtColor(ColorConversionCodes.BGR2GRAY);
++        using var foreground=gray.Threshold(210,255,ThresholdTypes.BinaryInv);
++        using var large=foreground.Resize(new Size(crop.Width*4,crop.Height*4),0,0,InterpolationFlags.Cubic);
++        var rows=ocr.OcrResult(large).Regions;
++        if(rows.Length!=1)return("",Project(rows,Scale(reference,frame.Width),4));
++        var b=rows[0].Rect.BoundingRect();double margin=2*frame.Width/1920d*4;
++        return(b.Left>=margin&&large.Width-b.Right>=margin&&b.Top>=0&&b.Bottom<=large.Height?
++            TalentUpgradePreviewEvidence.Normalize(rows[0].Text):"",Project(rows,Scale(reference,frame.Width),4));
++    }
++    internal static UpgradePreviewDetail Detail(ImageRegion frame,IOcrService ocr,long at)
++    {
++        // Separate preview-only crop; preserve the older general character-reader ROIs.
++        var marker=string.Concat(Rows(frame,new(100,219,125,33),ocr).Select(r=>r.Text));
++        if(!CharacterDevelopmentStateMachineTask.IsTalentDetailText(marker))return new(at,false,"","",null,null){Width=frame.Width,Height=frame.Height};
++        var typeRows=Rows(frame,new(242,13,98,36),ocr);
++        var type=CharacterDevelopmentStateMachineTask.NormalizeTalentType(string.Concat(typeRows.Select(r=>r.Text)));
++        var levelBox=Scale(new(240,160,100,52),frame.Width);
++        using var levelCrop=frame.DeriveCrop(levelBox);var levelOcr=ocr.OcrResult(levelCrop.SrcMat);
++        var parsed=CharacterDevelopmentStateMachineTask.TryParseTalentLevel(levelOcr.Text.Trim(),out var level);
++        int padding=Math.Max(4,(int)Math.Round(10*frame.Width/1920d));
++        var colorBox=new Rect(levelBox.X-padding,levelBox.Y-padding,levelBox.Width+2*padding,levelBox.Height+2*padding);
++        using var colorCrop=frame.DeriveCrop(colorBox);
++        var shifted=new OcrResult(levelOcr.Regions.Select(r=>new OcrResultRegion(new RotatedRect(
++            new Point2f(r.Rect.Center.X+padding,r.Rect.Center.Y+padding),r.Rect.Size,r.Rect.Angle),r.Text,r.Score)).ToArray());
++        var color=CharacterDevelopmentStateMachineTask.ReadTalentLevelGlyphColor(colorCrop.SrcMat,shifted,out var glyph,out var bright,out var neutral,out var cyan,out var dark);
++        var bonusText=string.Concat(Rows(frame,new(35,285,146,30),ocr).Select(r=>r.Text));
++        bool bonus=false;
++        var ok=type.Length>0&&parsed&&CharacterDevelopmentStateMachineTask.TryResolveTalentBonus(level,color,bonusText,out bonus);
++        var titleRows=ok?Rows(frame,new(20,120,540,52),ocr):[];
++        var titleBox=Scale(new(20,120,540,52),frame.Width);
++        var title=titleRows.Length==1&&Full(titleRows[0],titleBox,frame.Width/1920d)?TalentUpgradePreviewEvidence.Normalize(titleRows[0].Text):"";
++        int? basic=ok?level-(bonus?3:0):null;
++        return new(at,ok&&title.Length>0,type,title,ok?level:null,basic is >=1 and <=10?basic:null){
++            Width=frame.Width,Height=frame.Height,TypeRegion=Scale(new(242,13,98,36),frame.Width),TypeRows=typeRows,TitleRegion=titleBox,TitleRows=titleRows,
++            LevelRegion=levelBox,LevelRaw=levelOcr.Text,LevelRows=Project(levelOcr.Regions,levelBox),ColorSampleRegion=colorBox,
++            GlyphRegion=new(glyph.X+colorBox.X,glyph.Y+colorBox.Y,glyph.Width,glyph.Height),GlyphColor=color.ToString(),
++            BrightPixels=bright,NeutralPixels=neutral,CyanPixels=cyan,DarkConflicts=dark,BonusRegion=Scale(new(35,285,146,30),frame.Width),BonusRaw=bonusText,HasFixedPlusThree=ok?bonus:null};
++    }
++    internal static bool PreviewPage(UpgradePreviewRow[] rows)
++    {
++        var names=rows.Select(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)).ToArray();
++        return new[]{"属性变更","所需材料","取消","确认"}.All(n=>names.Count(t=>t==n)==1);
++    }
++    internal static UpgradePreviewRatio ReadRatio(ImageRegion frame,Rect box,IOcrService ocr,long at,string prefix="")
++    {
++        using var crop=frame.DeriveCrop(box);
++        var rows=ocr.OcrResult(crop.SrcMat).Regions;
++        string raw=TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(crop.SrcMat));
++        string detector=TalentUpgradePreviewEvidence.Normalize(string.Concat(rows.Select(r=>r.Text)));
++        if(prefix.Length>0)
++        {
++            raw=raw.StartsWith(prefix,StringComparison.Ordinal)?raw[prefix.Length..]:"";
++            detector=detector.StartsWith(prefix,StringComparison.Ordinal)?detector[prefix.Length..]:"";
++        }
++        var parsed=TalentUpgradePreviewEvidence.Ratio(raw);
++        bool full=rows.Length>0&&rows.All(r=>{
++            var b=r.Rect.BoundingRect();return b.Left>=2*frame.Width/1920d&&crop.Width-b.Right>=2*frame.Width/1920d&&
++                b.Top>=0&&b.Bottom<=crop.Height;
++        });
++        bool complete=full&&raw==detector&&parsed.Owned.HasValue&&parsed.Required.HasValue;
++        if(!complete&&prefix.Length==0&&box.Width<200*frame.Width/1920d)
++        {
++            // The card's actual slash may OCR as '1'. Never replace digits: prove the slash
++            // geometrically and OCR complete left/right integers independently instead.
++            var slash=RecipeSlashCostEvidence.FindSlash(crop.SrcMat);
++            if(slash.Verified&&slash.Bounds.X>8&&slash.Bounds.Right<crop.Width-8)
++            {
++                using var left=new Mat(crop.SrcMat,new Rect(0,0,slash.Bounds.X-1,crop.Height));
++                using var right=new Mat(crop.SrcMat,new Rect(slash.Bounds.Right+1,0,crop.Width-slash.Bounds.Right-1,crop.Height));
++                (string Raw,int? Value,bool Full,UpgradePreviewRow[] Rows) ReadInteger(Mat original,Rect absolute)
++                {
++                    using var large=original.Resize(new Size(original.Width*4,original.Height*4),0,0,InterpolationFlags.Cubic);
++                    var integerRows=ocr.OcrResult(large).Regions;
++                    var integerRaw=TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(large));
++                    bool fullInteger=integerRows.Length==1&&integerRaw==TalentUpgradePreviewEvidence.Normalize(integerRows[0].Text);
++                    if(fullInteger){var b=integerRows[0].Rect.BoundingRect();fullInteger=b.Left>=2*frame.Width/1920d*4&&large.Width-b.Right>=2*frame.Width/1920d*4;}
++                    return(integerRaw,TalentUpgradePreviewEvidence.Integer(integerRaw),fullInteger,Project(integerRows,absolute,4));
++                }
++                var numeratorBox=new Rect(box.X,box.Y,left.Width,left.Height);
++                var denominatorBox=new Rect(box.X+slash.Bounds.Right+1,box.Y,right.Width,right.Height);
++                var numerator=ReadInteger(left,numeratorBox);var denominator=ReadInteger(right,denominatorBox);
++                if(numerator.Full&&denominator.Full&&numerator.Value.HasValue&&denominator.Value.HasValue)
++                    return new(at,raw,box,numerator.Value,denominator.Value,true,true,numerator.Raw,denominator.Raw){
++                        Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix,
++                        SlashBounds=new(slash.Bounds.X+box.X,slash.Bounds.Y+box.Y,slash.Bounds.Width,slash.Bounds.Height),SlashCorrelation=slash.Correlation,SlashInkPixels=slash.InkPixels,
++                        NumeratorRegion=numeratorBox,DenominatorRegion=denominatorBox,NumeratorRows=numerator.Rows,DenominatorRows=denominator.Rows,SplitOcrScale=4};
++            }
++        }
++        return new(at,raw,box,complete?parsed.Owned:null,complete?parsed.Required:null,complete){Width=frame.Width,Height=frame.Height,DetectorRaw=detector,OcrRows=Project(rows,box),Prefix=prefix};
++    }
++    private static (int? Value,string Raw,UpgradePreviewRow[] Rows) Level(ImageRegion frame,Rect reference,IOcrService ocr)
++    {
++        using var crop=frame.DeriveCrop(Scale(reference,frame.Width));
++        var raw=TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(crop.SrcMat));
++        var rows=ocr.OcrResult(crop.SrcMat).Regions;
++        var detected=TalentUpgradePreviewEvidence.Normalize(string.Concat(rows.Select(r=>r.Text)));
++        var match=Regex.Match(raw,@"\A等级([1-9]|10)\z");
++        return(raw==detected&&match.Success?int.Parse(match.Groups[1].Value):null,raw,Project(rows,Scale(reference,frame.Width)));
++    }
++    private static (string Name,double Score) Icon(ImageRegion frame,Rect box,ItemRecognizer recognizer)
++    {
++        using var crop=frame.DeriveCrop(box);using var normalized=crop.SrcMat.Resize(new Size(125,125));
++        var candidate=recognizer.Match(normalized);return(candidate.Name,candidate.Score);
++    }
++    internal static UpgradePreviewFrame Preview(ImageRegion frame,IOcrService ocr,ItemRecognizer recognizer,long at)
++    {
++        var rows=Rows(frame,new(420,235,1100,750),ocr);bool page=PreviewPage(rows);
++        if(!page)return new(at,false,null,null,[],new(at,"",default,null,null,false),"",0,[]){Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width)};
++        var countsBox=Scale(new(440,690,1040,100),frame.Width);
++        var countRows=Rows(frame,new(440,690,1040,100),ocr).Where(r=>Regex.IsMatch(TalentUpgradePreviewEvidence.Normalize(r.Text),@"\A[0-9/]{2,20}\z") && Full(r,countsBox,frame.Width/1920d))
++            .OrderBy(r=>r.Bounds.X).ToArray();
++        double s=frame.Width/1920d;
++        var materials=countRows.Select(row=>{
++            var box=new Rect(row.Bounds.X-(int)Math.Round(8*s),row.Bounds.Y-(int)Math.Round(5*s),
++                row.Bounds.Width+(int)Math.Round(16*s),row.Bounds.Height+(int)Math.Round(10*s));
++            var center=row.Bounds.X+row.Bounds.Width/2;
++            var card=new Rect(center-(int)Math.Round(58*s),row.Bounds.Bottom-(int)Math.Round(138*s),(int)Math.Round(116*s),(int)Math.Round(146*s));
++            var imageBox=new Rect(card.X,card.Y,card.Width,(int)Math.Round(112*s));
++            var icon=Icon(frame,imageBox,recognizer);
++            return new UpgradePreviewMaterial(icon.Name,icon.Score,card,ReadRatio(frame,box,ocr,at)){IconRegion=imageBox};
++        }).ToArray();
++        var coin=Icon(frame,Scale(new(853,799,37,37),frame.Width),recognizer);
++        var current=Level(frame,new(760,245,160,65),ocr);var next=Level(frame,new(1000,245,170,65),ocr);
++        return new(at,true,current.Value,next.Value,materials,
++            ReadRatio(frame,Scale(new(903,797,275,55),frame.Width),ocr,at),coin.Name,coin.Score,rows){
++                Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width),CoinRegion=Scale(new(853,799,37,37),frame.Width),
++                CurrentLevelRegion=Scale(new(760,245,160,65),frame.Width),NextLevelRegion=Scale(new(1000,245,170,65),frame.Width),
++                CurrentLevelRows=current.Rows,NextLevelRows=next.Rows,CurrentLevelRaw=current.Raw,NextLevelRaw=next.Raw};
++    }
++    internal static UpgradePreviewTooltip Tooltip(ImageRegion frame,IOcrService ocr,long at,string? expectedMaterialName=null)
++    {
++        var rawName=OneName(frame,new(730,168,440,67),ocr);
++        var alternateRead=EnlargedName(frame,new(730,168,440,67),ocr);var alternate=alternateRead.Name;
++        var candidates=new[]{rawName,alternate}.Where(n=>n.Length>0).Select(TalentUpgradePreviewEvidence.CanonicalMaterialName).Distinct().ToArray();
++        // Expected name comes from the independently matched preview card (>=.75), not caller text.
++        // Accept a complete actual OCR candidate matching it; never replace a Chinese name character.
++        var name=expectedMaterialName is not null&&candidates.Contains(expectedMaterialName)?expectedMaterialName:
++            expectedMaterialName is null&&candidates.Length==1?candidates[0]:"";
++        var kind=OneName(frame,new(730,230,440,65),ocr);
++        var sources=Rows(frame,new(730,690,460,65),ocr);
++        var footerRows=Rows(frame,new(725,890,470,65),ocr);
++        var ratio=ReadRatio(frame,Scale(new(885,890,295,65),frame.Width),ocr,at,"培养需求");
++        var page=candidates.Length>0&&kind is "角色天赋素材" or "角色与武器培养素材" &&
++            sources.Any(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)=="来源") &&
++            footerRows.Any(r=>TalentUpgradePreviewEvidence.Normalize(r.Text).StartsWith("培养需求",StringComparison.Ordinal));
++        return new(at,page,name,kind,ratio,rawName,alternate){Width=frame.Width,Height=frame.Height,NameRegion=Scale(new(730,168,440,67),frame.Width),
++            KindRegion=Scale(new(730,230,440,65),frame.Width),SourceRegion=Scale(new(730,690,460,65),frame.Width),
++            NameRows=Rows(frame,new(730,168,440,67),ocr),AlternateNameRows=alternateRead.Rows,AlternateNameScale=4,
++            KindRows=Rows(frame,new(730,230,440,65),ocr),SourceRows=sources,AlternateNamePreprocessing="gray_threshold_210_inverse_cubic_4x",
++            FooterLabelRegion=Scale(new(725,890,470,65),frame.Width),FooterLabelRows=footerRows};
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -0,0 +1,220 @@
++using System;
++using System.Collections.Concurrent;
++using System.Collections.Generic;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Recognition;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Simulator;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using Microsoft.Extensions.Logging;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++using Vanara.PInvoke;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++/// <summary>Only navigation, read-only preview/card tooltips and recognized-page Escape. Never final confirmation.</summary>
++public sealed class InspectTalentUpgradeTask
++{
++    private readonly ILogger logger=App.GetLogger<InspectTalentUpgradeTask>();
++    private readonly List<object> frames=[];
++    private string official="";
++    private string type="";
++    private CancellationToken token;
++    private bool opened;
++    private UpgradePreviewDetail? selectedDetail;
++    private static long Now()=>DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
++    private ImageRegion Capture()
++    {
++        token.ThrowIfCancellationRequested();var frame=Common.TaskControl.CaptureToRectArea(forceNew:true);
++        if(!SystemControl.IsGenshinImpactActiveByProcess()||Bv.IsInRevivePrompt(frame))
++        {frame.Dispose();throw new InvalidOperationException("game_focus_or_revive_blocked");}
++        return frame;
++    }
++    private static bool Overview(ImageRegion frame)
++    {using var found=frame.Find(CharacterDevelopmentAssets.Get(frame.Width,frame.Height).MenuRo);return found.IsExist();}
++    private static bool World(ImageRegion frame)=>ReadBackpackInventoryTask.World(frame)&&!Bv.IsInPromptDialog(frame)&&!Bv.IsInAnyClosableUi(frame);
++    private async Task Delay(int ms=250)=>await Task.Delay(ms,token);
++    private UpgradePreviewDetail Detail()
++    {using var frame=Capture();var read=TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now());frames.Add(read);return read;}
++    private async Task<(UpgradePreviewDetail First,UpgradePreviewDetail Second)> DetailPair()
++    {
++        var first=Detail();await Delay();var second=Detail();
++        if(!TalentUpgradePreviewEvidence.DetailPair(first,second,type,Now()))throw new InvalidOperationException("detail_identity_pair_unverified");
++        return(first,second);
++    }
++    private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level)
++    {
++        UpgradePreviewFrame Read(){using var frame=Capture();var read=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,recognizer,Now());frames.Add(read);return read;}
++        var first=Read();await Delay();var second=Read();
++        if(!TalentUpgradePreviewEvidence.PreviewPair(first,second,level,Now()))throw new InvalidOperationException("upgrade_preview_pair_unverified");
++        return(first,second);
++    }
++    private async Task ClickKnownText(string text,Rect reference)
++    {
++        token.ThrowIfCancellationRequested();using var frame=Capture();
++        if(text=="天赋")
++        {
++            if(!Overview(frame)||TalentUpgradePreviewEvidence.Normalize(CharacterSelectionHelper.ReadSelectedName(frame,frame.Width/1920d))!=official)
++                throw new InvalidOperationException("fresh_selected_character_before_navigation_unverified");
++        }
++        else if(text=="升级")
++        {
++            var detail=TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now());
++            if(selectedDetail is null||!detail.Page||detail.Type!=type||detail.Title!=selectedDetail.Title||detail.BaseLevel!=selectedDetail.BaseLevel)
++                throw new InvalidOperationException("fresh_talent_detail_before_preview_unverified");
++        }
++        else throw new InvalidOperationException("unsupported_read_only_navigation_label");
++        var roi=TalentUpgradePreviewReader.Scale(reference,frame.Width);
++        var matches=TalentUpgradePreviewReader.Rows(frame,reference,OcrFactory.Paddle)
++            .Where(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)==text).ToArray();
++        if(matches.Length!=1 || matches[0].Bounds.Width<=0 || matches[0].Bounds.Height<=0 ||
++            matches[0].Bounds.X<roi.X || matches[0].Bounds.Right>roi.Right || matches[0].Bounds.Y<roi.Y || matches[0].Bounds.Bottom>roi.Bottom)
++            throw new InvalidOperationException("unique_navigation_label_unverified");
++        frame.ClickTo(matches[0].Bounds.X+matches[0].Bounds.Width/2,matches[0].Bounds.Y+matches[0].Bounds.Height/2);
++        await Delay(500);
++    }
++    private async Task OpenTalent()
++    {
++        await ClickKnownText("天赋",new(0,80,370,900));
++        Point[] Read(){using var frame=Capture();
++            if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("talent_list_page_unverified");
++            var rows=TalentUpgradePreviewReader.Rows(frame,new(1536,0,384,900),OcrFactory.Paddle)
++                .Where(r=>CharacterDevelopmentStateMachineTask.TryParseTalentLevel(r.Text,out _))
++                .OrderBy(r=>r.Bounds.Y).ToArray();
++            return rows.Select(r=>new Point(r.Bounds.X+r.Bounds.Width/2,r.Bounds.Y+r.Bounds.Height/2)).ToArray();}
++        var first=Read();await Delay();var second=Read();
++        if(first.Length!=3||second.Length!=3||first.Zip(second).Any(p=>Math.Abs(p.First.Y-p.Second.Y)>6))
++            throw new InvalidOperationException("three_combat_talent_entries_pair_unverified");
++        int index=type switch{"普通攻击"=>0,"元素战技"=>1,_=>2};
++        using var frame=Capture();if(!Overview(frame)||Bv.IsInPromptDialog(frame))throw new InvalidOperationException("fresh_talent_list_before_click_unverified");
++        frame.ClickTo(second[index].X,second[index].Y);await Delay(500);
++    }
++    private async Task<UpgradePreviewTooltip[]> Tooltip(UpgradePreviewMaterial material)
++    {
++        using(var frame=Capture())
++        {
++            if(!TalentUpgradePreviewReader.PreviewPage(TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle)))
++                throw new InvalidOperationException("fresh_preview_before_tooltip_unverified");
++            // Card center is well above the final confirmation row. No confirm/key controller action exists here.
++            var card=material.Card;
++            if(card.Y<frame.Height*.5 || card.Bottom>frame.Height*.75 || card.X<frame.Width*.2 || card.Right>frame.Width*.8)
++                throw new InvalidOperationException("material_card_geometry_unverified");
++            frame.ClickTo(card.X+card.Width/2,card.Y+card.Height/3);
++        }
++        await Delay(400);
++        UpgradePreviewTooltip Read(){using var frame=Capture();var read=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now(),material.Name);frames.Add(read);return read;}
++        var first=Read();await Delay();var second=Read();
++        if(!TalentUpgradePreviewEvidence.TooltipPair(first,second,material,Now()))throw new InvalidOperationException("named_material_tooltip_pair_unverified");
++        using(var frame=Capture())
++        {
++            var current=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now(),material.Name);
++            if(!current.Page||current.Name!=material.Name)throw new InvalidOperationException("fresh_tooltip_before_cancel_unverified");
++            token.ThrowIfCancellationRequested();Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
++        }
++        await Delay(400);
++        return[first,second];
++    }
++    private async Task<bool> Restore()
++    {
++        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));long? previousWorldAt=null;
++        for(int i=0;i<12;i++)
++        {
++            using var frame=Common.TaskControl.CaptureToRectArea(forceNew:true);
++            var at=Now();var focused=SystemControl.IsGenshinImpactActiveByProcess();var world=focused&&World(frame);
++            frames.Add(new{phase="world_restore",observedAt=at,width=frame.Width,height=frame.Height,focused,worldVerified=world});
++            if(!focused)return false;
++            if(world)
++            {
++                if(previousWorldAt.HasValue&&TalentUpgradePreviewEvidence.Fresh(previousWorldAt.Value,at,at))return true;
++                previousWorldAt=at;
++            }
++            else
++            {
++                previousWorldAt=null;
++                if(!opened || Bv.IsInRevivePrompt(frame)||Bv.IsInDomain(frame))return false;
++                var rows=TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle);
++                var preview=TalentUpgradePreviewReader.PreviewPage(rows);
++                var detail=TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now()).Page;
++                var tooltip=TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now()).Page;
++                if(!Overview(frame)&&!preview&&!detail&&!tooltip)return false;
++                timeout.Token.ThrowIfCancellationRequested();Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
++            }
++            await Task.Delay(250,timeout.Token);
++        }
++        return false;
++    }
++    public async Task<string> Start(string characterName,string talentType,CancellationToken ct)
++    {
++        TalentUpgradePreviewEvidence.ValidateRequest(characterName,talentType);
++        var target=CharacterSelectionHelper.CreateTarget(characterName);
++        if(target.SkipDisplayNameConfirmation)throw new ArgumentException("Preview requires a complete stable official character display name.");
++        official=target.Name;type=talentType;
++        bool restored=false,verified=false;string reason="unverified";
++        UpgradePreviewDetail? detailReceipt=null;UpgradePreviewFrame? previewReceipt=null;
++        UpgradePreviewCharacter[] names=[];var tooltips=new List<UpgradePreviewTooltip[]>();
++        var saved=new ConcurrentDictionary<string,ITaskTrigger>(GameTaskManager.TriggerDictionary??new());
++        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(ct);timeout.CancelAfter(TimeSpan.FromSeconds(150));token=timeout.Token;
++        try
++        {
++            TaskTriggerDispatcher.Instance().ClearTriggers();Simulation.ReleaseAllKey();
++            for(int i=0;i<2;i++){using var initial=Capture();if(!World(initial))throw new InvalidOperationException("fresh_world_pair_required");await Delay();}
++            opened=true;
++            await new CharacterDevelopmentStateMachineTask([official],CharacterDevelopmentCategory.Attribute|CharacterDevelopmentCategory.Weapon,true).Start(token);
++            var nameList=new List<UpgradePreviewCharacter>();
++            for(int i=0;i<3;i++)
++            {
++                using var frame=Capture();var read=new UpgradePreviewCharacter(Now(),Overview(frame),
++                    CharacterSelectionHelper.ReadSelectedName(frame,frame.Width/1920d)){
++                        Width=frame.Width,Height=frame.Height,NameRegion=TalentUpgradePreviewReader.Scale(new(1466,131,244,38),frame.Width),
++                        NameRows=TalentUpgradePreviewReader.Rows(frame,new(1466,131,244,38),OcrFactory.Paddle)};
++                nameList.Add(read);frames.Add(read);await Delay(200);
++            }
++            names=nameList.ToArray();if(!TalentUpgradePreviewEvidence.CharacterTriple(names,official,Now()))throw new InvalidOperationException("full_official_character_name_triple_unverified");
++            await OpenTalent();var detail=await DetailPair();detailReceipt=detail.Second;selectedDetail=detailReceipt;
++            await ClickKnownText("升级",new(0,975,560,100));
++            using var recognizer=new ItemRecognizer();var preview=await PreviewPair(recognizer,detailReceipt.BaseLevel!.Value);previewReceipt=preview.Second;
++            foreach(var material in previewReceipt.Materials)
++            {
++                var fresh=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
++                if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,fresh.Second))throw new InvalidOperationException("preview_costs_changed");
++                tooltips.Add(await Tooltip(fresh.Second.Materials.Single(m=>m.Name==material.Name)));
++            }
++            var final=await PreviewPair(recognizer,detailReceipt.BaseLevel.Value);
++            if(!TalentUpgradePreviewEvidence.SameCosts(previewReceipt,final.Second))throw new InvalidOperationException("final_preview_costs_changed");
++            previewReceipt=final.Second;verified=true;reason="verified_read_only_preview";
++        }
++        catch(Exception ex){reason=ex is OperationCanceledException?"observation_timeout_or_cancelled":ex.Message;verified=false;}
++        finally
++        {
++            try{restored=await Restore();}catch{restored=false;}
++            Simulation.ReleaseAllKey();TaskTriggerDispatcher.Instance().ClearTriggers();GameTaskManager.TriggerDictionary=saved;
++            TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t=>t.Priority).ToList());
++        }
++        ct.ThrowIfCancellationRequested();verified&=restored;
++        logger.LogInformation("只读天赋升级预览：verified={Verified} restored={Restored} confirmationSubmitted=False reason={Reason}",verified,restored,reason);
++        var reportFolder=Global.Absolute("log\\talent-upgrade-inspection");
++        var reportPath=System.IO.Path.Combine(reportFolder,DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".json");
++        var payload=JsonConvert.SerializeObject(new{
++            schemaVersion=1,task="talent-upgrade-inspection",status=verified?"success":"unknown",readOnly=true,
++            rawReportPath=reportPath,
++            characterName=official,talentType=type,talentName=verified?detailReceipt?.Title:null,
++            currentBaseLevel=verified?previewReceipt?.Current:null,nextBaseLevel=verified?previewReceipt?.Next:null,
++            materials=verified?previewReceipt?.Materials.Select(m=>new{name=m.Name,owned=m.Quantity.Owned,required=m.Quantity.Required}).ToArray():null,
++            mora=verified?new{owned=previewReceipt?.Mora.Owned,required=previewReceipt?.Mora.Required}:null,
++            evidenceVerified=verified,mainUiRestored=restored,confirmationSubmitted=false,reason=restored?reason:"world_restore_unverified",
++            observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
++            evidence=new{characterIdentity=names,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
++                characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
++        },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
++        try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
++        catch(Exception ex){logger.LogWarning("只读天赋预览私有报告写入失败：{Type}",ex.GetType().Name);}
++        return payload;
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+@@ -0,0 +1,62 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentUpgradePreviewEvidenceTests
++{
++    [Theory] [InlineData("12/3",12,3)] [InlineData("０/２",0,2)]
++    public void CompleteRatioSeparatesOwnedAndRequired(string raw,int owned,int required)
++    {var r=TalentUpgradePreviewEvidence.Ratio(raw);Assert.Equal(owned,r.Owned);Assert.Equal(required,r.Required);}
++    [Theory] [InlineData("123")] [InlineData("12l3")] [InlineData("1.2万/3")] [InlineData("12/03")] [InlineData("12//3")] [InlineData("-1/3")]
++    public void MissingSlashShortenedOrPartialNumbersAreUnknown(string raw)=>Assert.Null(TalentUpgradePreviewEvidence.Ratio(raw).Owned);
++    [Fact] public void QuoteGlyphNormalizationPreservesEveryNameCharacter()
++    {
++        Assert.Equal("「教材」的教导",TalentUpgradePreviewEvidence.CanonicalMaterialName("[教材」的教导"));
++        Assert.NotEqual("「教材」的教导",TalentUpgradePreviewEvidence.CanonicalMaterialName("[材」的教导"));
++        Assert.NotEqual("「教材」的教导",TalentUpgradePreviewEvidence.CanonicalMaterialName("教材的教导"));
++    }
++    [Fact] public void CharacterMustHaveThreeIndependentFullNamesOnOverview()
++    {
++        UpgradePreviewCharacter[] f=[new(100,true,"目标角色"),new(400,true,"目标角色"),new(700,true,"目标角色")];
++        Assert.True(TalentUpgradePreviewEvidence.CharacterTriple(f,"目标角色",700));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f[0],f[1],f[1]],"目标角色",700));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f[0],f[1],f[2] with{Name="目标"}],"目标角色",700));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterTriple([f[0],f[1],f[2] with{Overview=false}],"目标角色",700));
++    }
++    private static UpgradePreviewFrame Frame(long at,int own=1234,int fee=120)=>new(at,true,1,2,
++        [new("材料甲",.9,new(800,650,116,146),new(at,"17/3",new(835,760,50,20),17,3,true)),
++         new("材料乙",.9,new(1000,650,116,146),new(at,"23/6",new(1035,760,50,20),23,6,true))],
++        new(at,$"{own}/{fee}",new(900,800,275,55),own,fee,true),"摩拉",.9,[]);
++    [Fact] public void PopupRequiresFullMarkersExactNextLevelNamedMaterialsCoinAndFreshPair()
++    {
++        var a=Frame(100);var b=Frame(500);
++        Assert.True(TalentUpgradePreviewEvidence.PreviewPair(a,b,1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,a,1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Page=false},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Next=3},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinName="原石"},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinScore=.74},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinScore=double.PositiveInfinity},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Materials=[b.Materials[0],b.Materials[0]]},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Mora=b.Mora with{Complete=false}},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,Frame(500,1235),1,500));
++    }
++    [Fact] public void TooltipAggregateRequirementNeverOverridesPopupUpgradeRequirement()
++    {
++        var item=Frame(100).Materials[0];
++        var a=new UpgradePreviewTooltip(500,true,"材料甲","角色天赋素材",new(500,"17/9",default,17,9,true));
++        var b=a with{ObservedAt=800,Quantity=a.Quantity with{ObservedAt=800}};
++        Assert.True(TalentUpgradePreviewEvidence.TooltipPair(a,b,item,800));Assert.Equal(3,item.Quantity.Required);
++        Assert.False(TalentUpgradePreviewEvidence.TooltipPair(a,b with{Name="材料"},item,800));
++        Assert.False(TalentUpgradePreviewEvidence.TooltipPair(a,b with{Quantity=b.Quantity with{Owned=18}},item,800));
++    }
++    [Theory] [InlineData(100,100,100,false)] [InlineData(100,6000,6000,false)] [InlineData(100,400,1901,false)]
++    [InlineData(100,400,399,false)] [InlineData(100,400,400,true)]
++    public void CaptureTimeAndLatestFreshnessAreMandatory(long first,long second,long now,bool expected)=>
++        Assert.Equal(expected,TalentUpgradePreviewEvidence.Fresh(first,second,now));
++    [Theory] [InlineData("元素战技")] [InlineData("元素爆发")] [InlineData("普通攻击")]
++    public void OnlyTheThreeCombatTalentTypesCanBeRequested(string type)=>TalentUpgradePreviewEvidence.ValidateRequest("目标角色",type);
++    [Theory] [InlineData("被动天赋")] [InlineData("确认升级")]
++    public void ArbitraryUpgradeActionsCannotBeRequested(string type)=>Assert.Throws<ArgumentException>(()=>TalentUpgradePreviewEvidence.ValidateRequest("目标角色",type));
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewPrivateImageTests.cs
+@@ -0,0 +1,54 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentUpgradePreviewPrivateImageTests
++{
++    [Fact] [Trait("Fixture","PrivateTalentUpgradePreview")]
++    public void ActualDetailPreviewAndNamedTooltipParserDoesNotPretendLiveFrames()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_UPGRADE_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Explicit private fixture manifest required; absent fixture never passes.");
++        var fixture=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        Assert.True(fixture.MoraIconVerified.HasValue,"The private image's identity acceptance or expected-unknown boundary must be explicit.");
++        using var recognizer=new ItemRecognizer();
++        foreach(int width in new[]{1536,1920})
++        {
++            ImageRegion Load(string file)
++            {using var image=Cv2.ImRead(file);var c=fixture.ClientRect;using var client=new Mat(image,new Rect(c[0],c[1],c[2],c[3]));
++                var resized=new Mat();Cv2.Resize(client,resized,new Size(width,width*9/16));return new(resized,0,0);}
++            using(var detail=Load(fixture.Detail))
++            {var read=TalentUpgradePreviewReader.Detail(detail,OcrFactory.Paddle,0);
++                var diagnostics=Newtonsoft.Json.JsonConvert.SerializeObject(TalentUpgradePreviewReader.Rows(detail,new(20,125,540,42),OcrFactory.Paddle));
++                Assert.True(read.Page,$"Static detail width={width}; type={read.Type}; title={read.Title}; level={read.BaseLevel}; titleRows={diagnostics}");Assert.Equal(fixture.TalentType,read.Type);Assert.Equal(fixture.TalentName,read.Title);Assert.Equal(fixture.Current,read.BaseLevel);}
++            foreach(var file in fixture.Previews)
++            {
++                using var image=Load(file);var read=TalentUpgradePreviewReader.Preview(image,OcrFactory.Paddle,recognizer,0);
++                var summary=$"width={width}; page={read.Page}; current={read.Current}; next={read.Next}; coin={read.CoinName}/{read.CoinScore}; moraComplete={read.Mora.Complete}; materials="+
++                    string.Join(",",read.Materials.Select(m=>$"{m.Name}/{m.IconScore}/complete={m.Quantity.Complete}"));
++                Assert.True(read.Page,summary);Assert.True(read.Current==fixture.Current,summary);Assert.True(read.Next==fixture.Next,summary);
++                Assert.Equal(fixture.MoraIconVerified.Value,read.CoinName=="摩拉"&&double.IsFinite(read.CoinScore)&&read.CoinScore>=.75);
++                Assert.True(read.Mora.Complete,summary);Assert.Equal(fixture.MoraOwned,read.Mora.Owned);Assert.Equal(fixture.MoraRequired,read.Mora.Required);
++                Assert.Equal(fixture.Materials.Length,read.Materials.Length);
++                foreach(var expected in fixture.Materials)
++                {var material=Assert.Single(read.Materials.Where(m=>m.Name==expected.Name));Assert.True(material.IconScore>=.75);
++                    Assert.True(material.Quantity.Complete);Assert.Equal(expected.Owned,material.Quantity.Owned);Assert.Equal(expected.Required,material.Quantity.Required);}
++            }
++            foreach(var expected in fixture.Materials)
++            {using var image=Load(expected.Tooltip);var read=TalentUpgradePreviewReader.Tooltip(image,OcrFactory.Paddle,0,expected.Name);
++                Assert.True(expected.TooltipNameVerified.HasValue,"Positive or expected-unknown full-name boundary must be explicit in private manifest.");
++                Assert.True(read.Page,$"width={width}; tooltipName={read.Name}; rawName={read.RawName}; alternate={read.AlternateRawName}; kind={read.Kind}; page={read.Page}");
++                Assert.Equal(expected.TooltipNameVerified.Value,read.Name==expected.Name);
++                Assert.True(read.Quantity.Complete,$"width={width}; tooltip quantity complete={read.Quantity.Complete}; name={expected.Name}");Assert.Equal(expected.Owned,read.Quantity.Owned);}
++        }
++    }
++    private sealed class Fixture
++    {public int[] ClientRect{get;set;}=[];public string Detail{get;set;}="";public string[] Previews{get;set;}=[];
++        public string TalentType{get;set;}="";public string TalentName{get;set;}="";public int? Current{get;set;}public int? Next{get;set;}
++        public int? MoraOwned{get;set;}public int? MoraRequired{get;set;}public bool? MoraIconVerified{get;set;}public Material[] Materials{get;set;}=[];}
++    private sealed class Material{public string Name{get;set;}="";public int? Owned{get;set;}public int? Required{get;set;}public bool? TooltipNameVerified{get;set;}public string Tooltip{get;set;}="";}
++}

@@ -1,0 +1,17 @@
+# 第二十六层：天赋费用整数的独立固定检测器
+
+在固定源码基线与完整1..25之后追加独立本层。原只读天赋预览已经越过角色和天赋条目身份检查；实际材料数量裁图保留完整数字与真实斜杠，但原整数检测器在小裁图上产生触边字框，数量保持unknown。历史失败报告和原PNG不改写，图标模型的0.75、完整名称、实际数量裁图、四边2px、独立双帧及新鲜度条件不放宽。
+
+共享`TalentUpgradePreviewReader.ReadRatio`仅增加可选整数检测器与来源参数。旧调用默认继续原服务和原行为。本层生产只读预览持有现有`StrictInventoryOcrSession`的新CPU uncached会话；它从实际原始ONNX及labels文件加载raw V6和固定V4检测器，并保持五项`NamedCountModelPin`资产加V6 detector第六资产的读锁、哈希、长度和配置回读8。没有另一套Reader或模型pins，也不把Paddle singleton当成新会话。
+
+生产材料数量强制唯一实际斜杠的几何分割，即使整块OCR恰好读成ratio也不能绕过两个完整整数。原源ROI、真实背景、灰度斜杠证明、垂直padding6、4倍cubic输入和映射回源四边至少2px不变。两个原整数分别由V6 raw和V4独立detector读取，必须唯一完整行且文字完全一致。数量按实际源整数取得，不替换1或7为斜杠，不清洗错误文本，不猜库存或下一次费用，也不使用source count row充当数量验收。
+
+仅实际opt-in split支路保留四项新字段：`splitRawModel="V6"`、`splitDetectorModel="V4"`、`splitModelEvidence`和`splitRawPaddleReadback=8`。`splitModelEvidence`沿用`StrictInventoryOcrSession.Evidence`，包含CPU/uncached方法、原五资产及第六raw detector资产。材料的initialReading若实际split也保留这些字段；非split、摩拉whole和tooltip不虚填，默认null。
+
+只读任务payload和实际preview frame声明`costQuantityMethod="pinned_v6_v4_slash_integer_split"`。旧frame默认`legacy_observed_ratio`仍用于原诊断和只读fixture兼容；它不成为新strict消费依据。有现代split来源却声明legacy不能降级绕过校验。新method每项材料必须具有唯一斜杠、完整两整数、正确split源几何、四边和完整模型proof，且两帧保持同一实际模型资产。Host需要以可信runtime独立回读六资产文件；只校验模型名称或摘要不足以证明来源。
+
+角色输入、官方名字与条目观察、detail检查、导航、tooltip、cleanup、confirmationSubmitted=false和只读消费边界保持。未新增升级、转换、资源确认或消费Session。
+
+匿名纯回归覆盖模型错配/缺失、四边触边、斜杠缺失、非完整整数、源crop改写、不同模型资产pair以及legacy降级；明确私人模型fixture另标记`PrivateTalentPinnedInteger`，缺输入时失败，输出仅存本机指定私人路径。此前隔离实际模型候选四项通过并保留四项原失败；原图、运行ID、库存和模型诊断只在ignored state，公开文件不包含这些数据。
+
+本层源码准备阶段尚未执行正式产品构建或回归，统一构建负责人在后续源码冻结后执行并单独记录。离线候选通过不代表完整预览、原生实时freshness、具名库存、摩拉或升级执行实机验收；相关live验收标志继续false。对应源码按GPL v3提供并保留原作者声明。

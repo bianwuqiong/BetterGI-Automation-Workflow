@@ -1,0 +1,504 @@
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -72,6 +72,7 @@
+     [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public StrictInventoryModelEvidence? SourceRegionModelEvidence{get;init;}
+     [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public UpgradePreviewFooterQuantityEvidence? FooterQuantityEvidence{get;init;}
+     [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public UpgradePreviewReadTiming? ReadTiming{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public UpgradePreviewTooltipIdentityDiagnostic? OriginalIdentityReading{get;init;}
+     public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public Rect KindRegion{get;init;}public Rect SourceRegion{get;init;}
+     public UpgradePreviewRow[] NameRows{get;init;}=[];public UpgradePreviewRow[] AlternateNameRows{get;init;}=[];
+     public int AlternateNameScale{get;init;}public UpgradePreviewRow[] KindRows{get;init;}=[];public UpgradePreviewRow[] SourceRows{get;init;}=[];
+@@ -80,7 +81,14 @@
+ }
+ public sealed record UpgradePreviewFooterQuantityEvidence(string Method,Rect OldRegion,Rect SourceRegion,
+     UpgradePreviewRatio InitialReading,string InitialWholeRawText,string InitialWholeDetectorText,
+-    string WholeRawText,string WholeDetectorText);
++    string WholeRawText,string WholeDetectorText)
++{
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public UpgradePreviewRatio? OriginalWholeReading{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public string? OriginalWholeRawText{get;init;}
++    [JsonProperty(NullValueHandling=NullValueHandling.Ignore)] public string? OriginalWholeDetectorText{get;init;}
++}
++public sealed record UpgradePreviewTooltipIdentityDiagnostic(long ObservedAt,Rect NameRegion,string AlternateRawName,
++    UpgradePreviewRow[] AlternateNameRows,int AlternateNameScale,string AlternateNamePreprocessing,Rect SourceRegion,UpgradePreviewRow[] SourceRows);
+ public sealed record UpgradePreviewCharacter(long ObservedAt,bool Overview,string Name)
+ {
+     public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public UpgradePreviewRow[] NameRows{get;init;}=[];
+@@ -97,10 +105,14 @@
+     public const string TooltipTimingMethod="capture_read_evaluate_then_private_png_v1";
+     public const string LegacyPreviewMarkerMethodName="whole_marker_required_roles_v1";
+     public const string PreviewMarkerMethodName="whole_marker_required_roles_v2";
+-    public const string TooltipQuantityMethodName="existing_full_footer_v1";
++    public const string LegacyTooltipQuantityMethodName="existing_full_footer_v1";
++    public const string TooltipQuantityMethodName="existing_full_footer_v2";
+     public static readonly Rect WholeMarkerRegion=new(420,235,1100,750);
+     public static readonly Rect TooltipOldFooterRegion=new(885,890,295,65);
+-    public static readonly Rect TooltipWholeFooterRegion=new(725,890,470,65);
++    public static readonly Rect LegacyTooltipWholeFooterRegion=new(725,890,470,65);
++    public static readonly Rect TooltipWholeFooterRegion=new(882,875,223,80);
++    public static readonly Rect LegacyTooltipSourceRegion=new(730,690,460,65);
++    public static readonly Rect TooltipSourceRegion=new(730,675,460,80);
+     public static readonly Rect LegacyMaterialHeadingRegion=new(870,575,180,60);
+     internal static (string Role,string Text,Rect Region)[] FixedMarkerRoles(bool legacy=false)=>[
+         ("attribute_heading","属性变更",new(870,295,180,70)),
+@@ -290,20 +302,22 @@
+     private static bool TooltipModernPair(UpgradePreviewTooltip a,UpgradePreviewTooltip b,UpgradePreviewMaterial item)
+     {
+         bool claimed(UpgradePreviewTooltip t)=>t.TooltipQuantityMethod is not null||t.SourceRegionModelEvidence is not null||t.FooterQuantityEvidence is not null||t.ReadTiming is not null;
+-        return !claimed(a)&&!claimed(b)||TooltipFrame(a,item)&&TooltipFrame(b,item)&&SameStrict(a.SourceRegionModelEvidence,b.SourceRegionModelEvidence);
++        return !claimed(a)&&!claimed(b)||a.TooltipQuantityMethod==b.TooltipQuantityMethod&&TooltipFrame(a,item)&&TooltipFrame(b,item)&&SameStrict(a.SourceRegionModelEvidence,b.SourceRegionModelEvidence);
+     }
+     public static bool TooltipFrame(UpgradePreviewTooltip tip,UpgradePreviewMaterial item)
+     {
+         var evidence=tip.FooterQuantityEvidence;var quantity=tip.Quantity;
+-        if(tip.Width!=1920||tip.Height!=1080||tip.TooltipQuantityMethod!=TooltipQuantityMethodName||
++        bool legacy=tip.TooltipQuantityMethod==LegacyTooltipQuantityMethodName;
++        var sourceRegion=legacy?LegacyTooltipWholeFooterRegion:TooltipWholeFooterRegion;
++        if(tip.Width!=1920||tip.Height!=1080||(!legacy&&tip.TooltipQuantityMethod!=TooltipQuantityMethodName)||
+             !StrictInventoryModelValidation.Verified(tip.SourceRegionModelEvidence)||evidence is null||
+             item.Quantity.InitialReading is not { } itemInitial||
+             !SameStrict(tip.SourceRegionModelEvidence,item.Quantity.SplitModelEvidence)||
+             !SameStrict(tip.SourceRegionModelEvidence,itemInitial.SplitModelEvidence)||
+-            evidence.Method!=TooltipQuantityMethodName||evidence.OldRegion!=TooltipOldFooterRegion||
+-            evidence.SourceRegion!=TooltipWholeFooterRegion||quantity.Bounds!=TooltipWholeFooterRegion||
++            evidence.Method!=tip.TooltipQuantityMethod||evidence.OldRegion!=TooltipOldFooterRegion||
++            evidence.SourceRegion!=sourceRegion||quantity.Bounds!=sourceRegion||
+             evidence.WholeRawText is null||evidence.WholeDetectorText is null||
+-            evidence.InitialReading is null||tip.FooterLabelRegion!=TooltipWholeFooterRegion||quantity.ObservedAt!=tip.ObservedAt||
++            evidence.InitialReading is null||tip.FooterLabelRegion!=sourceRegion||quantity.ObservedAt!=tip.ObservedAt||
+             evidence.InitialReading.ObservedAt!=tip.ObservedAt||evidence.InitialReading.Bounds!=TooltipOldFooterRegion||
+             quantity.Width!=1920||quantity.Height!=1080||evidence.InitialReading.Width!=1920||evidence.InitialReading.Height!=1080||
+             quantity.Prefix!="培养需求"||evidence.InitialReading.Prefix!="培养需求"||!quantity.Complete||
+@@ -314,15 +328,31 @@
+             quantity.SplitRegionMethod!="none"||quantity.CropMethod!="fixed_or_initial"||quantity.SourceCountRow is not null||
+             quantity.Owned is not >=0||quantity.Required is not >0||quantity.Owned!=item.Quantity.Owned||
+             tip.NameRegion!=new Rect(730,168,440,67)||tip.KindRegion!=new Rect(730,230,440,65)||
+-            tip.SourceRegion!=new Rect(730,690,460,65)||tip.AlternateNameScale!=4||
+-            tip.AlternateNamePreprocessing!="gray_threshold_210_inverse_cubic_4x")return false;
++            tip.SourceRegion!=(legacy?LegacyTooltipSourceRegion:TooltipSourceRegion)||tip.AlternateNameScale!=4||
++            tip.AlternateNamePreprocessing!=(legacy?"gray_threshold_210_inverse_cubic_4x":"bgr_cubic_4x"))return false;
+         var full="培养需求"+quantity.Raw;
+         if(Normalize(evidence.WholeRawText)!=full||Normalize(evidence.WholeDetectorText)!=full||
+             quantity.Raw!=quantity.DetectorRaw||Ratio(quantity.Raw)!=(quantity.Owned,quantity.Required)||
+             quantity.OcrRows is not { Length: 1 }||tip.FooterLabelRows is not { Length: 1 }||
+             tip.FooterLabelRows[0]!=quantity.OcrRows[0]||
+             Normalize(quantity.OcrRows[0].Text)!=full||Normalize(tip.FooterLabelRows[0].Text)!=full||
+-            !Margin(quantity.OcrRows[0],TooltipWholeFooterRegion)||!Margin(tip.FooterLabelRows[0],TooltipWholeFooterRegion))return false;
++            !Margin(quantity.OcrRows[0],sourceRegion)||!Margin(tip.FooterLabelRows[0],sourceRegion))return false;
++        if(legacy)
++        {
++            if(evidence.OriginalWholeReading is not null||evidence.OriginalWholeRawText is not null||evidence.OriginalWholeDetectorText is not null||tip.OriginalIdentityReading is not null)return false;
++        }
++        else if(evidence.OriginalWholeReading is not { } original||evidence.OriginalWholeRawText is null||
++            evidence.OriginalWholeDetectorText is null||!FooterDiagnostic(original,evidence.OriginalWholeRawText,
++                evidence.OriginalWholeDetectorText,LegacyTooltipWholeFooterRegion,tip.ObservedAt,quantity))return false;
++        if(!legacy)
++        {
++            var originalIdentity=tip.OriginalIdentityReading;
++            if(originalIdentity is null||originalIdentity.ObservedAt!=tip.ObservedAt||originalIdentity.NameRegion!=tip.NameRegion||
++                originalIdentity.AlternateNameScale!=4||originalIdentity.AlternateNamePreprocessing!="gray_threshold_210_inverse_cubic_4x"||
++                originalIdentity.SourceRegion!=LegacyTooltipSourceRegion||originalIdentity.AlternateRawName is null||
++                originalIdentity.AlternateRawName.Length>256||!IdentityDiagnosticRows(originalIdentity.AlternateNameRows)||
++                !IdentityDiagnosticRows(originalIdentity.SourceRows))return false;
++        }
+         var initial=evidence.InitialReading;
+         if(evidence.InitialWholeRawText is null||evidence.InitialWholeDetectorText is null)return false;
+         var oldRaw=Normalize(evidence.InitialWholeRawText);var oldDetected=Normalize(evidence.InitialWholeDetectorText);
+@@ -352,6 +382,25 @@
+             !Margin(tip.KindRows[0],tip.KindRegion)||!Margin(tip.SourceRows[0],tip.SourceRegion))return false;
+         return true;
+     }
++    private static bool FooterDiagnostic(UpgradePreviewRatio initial,string wholeRaw,string wholeDetector,Rect region,long at,UpgradePreviewRatio accepted)
++    {
++        var raw=Normalize(wholeRaw);var detected=Normalize(wholeDetector);
++        return initial.ObservedAt==at&&initial.Bounds==region&&initial.Width==1920&&initial.Height==1080&&
++            initial.Prefix=="培养需求"&&initial.InitialReading is null&&!initial.SlashPixelVerified&&initial.SlashBounds is null&&
++            initial.NumeratorRegion is null&&initial.DenominatorRegion is null&&initial.SplitRawModel is null&&
++            initial.SplitDetectorModel is null&&initial.SplitModelEvidence is null&&initial.SplitRawPaddleReadback is null&&
++            initial.SplitRegionMethod=="none"&&initial.CropMethod=="fixed_or_initial"&&initial.SourceCountRow is null&&
++            initial.OcrRows is not null&&initial.Raw==(raw.StartsWith("培养需求",StringComparison.Ordinal)?raw["培养需求".Length..]:"")&&
++            initial.DetectorRaw==(detected.StartsWith("培养需求",StringComparison.Ordinal)?detected["培养需求".Length..]:"")&&
++            detected==Normalize(string.Concat(initial.OcrRows.Select(r=>r.Text)))&&
++            initial.OcrRows.All(r=>!string.IsNullOrWhiteSpace(Normalize(r.Text))&&InImage(r.Bounds,1920,1080))&&
++            (initial.Complete?raw==detected&&raw=="培养需求"+initial.Raw&&initial.OcrRows.Length==1&&
++                Margin(initial.OcrRows[0],region)&&Ratio(initial.Raw)==(initial.Owned,initial.Required)&&
++                initial.Owned==accepted.Owned&&initial.Required==accepted.Required:
++                initial.Owned is null&&initial.Required is null);
++    }
++    private static bool IdentityDiagnosticRows(UpgradePreviewRow[]? rows)=>rows is not null&&rows.Length<=16&&
++        rows.All(r=>r.Text is not null&&r.Text.Length<=256&&InImage(r.Bounds,1920,1080));
+     public static bool TimedTooltipPair(UpgradePreviewTooltip a,UpgradePreviewTooltip b,UpgradePreviewMaterial item)
+     {
+         if(a.ReadTiming is not { } x||b.ReadTiming is not { } y||
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -29,17 +29,19 @@
+         var box=Scale(reference,frame.Width);var rows=Rows(frame,reference,ocr);
+         return rows.Length==1&&Full(rows[0],box,frame.Width/1920d)?TalentUpgradePreviewEvidence.Normalize(rows[0].Text):"";
+     }
+-    private static (string Name,UpgradePreviewRow[] Rows) EnlargedName(ImageRegion frame,Rect reference,IOcrService ocr)
++    private static (string Name,UpgradePreviewRow[] Rows) EnlargedName(ImageRegion frame,Rect reference,IOcrService ocr,bool originalColor=false)
+     {
+         using var crop=frame.DeriveCrop(Scale(reference,frame.Width));
+         using var gray=crop.SrcMat.CvtColor(ColorConversionCodes.BGR2GRAY);
+         using var foreground=gray.Threshold(210,255,ThresholdTypes.BinaryInv);
+-        using var large=foreground.Resize(new Size(crop.Width*4,crop.Height*4),0,0,InterpolationFlags.Cubic);
++        using var large=(originalColor?crop.SrcMat:foreground).Resize(new Size(crop.Width*4,crop.Height*4),0,0,InterpolationFlags.Cubic);
+         var rows=ocr.OcrResult(large).Regions;
+         if(rows.Length!=1)return("",Project(rows,Scale(reference,frame.Width),4));
+         var b=rows[0].Rect.BoundingRect();double margin=2*frame.Width/1920d*4;
+-        return(b.Left>=margin&&large.Width-b.Right>=margin&&b.Top>=0&&b.Bottom<=large.Height?
+-            TalentUpgradePreviewEvidence.Normalize(rows[0].Text):"",Project(rows,Scale(reference,frame.Width),4));
++        var text=TalentUpgradePreviewEvidence.Normalize(rows[0].Text);
++        var raw=originalColor?TalentUpgradePreviewEvidence.Normalize(ocr.OcrWithoutDetector(large)):text;
++        return(b.Left>=margin&&large.Width-b.Right>=margin&&b.Top>=(originalColor?margin:0)&&
++            large.Height-b.Bottom>=(originalColor?margin:0)&&raw==text?raw:"",Project(rows,Scale(reference,frame.Width),4));
+     }
+     internal static UpgradePreviewDetail Detail(ImageRegion frame,IOcrService ocr,long at)
+     {
+@@ -263,14 +265,17 @@
+             !StrictInventoryModelValidation.Verified(scope.Evidence)))
+             throw new InvalidOperationException("actual_pinned_talent_tooltip_ocr_session_required");
+         var rawName=OneName(frame,new(730,168,440,67),ocr);
+-        var alternateRead=EnlargedName(frame,new(730,168,440,67),ocr);var alternate=alternateRead.Name;
++        var originalAlternate=EnlargedName(frame,new(730,168,440,67),ocr);
++        var alternateRead=scope is null?originalAlternate:EnlargedName(frame,new(730,168,440,67),ocr,originalColor:true);var alternate=alternateRead.Name;
+         var candidates=new[]{rawName,alternate}.Where(n=>n.Length>0).Select(TalentUpgradePreviewEvidence.CanonicalMaterialName).Distinct().ToArray();
+         // Expected name comes from the independently matched preview card (>=.75), not caller text.
+         // Accept a complete actual OCR candidate matching it; never replace a Chinese name character.
+         var name=expectedMaterialName is not null&&candidates.Contains(expectedMaterialName)?expectedMaterialName:
+             expectedMaterialName is null&&candidates.Length==1?candidates[0]:"";
+         var kind=OneName(frame,new(730,230,440,65),ocr);
+-        var sources=Rows(frame,new(730,690,460,65),ocr);
++        var originalSources=Rows(frame,TalentUpgradePreviewEvidence.LegacyTooltipSourceRegion,ocr);
++        var sourceReference=scope is null?TalentUpgradePreviewEvidence.LegacyTooltipSourceRegion:TalentUpgradePreviewEvidence.TooltipSourceRegion;
++        var sources=scope is null?originalSources:Rows(frame,sourceReference,ocr);
+         UpgradePreviewRatio ratio;UpgradePreviewFooterQuantityEvidence? footerProof=null;
+         UpgradePreviewRow[] footerRows;
+         if(scope is null)
+@@ -283,19 +288,23 @@
+             var oldBox=Scale(TalentUpgradePreviewEvidence.TooltipOldFooterRegion,frame.Width);
+             var sourceBox=Scale(TalentUpgradePreviewEvidence.TooltipWholeFooterRegion,frame.Width);
+             var initial=ReadWholeFooter(frame,oldBox,ocr,at);
++            var original=ReadWholeFooter(frame,Scale(TalentUpgradePreviewEvidence.LegacyTooltipWholeFooterRegion,frame.Width),ocr,at);
+             var final=ReadWholeFooter(frame,sourceBox,ocr,at);
+             ratio=final.Reading;footerRows=final.Reading.OcrRows;
+             footerProof=new(TalentUpgradePreviewEvidence.TooltipQuantityMethodName,oldBox,sourceBox,
+-                initial.Reading,initial.WholeRaw,initial.WholeDetector,final.WholeRaw,final.WholeDetector);
++                initial.Reading,initial.WholeRaw,initial.WholeDetector,final.WholeRaw,final.WholeDetector){
++                    OriginalWholeReading=original.Reading,OriginalWholeRawText=original.WholeRaw,OriginalWholeDetectorText=original.WholeDetector};
+         }
+         var page=candidates.Length>0&&kind is "角色天赋素材" or "角色与武器培养素材" &&
+             sources.Any(r=>TalentUpgradePreviewEvidence.Normalize(r.Text)=="来源") &&
+             footerRows.Any(r=>TalentUpgradePreviewEvidence.Normalize(r.Text).StartsWith("培养需求",StringComparison.Ordinal));
+         return new(at,page,name,kind,ratio,rawName,alternate){Width=frame.Width,Height=frame.Height,NameRegion=Scale(new(730,168,440,67),frame.Width),
+-            KindRegion=Scale(new(730,230,440,65),frame.Width),SourceRegion=Scale(new(730,690,460,65),frame.Width),
++            KindRegion=Scale(new(730,230,440,65),frame.Width),SourceRegion=Scale(sourceReference,frame.Width),
+             NameRows=Rows(frame,new(730,168,440,67),ocr),AlternateNameRows=alternateRead.Rows,AlternateNameScale=4,
+-            KindRows=Rows(frame,new(730,230,440,65),ocr),SourceRows=sources,AlternateNamePreprocessing="gray_threshold_210_inverse_cubic_4x",
+-            FooterLabelRegion=Scale(new(725,890,470,65),frame.Width),FooterLabelRows=footerRows,
++            KindRows=Rows(frame,new(730,230,440,65),ocr),SourceRows=sources,AlternateNamePreprocessing=scope is null?"gray_threshold_210_inverse_cubic_4x":"bgr_cubic_4x",
++            OriginalIdentityReading=scope is null?null:new(at,Scale(new(730,168,440,67),frame.Width),originalAlternate.Name,
++                originalAlternate.Rows,4,"gray_threshold_210_inverse_cubic_4x",Scale(TalentUpgradePreviewEvidence.LegacyTooltipSourceRegion,frame.Width),originalSources),
++            FooterLabelRegion=Scale(scope is null?TalentUpgradePreviewEvidence.LegacyTooltipWholeFooterRegion:TalentUpgradePreviewEvidence.TooltipWholeFooterRegion,frame.Width),FooterLabelRows=footerRows,
+             TooltipQuantityMethod=scope is null?null:TalentUpgradePreviewEvidence.TooltipQuantityMethodName,
+             SourceRegionModelEvidence=scope?.Evidence,FooterQuantityEvidence=footerProof};
+     }
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentSource31ProtocolPureTests.cs
+@@ -123,7 +123,7 @@
+     }
+     private static UpgradePreviewTooltip Tooltip(long at=100)
+     {
+-        var source=TalentUpgradePreviewEvidence.TooltipWholeFooterRegion;
++        var source=TalentUpgradePreviewEvidence.LegacyTooltipWholeFooterRegion;
+         var old=TalentUpgradePreviewEvidence.TooltipOldFooterRegion;
+         var row=new UpgradePreviewRow("培养需求17/9",new(730,892,140,40));
+         var initial=new UpgradePreviewRatio(at,"17/9",old,null,null,false){Width=1920,Height=1080,
+@@ -137,10 +137,75 @@
+             KindRegion=new(730,230,440,65),KindRows=[new("角色天赋素材",new(735,232,100,25))],
+             SourceRegion=new(730,690,460,65),SourceRows=[new("来源",new(735,692,40,25))],
+             FooterLabelRegion=source,FooterLabelRows=[row],
++            TooltipQuantityMethod=TalentUpgradePreviewEvidence.LegacyTooltipQuantityMethodName,
++            SourceRegionModelEvidence=Models(),
++            FooterQuantityEvidence=new(TalentUpgradePreviewEvidence.LegacyTooltipQuantityMethodName,old,source,initial,
++                "培养需求17/9","培养需求17/9","培养需求17/9","培养需求17/9")};
++    }
++    private static UpgradePreviewTooltip CurrentTooltip(long at=100)
++    {
++        var legacy=Tooltip(at);var region=TalentUpgradePreviewEvidence.TooltipWholeFooterRegion;
++        var row=new UpgradePreviewRow("培养需求17/9",new(887,890,140,25));
++        var quantity=legacy.Quantity with{Bounds=region,OcrRows=[row]};
++        var original=legacy.Quantity with{Raw="179",Complete=false,Owned=null,Required=null};
++        return legacy with{Quantity=quantity,FooterLabelRegion=region,FooterLabelRows=[row],
++            SourceRegion=TalentUpgradePreviewEvidence.TooltipSourceRegion,AlternateNamePreprocessing="bgr_cubic_4x",
++            OriginalIdentityReading=new(at,legacy.NameRegion,legacy.AlternateRawName,legacy.AlternateNameRows,
++                4,"gray_threshold_210_inverse_cubic_4x",legacy.SourceRegion,legacy.SourceRows),
+             TooltipQuantityMethod=TalentUpgradePreviewEvidence.TooltipQuantityMethodName,
+-            SourceRegionModelEvidence=Models(),
+-            FooterQuantityEvidence=new(TalentUpgradePreviewEvidence.TooltipQuantityMethodName,old,source,initial,
+-                "培养需求17/9","培养需求17/9","培养需求17/9","培养需求17/9")};
++            FooterQuantityEvidence=legacy.FooterQuantityEvidence! with{
++                Method=TalentUpgradePreviewEvidence.TooltipQuantityMethodName,SourceRegion=region,
++                OriginalWholeReading=original,OriginalWholeRawText="培养需求179",OriginalWholeDetectorText="培养需求17/9"}};
++    }
++    [Fact] public void CurrentFooterKeepsWideRawMismatchWithoutChangingSingleStepCost()
++    {
++        var first=CurrentTooltip();var second=CurrentTooltip(400);
++        Assert.True(TalentUpgradePreviewEvidence.TooltipFrame(first,Item()));
++        Assert.True(TalentUpgradePreviewEvidence.TooltipPair(first,second,Item(),400));
++        Assert.False(first.FooterQuantityEvidence!.OriginalWholeReading!.Complete);
++        Assert.Equal("179",first.FooterQuantityEvidence.OriginalWholeReading.Raw);
++        Assert.Equal(3,Item().Quantity.Required);Assert.Equal(9,first.Quantity.Required);
++    }
++    [Theory][InlineData("missing")][InlineData("clock")][InlineData("region")][InlineData("raw")][InlineData("invented_value")]
++    public void CurrentFooterRequiresSameFrameUntouchedOriginalWideDiagnostics(string fault)
++    {
++        var tip=CurrentTooltip();var evidence=tip.FooterQuantityEvidence!;var original=evidence.OriginalWholeReading!;
++        var changed=fault switch{
++            "missing"=>null,"clock"=>original with{ObservedAt=101},
++            "region"=>original with{Bounds=TalentUpgradePreviewEvidence.TooltipWholeFooterRegion},
++            "raw"=>original with{Raw="17/9"},_=>original with{Owned=17}};
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(tip with{FooterQuantityEvidence=evidence with{OriginalWholeReading=changed}},Item()));
++    }
++    [Fact] public void CurrentFooterStillRejectsOnePixelMarginAndMixedVersions()
++    {
++        var tip=CurrentTooltip();var row=new UpgradePreviewRow("培养需求17/9",new(883,890,140,25));
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(tip with{Quantity=tip.Quantity with{OcrRows=[row]},FooterLabelRows=[row]},Item()));
++        Assert.False(TalentUpgradePreviewEvidence.TooltipPair(tip,Tooltip(400),Item(),400));
++        var legacy=Tooltip();
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(legacy with{FooterQuantityEvidence=legacy.FooterQuantityEvidence! with{
++            OriginalWholeReading=legacy.Quantity,OriginalWholeRawText="培养需求17/9",OriginalWholeDetectorText="培养需求17/9"}},Item()));
++    }
++    [Fact] public void CompleteOriginalWideFooterMustAgreeWithCurrentAggregate()
++    {
++        var tip=CurrentTooltip();var evidence=tip.FooterQuantityEvidence!;var original=Tooltip().Quantity;
++        var complete=evidence with{OriginalWholeReading=original,OriginalWholeRawText="培养需求17/9",OriginalWholeDetectorText="培养需求17/9"};
++        Assert.True(TalentUpgradePreviewEvidence.TooltipFrame(tip with{FooterQuantityEvidence=complete},Item()));
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(tip with{FooterQuantityEvidence=complete with{
++            OriginalWholeReading=original with{Required=10}}},Item()));
++    }
++    [Theory][InlineData("missing")][InlineData("clock")][InlineData("source_region")][InlineData("method")][InlineData("outside_image")]
++    public void CurrentIdentityRequiresOriginalSameFrameDiagnosticsWithoutRepairingNames(string fault)
++    {
++        var tip=CurrentTooltip();var original=tip.OriginalIdentityReading!;
++        var changed=fault switch{
++            "missing"=>null,"clock"=>original with{ObservedAt=101},
++            "source_region"=>original with{SourceRegion=TalentUpgradePreviewEvidence.TooltipSourceRegion},
++            "method"=>original with{AlternateNamePreprocessing="bgr_cubic_4x"},
++            _=>original with{SourceRows=[new("来源",new(1910,690,40,25))]}};
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(tip with{OriginalIdentityReading=changed},Item()));
++        Assert.True(TalentUpgradePreviewEvidence.TooltipFrame(tip with{OriginalIdentityReading=original with{
++            AlternateRawName="旧错误字",AlternateNameRows=[new("旧错误字",new(735,175,100,25))]}},Item()));
++        Assert.False(TalentUpgradePreviewEvidence.TooltipFrame(tip with{AlternateRawName="旧错误字"},Item()));
+     }
+     [Fact] public void FailedActualOldFooterMayRemainFailedWhileNewWholeFooterProvesAggregate()
+     {
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -145,3 +145,5 @@
+ - 第三十五层恢复复用历史GameLoadingTrigger正常开门调用链：抽出原EnterGame模板与既有5秒节流/最多5次状态为同一个正常分支，OnCapture与实际owned启动等待共同调用。不再使用独立单次点击器或新分阶段算法；入口出现于加载前/后均由原模板处理。只读启动不调用认证、账号选择、适龄或奖励分支，仍有真实owner/捕获绑定/前台/原180秒期限/当前500ms核验。输入使用匹配区域Click及既有坐标转换。
+ 
+ - 第三十六层仅修正严格升级预览所需材料标题的固定独立识别区域885,575,135,60，版本whole_marker_required_roles_v2；六张实际原图已用同一原始V6/V4模型验证完整单标题和最小8px边距。原宽区域870,575,180,60独立读数完整保留为legacyMaterialHeading诊断，整页行/背景证据不改变。兼容历史v1，不通过过滤额外C或放宽单行/2px/1500ms来接受；新版本缺少关联旧诊断即拒绝，消费仍默认关闭。
++
++- 第三十七层复用ReadWholeFooter，将完整培养需求文字裁框固定为882,875,223,80，补足原顶部边界并排除状态图标。v2逐帧保留原窄885,890,295,65与原完整725,890,470,65的原始读数、检测框和失败null；v1历史契约保持且不同版本不可配对。完整前缀/唯一行/raw与检测一致/四边2px/1500ms未放宽，培养总需求不替代单次费用。同时仅按每张新截图识别到的页面调整既有安全清理reader顺序，原10秒与每层至多一次Esc保留，双大世界帧通过后保存原PNG和原采集/配对/写盘时钟及双哈希回读，未知页面不输入。没有升级确认、消费或unknown重放。
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -252,10 +252,34 @@
+         await Delay(400);
+         return[first,second];
+     }
++    internal static string ReadCleanupScene(string preferredScene,Func<string,bool> verify)
++    {
++        // A preference changes read order only. Every layer still needs proof from this capture,
++        // and a failed preferred read must continue through every remaining known layer.
++        var order=new[]{"overview",preferredScene,"preview","detail","tooltip","paimon_menu"}
++            .Where(s=>s is "overview" or "preview" or "detail" or "tooltip" or "paimon_menu").Distinct();
++        foreach(var scene in order)if(verify(scene))return scene;
++        return "unknown";
++    }
++    internal static string CleanupSceneAfterEscape(string scene)=>scene switch
++    {"tooltip"=>"preview","preview"=>"detail","detail"=>"overview",_=>"unknown"};
++    private sealed record CleanupFrame(long ObservedAt,int Width,int Height,bool Focused,bool WorldVerified,
++        string Scene,string Action,InspectionMenuFrame? Menu,string PreferredScene,string[] AttemptedReads,long ReadCompletedAt)
++    {
++        public string Phase=>"world_restore";
++        public InspectionPrivateCapture? PrivateCapture{get;init;}
++        public long? PairEvaluatedAt{get;init;}
++        public long? DiagnosticPngCompletedAt{get;init;}
++    }
+     private async Task<(bool Restored,string Reason)> Restore()
+     {
+         using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));var policy=new InspectionCleanupPolicy();
+         var timer=System.Diagnostics.Stopwatch.StartNew();
++        var preferredScene=frames.LastOrDefault() switch
++        {UpgradePreviewTooltip{Page:true}=>"tooltip",UpgradePreviewFrame{Page:true}=>"preview",UpgradePreviewDetail{Page:true}=>"detail",_=>"unknown"};
++        ImageRegion? firstWorldFrame=null;CleanupFrame? firstWorldRead=null;int firstWorldIndex=-1;
++        try
++        {
+         for(int i=0;i<32&&timer.ElapsedMilliseconds<10000;i++)
+         {
+             timeout.Token.ThrowIfCancellationRequested();
+@@ -264,33 +288,65 @@
+             var blocked=!focused||Bv.IsInRevivePrompt(frame)||Bv.IsInDomain(frame);
+             string scene=world?"world":"unknown";
+             InspectionMenuFrame? menu=null;
++            var attemptedReads=new List<string>();
+             if(!world&&focused&&!blocked&&opened)
+             {
+-                // Only menu-grid labels are captured; private account header is outside this crop.
+-                var menuRows=TalentUpgradePreviewReader.Rows(frame,InspectionPaimonMenuEvidence.ReferenceRegion,OcrFactory.Paddle);
+-                menu=new(at,frame.Width,frame.Height,InspectionPaimonMenuEvidence.AccountFreeAnchors(menuRows));
+-                if(!Bv.IsInPromptDialog(frame)&&InspectionPaimonMenuEvidence.Verified(menu))scene="paimon_menu";
+-                else if(Overview(frame))scene="overview";
+-                else
++                scene=ReadCleanupScene(preferredScene,layer=>
+                 {
+-                    var rows=TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle);
+-                    if(TalentUpgradePreviewReader.PreviewPage(rows))scene="preview";
+-                    else if(TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,Now()).Page)scene="detail";
+-                    else if(TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,Now()).Page)scene="tooltip";
+-                }
+-            }
++                    timeout.Token.ThrowIfCancellationRequested();attemptedReads.Add(layer);
++                    switch(layer)
++                    {
++                        case "overview":return Overview(frame);
++                        case "preview":return TalentUpgradePreviewReader.PreviewPage(
++                            TalentUpgradePreviewReader.Rows(frame,new(420,235,1100,750),OcrFactory.Paddle));
++                        case "detail":return TalentUpgradePreviewReader.Detail(frame,OcrFactory.Paddle,at).Page;
++                        case "tooltip":return TalentUpgradePreviewReader.Tooltip(frame,OcrFactory.Paddle,at).Page;
++                        default:
++                            // Only menu-grid labels are captured; private account header is outside this crop.
++                            var menuRows=TalentUpgradePreviewReader.Rows(frame,InspectionPaimonMenuEvidence.ReferenceRegion,OcrFactory.Paddle);
++                            menu=new(at,frame.Width,frame.Height,InspectionPaimonMenuEvidence.AccountFreeAnchors(menuRows));
++                            return !Bv.IsInPromptDialog(frame)&&InspectionPaimonMenuEvidence.Verified(menu);
++                    }
++                });
++            }
++            var readCompletedAt=Now();
++            // OCR completion cannot refresh the original screenshot clock for an input.
++            if(!world&&readCompletedAt-at>1500)scene="unknown";
++            var evaluatedAt=Now();
+             var action=policy.Observe(scene,at,timer.ElapsedMilliseconds,focused,blocked);
+-            frames.Add(new{phase="world_restore",observedAt=at,width=frame.Width,height=frame.Height,focused,worldVerified=world,
+-                scene,action=action.ToString(),menu});
+-            if(action==InspectionCleanupAction.Restored)return(true,"world_restored");
++            var cleanupRead=new CleanupFrame(at,frame.Width,frame.Height,focused,world,scene,action.ToString(),menu,
++                preferredScene,attemptedReads.ToArray(),readCompletedAt);
++            frames.Add(cleanupRead);
++            if(action==InspectionCleanupAction.Restored)
++            {
++                timeout.Token.ThrowIfCancellationRequested();
++                if(firstWorldFrame is null||firstWorldRead is null||firstWorldIndex<0)return(false,"world_pair_capture_missing");
++                // Clone only the first pending world. Both original clocks and the pair gate precede PNG work.
++                // Diagnostic encoding may finish after the ten-second observation gate; it never causes input.
++                var firstCapture=RetainDiagnosticCapture(firstWorldFrame,firstWorldRead.ObservedAt);
++                frames[firstWorldIndex]=firstWorldRead with{PrivateCapture=firstCapture,PairEvaluatedAt=evaluatedAt,DiagnosticPngCompletedAt=Now()};
++                var secondCapture=RetainDiagnosticCapture(frame,at);
++                frames[^1]=cleanupRead with{PrivateCapture=secondCapture,PairEvaluatedAt=evaluatedAt,DiagnosticPngCompletedAt=Now()};
++                return firstCapture is not null&&secondCapture is not null?(true,"world_restored"):(false,"world_pair_private_capture_unverified");
++            }
+             if(action==InspectionCleanupAction.Blocked)return(false,focused?"cleanup_blocked_or_deadline":"cleanup_focus_lost");
++            firstWorldFrame?.Dispose();firstWorldFrame=null;firstWorldRead=null;firstWorldIndex=-1;
++            if(world)
++            {
++                firstWorldFrame=new ImageRegion(frame.SrcMat.Clone(),0,0);firstWorldRead=cleanupRead;firstWorldIndex=frames.Count-1;
++            }
+             if(action==InspectionCleanupAction.Escape)
+             {
++                if(!SystemControl.IsGenshinImpactActiveByProcess())return(false,"cleanup_focus_lost");
+                 timeout.Token.ThrowIfCancellationRequested();Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
+-            }
++                preferredScene=CleanupSceneAfterEscape(scene);
++            }
++            else if(scene is not("unknown" or "world"))preferredScene=scene;
+             await Task.Delay(250,timeout.Token);
+         }
+         return(false,"world_restore_deadline");
++        }
++        finally{firstWorldFrame?.Dispose();}
+     }
+     public async Task<string> Start(string characterName,string talentType,CancellationToken ct)
+     {
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionCleanupReadOrderTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionCleanupReadOrderTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionCleanupReadOrderTests.cs
+@@ -0,0 +1,71 @@
++using System.Collections.Generic;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class InspectionCleanupReadOrderTests
++{
++    [Fact] public void PreferredTooltipIsReadBeforeBroadPreviewAndAccountFreeMenuOcr()
++    {
++        var reads=new List<string>();
++        var scene=InspectTalentUpgradeTask.ReadCleanupScene("tooltip",layer=>{reads.Add(layer);return layer=="tooltip";});
++        Assert.Equal("tooltip",scene);
++        Assert.Equal(new[]{"overview","tooltip"},reads);
++    }
++    [Theory] [InlineData("tooltip","preview")] [InlineData("preview","detail")]
++    [InlineData("detail","tooltip")] [InlineData("overview","paimon_menu")]
++    public void FailedPreferredLayerAlwaysContinuesThroughFreshFallbackReads(string preferred,string actual)
++    {
++        var reads=new List<string>();
++        var scene=InspectTalentUpgradeTask.ReadCleanupScene(preferred,layer=>{reads.Add(layer);return layer==actual;});
++        Assert.Equal(actual,scene);
++        Assert.Contains(preferred,reads);
++        Assert.Equal(actual,reads[^1]);
++        Assert.Equal(reads.Count,new HashSet<string>(reads).Count);
++    }
++    [Fact] public void CachedLayerNameCannotProveAChangedOrUnknownScene()
++    {
++        var reads=new List<string>();
++        var scene=InspectTalentUpgradeTask.ReadCleanupScene("tooltip",layer=>{reads.Add(layer);return false;});
++        Assert.Equal("unknown",scene);
++        Assert.Equal(new[]{"overview","tooltip","preview","detail","paimon_menu"},reads);
++        var policy=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe(scene,100,0,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe(scene,400,300,true,false));
++    }
++    [Fact] public void NewlyPredictedLayerStillRequiresTwoFreshObservationsBeforeEscape()
++    {
++        var preferred=InspectTalentUpgradeTask.CleanupSceneAfterEscape("tooltip");
++        Assert.Equal("preview",preferred);
++        var actual=InspectTalentUpgradeTask.ReadCleanupScene(preferred,layer=>layer=="preview");
++        var policy=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe(actual,100,0,true,false));
++        Assert.Equal(InspectionCleanupAction.Escape,policy.Observe(actual,400,300,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe(actual,1600,1500,true,false));
++    }
++    [Fact] public void WorldRequiresTwoIndependentCapturesAfterLastCharacterEscape()
++    {
++        var policy=new InspectionCleanupPolicy();
++        policy.Observe("overview",100,0,true,false);
++        Assert.Equal(InspectionCleanupAction.Escape,policy.Observe("overview",400,300,true,false));
++        Assert.Equal("unknown",InspectTalentUpgradeTask.CleanupSceneAfterEscape("overview"));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("world",800,700,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("world",800,750,true,false));
++        Assert.Equal(InspectionCleanupAction.Restored,policy.Observe("world",1100,1000,true,false));
++    }
++    [Fact] public void UnknownBetweenWorldCapturesInvalidatesTheWorldPair()
++    {
++        var policy=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("world",100,0,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("unknown",400,300,true,false));
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("world",700,600,true,false));
++        Assert.Equal(InspectionCleanupAction.Restored,policy.Observe("world",1000,900,true,false));
++    }
++    [Fact] public void OriginalTenSecondDeadlineRemainsHardForWorldAndRecognizedLayers()
++    {
++        var policy=new InspectionCleanupPolicy();
++        Assert.Equal(InspectionCleanupAction.Wait,policy.Observe("world",100,9900,true,false));
++        Assert.Equal(InspectionCleanupAction.Blocked,policy.Observe("world",400,10000,true,false));
++        Assert.Equal(InspectionCleanupAction.Blocked,policy.Observe("overview",500,10001,true,false));
++    }
++}

@@ -1,0 +1,367 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -92,9 +92,11 @@
+ 当前对应源码为固定基线 `d8c0aa238a949d7d74bfe5087f3a48e39771575a` 加工作流仓库 `docs/SOURCE_PATCH_SEQUENCE_2026-10-11.json` 的完整有序补丁。该序列包含原始完整培养补丁和后续独立修复；不能只用基线或第一份补丁作为本版本源码。保留 GPL v3、原作者及所有来源声明。
+ 
+ - 第五层复用原钟离开盾及补盾保护，增加受保护单颗浓缩领奖、原生奖励观察及不改生产配置的限额合浓缩入口。
+-- 第六层增加独立斜杠图像与左右数字 OCR 的配方成本证据、固定武器经验矿读取，以及保留未知的摩拉只读接口。纯测试使用匿名数，私人回放路径和期望值来自本机忽略的清单。小摩拉图标身份未获核验，不声称已支持自动摩拉读取。
++- 第六层增加独立斜杠图像与左右数字 OCR 的配方成本证据、固定武器经验矿读取，以及保留未知的摩拉只读接口。纯测试使用匿名数，私人回放路径和期望值来自本机忽略的清单。该层历史静态摩拉图标未获核验；后续第十层实时只读验收单独记录。
+ - 第七层只读识别完整掉线弹窗并追加失败阶段诊断，不把弹窗缺失当连接正常，不更改角色或护盾阈值，不自动确认、重连或重放资源步骤。
+ - 第八层在单浓缩路径识别当前完整的三次产出文案、同排唯一按钮及新鲜双帧。新增只从真实古树选择页起步的单浓缩领奖入口，不导航、不战斗、不点通用确认；提交后异常仍未知。原单20第一资源行合同不变。
++- 第十层仅扩宽只读摩拉整数区域并保留真实前后独立截图记录，仍核验具名图标、完整页标、整数边缘与新鲜双帧，不降低模型阈值。实时只读货币与三种经验矿的验收结果由独立记录给出；不执行升级或资源消费。
++- 第十一层复用既有有限角色切换调度：身份首帧待核验时不重发目标键，重发或有限刷新区域后重新取得严格两帧。失败只保留本机私有编号区域截图及标量诊断，不把单张旧图当实时双帧。精确单轮入口用实例所属的单调奖励交互阶段、提交请求闩锁和计数提供提交前中止事件；进入奖励流程或提交后不得借战斗异常声称未提交。严格身份、掉线保护及护盾冷却标准不变，实际切换效果仍待新鲜实机验收，未知步骤不自动重放。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs b/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
+--- a/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
++++ b/BetterGenshinImpact/GameTask/AutoFight/Model/Avatar.cs
+@@ -355,23 +355,62 @@
+         return false;
+     }
+ 
+-    /// <summary>护盾核验专用：先发送目标号位，再要求连续两帧真实出战。有限重试，无随机脱困/攻击。</summary>
+-    public bool TrySwitchVerified(AvatarActiveCheckContext context, int maxObservations = 10)
++    /// <summary>护盾核验专用：先观察，按既有有限切换调度重试，并要求连续两帧真实出战。</summary>
++    public bool TrySwitchVerified(AvatarActiveCheckContext context, int maxObservations = 20)
+     {
+         if (MaterialRouteRecoveryForbidden.Value) return TrySwitchMaterialSafe(context);
+         if (!context.StrictIdentity) throw new ArgumentException("核验切换必须使用严格角色识别上下文");
+-        context.ResetStrictCandidate();
+-        Ct.ThrowIfCancellationRequested();
+-        SimulateSwitchAction(Index);
+-        for (var i = 0; i < maxObservations; i++)
+-        {
+-            Sleep(250, Ct);
+-            using var region = CaptureToRectArea(forceNew: true);
+-            ThrowWhenDefeated(region, Ct);
+-            if (CombatScenes.GetActiveAvatarIndex(region, context) == Index) return true;
+-            if (i + 1 < maxObservations) SimulateSwitchAction(Index);
+-        }
+-        return false;
++        context.ResetStrictCandidate(); Ct.ThrowIfCancellationRequested();
++        var timer=System.Diagnostics.Stopwatch.StartNew();long lastPress=-1000;int presses=0;bool refreshed=false;
++        StrictSwitchFrame? previous=null,current=null;Mat? previousCrop=null,currentCrop=null;
++        try
++        {
++            for(var i=0;i<maxObservations && MaterialSwitchTimingPolicy.IdentityWindowOpen(timer.ElapsedMilliseconds);i++)
++            {
++                Ct.ThrowIfCancellationRequested();using var region=CaptureToRectArea(forceNew:true);
++                ThrowWhenDefeated(region,Ct);
++                var ready=SystemControl.IsGenshinImpactActiveByProcess() && !Bv.IsInPromptDialog(region) &&
++                    !Bv.IsInRevivePrompt(region) && (Bv.IsInDomain(region)||Bv.IsInMainUi(region));
++                var rects=CombatScenes.GetAvatars().Select(a=>a.IndexRect).ToArray();
++                var color=ready?PartyAvatarSideIndexHelper.FindActiveIndexRectByColor(region,rects,true):-1;
++                var arrow=ready?PartyAvatarSideIndexHelper.FindActiveIndexRectByArrow(region,rects):-1;
++                int active=-1;
++                if(ready)active=CombatScenes.GetActiveAvatarIndex(region,context);else context.ResetStrictCandidate();
++                var changed=!rects.SequenceEqual(CombatScenes.GetAvatars().Select(a=>a.IndexRect));
++                if(changed){context.ResetStrictCandidate();active=-1;}
++                previous=current;current=new(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),timer.ElapsedMilliseconds,Index,active,color,arrow,ready,changed,presses,ProtectedSwitchDiagnostics.Pixels(region,rects));
++                previousCrop?.Dispose();previousCrop=currentCrop;
++                var left=Math.Max(0,rects.Min(r=>r.X)-150);var top=Math.Max(0,rects.Min(r=>r.Y)-50);
++                var right=Math.Min(region.Width,rects.Max(r=>r.Right)+4);var bottom=Math.Min(region.Height,rects.Max(r=>r.Bottom)+35);
++                currentCrop=new Mat(region.SrcMat,new Rect(left,top,right-left,bottom-top)).Clone();
++                Logger.LogInformation("[PROTECTED_SWITCH_FRAME] {Trace}",Newtonsoft.Json.JsonConvert.SerializeObject(current));
++                if(!MaterialSwitchTimingPolicy.IdentityWindowOpen(timer.ElapsedMilliseconds))break;
++                if(active==Index)return true;
++                if(ready && active!=-2 && !refreshed && timer.ElapsedMilliseconds>=1500)
++                {
++                    refreshed=true;var done=CombatScenes.RefreshTeamAvatarIndexRectList(region);
++                    context.ResetStrictCandidate();Logger.LogInformation("受保护切换有限刷新编号区域：{Result}",done);
++                    // Even a successful geometry refresh is not identity proof; capture twice again.
++                }
++                if(MaterialSwitchTimingPolicy.ShouldRetryTarget(ready,active,Index,timer.ElapsedMilliseconds,lastPress))
++                {
++                    context.ResetStrictCandidate();SimulateSwitchAction(Index);lastPress=timer.ElapsedMilliseconds;presses++;
++                }
++                Sleep(250,Ct);
++            }
++            try
++            {
++                var folder=Global.Absolute("log\\shield-identity");System.IO.Directory.CreateDirectory(folder);
++                var stem=System.IO.Path.Combine(folder,DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff"));
++                if(previousCrop is not null)Cv2.ImWrite(stem+"-first.png",previousCrop);
++                if(currentCrop is not null)Cv2.ImWrite(stem+"-second.png",currentCrop);
++                System.IO.File.WriteAllText(stem+"-pair.json",Newtonsoft.Json.JsonConvert.SerializeObject(new {first=previous,second=current}));
++                Logger.LogWarning("受保护身份失败的最后真实HUD双帧及scalar诊断保留：{Path}",stem);
++            }
++            catch(Exception ex){Logger.LogWarning("身份诊断保留失败：{Error}",ex.GetType().Name);}
++            return false;
++        }
++        finally {previousCrop?.Dispose();currentCrop?.Dispose();Simulation.ReleaseAllKey();}
+     }
+ 
+     internal bool VerifyMaterialActiveWithoutInput()
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.cs b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.cs
+--- a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.cs
++++ b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.cs
+@@ -63,6 +63,7 @@
+     private readonly Dictionary<string, int> _rewardSummary = new();
+     private int _verifiedRewardRoundCount;
+     private volatile bool _challengeCompleted;
++    private readonly ProtectedDomainResourcePhase _resourcePhase=new();
+     private readonly ZhongliHoldShieldGuard _zhongliShield = new();
+ 
+     private CancellationToken _ct;
+@@ -175,6 +176,7 @@
+         _rewardSummary.Clear();
+         _verifiedRewardRoundCount = 0;
+         _challengeCompleted = false;
++        _resourcePhase.Reset(IsProtectedSingleClaim() && !_taskParam.AutoArtifactSalvage);
+         _zhongliShield.Reset();
+         ct.ThrowIfCancellationRequested();
+ 
+@@ -194,7 +196,7 @@
+             catch (RetryException e)
+             {
+                 // 诊断及受保护战斗失败必须交给调用方，不在引擎内重放。
+-                if (protectedCombat) throw;
++                if (protectedCombat) {EmitBeforeRewardAbortIfProven(e.Message);throw;}
+                 // 只有选择了秘境的时候才会重试
+                 if (!string.IsNullOrEmpty(_taskParam.DomainName))
+                 {
+@@ -210,6 +212,11 @@
+                     continue;
+                 }
+ 
++                throw;
++            }
++            catch(Exception failure) when(protectedCombat)
++            {
++                EmitBeforeRewardAbortIfProven(failure.Message);
+                 throw;
+             }
+         }
+@@ -253,6 +260,7 @@
+         {
+             _ct.ThrowIfCancellationRequested();
+             _challengeCompleted = false;
++            _resourcePhase.EnterRound(i);
+             // 0. 关闭秘境提示
+             Logger.LogDebug("0. 关闭秘境提示");
+             await CloseDomainTip();
+@@ -296,6 +304,7 @@
+ 
+                 // 2. 执行战斗（战斗线程、视角线程、检测战斗完成线程）
+                 Logger.LogInformation("自动秘境：{Text}", "2. 执行战斗策略");
++                _resourcePhase.SetStage("battle");
+                 await StartFight(combatScenes, combatCommands);
+                 combatScenes.AfterTask();
+             }
+@@ -308,6 +317,7 @@
+                 return;
+             }
+             EndFightWait();
++            _resourcePhase.SetStage("find_tree");
+ 
+             // 3. 寻找石化古树 并左右移动直到石化古树位于屏幕中心
+             Logger.LogInformation("自动秘境：{Text}", "3. 寻找石化古树");
+@@ -315,6 +325,7 @@
+ 
+             // 4. 走到石化古树处
+             Logger.LogInformation("自动秘境：{Text}", "4. 走到石化古树处");
++            _resourcePhase.EnterRewardInteraction();
+             await WalkToPressF();
+ 
+             // 5. 快速领取奖励并判断是否有下一轮
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
+--- a/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
++++ b/BetterGenshinImpact/GameTask/AutoDomain/AutoDomainTask.SingleOriginal20.cs
+@@ -63,6 +63,7 @@
+             !_taskParam.RewardRecognitionEnabled || string.IsNullOrEmpty(_taskParam.ArtifactRunId) ||
+             string.IsNullOrEmpty(_taskParam.ArtifactStepId))throw new ArgumentException("Claim-only requires the exact scoped one-condensed contract.");
+         _ct=ct;_rewardSummary.Clear();_verifiedRewardRoundCount=0;
++        _resourcePhase.Reset(true);_resourcePhase.EnterRound(0);_resourcePhase.EnterRewardInteraction();
+         // This entry does not switch teams, navigate, interact with the tree or run combat.
+         var before=await new CondensedRewardPromptSnapshotTask().Start(ct);
+         if(!before.Verified || before.CondensedResin is not >=1)
+@@ -76,11 +77,31 @@
+ 
+     private void EmitCondensedPreSubmitAbort(string reason)
+     {
++        if(_resourcePhase.SubmissionRequested || _resourcePhase.SubmissionRequests!=0 || _resourcePhase.CompletedClaimCount!=0)return;
+         Logger.LogInformation("[AUTO_GAME_EVENT] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(new {
+             task="artifact-domain-pre-submit-aborted",status="pre_submit_aborted",runId=_taskParam.ArtifactRunId,
+             stepId=_taskParam.ArtifactStepId,resin="condensed",phase="pre_submit_validation",
++            owner="AutoDomainTask",roundCount=_taskParam.DomainRoundNum,activeRound=_resourcePhase.ActiveRound,
++            completedClaimCount=_resourcePhase.CompletedClaimCount,rewardFlowEntered=_resourcePhase.RewardInteractionEntered,
++            submissionRequests=_resourcePhase.SubmissionRequests,
+             stateNotSubmitted=true,claimSubmissionRequested=false,resourceOutcome="unknown",
+             observedAt=DateTimeOffset.UtcNow.ToString("O"),reason
++        }));
++    }
++
++    private void EmitBeforeRewardAbortIfProven(string reason)
++    {
++        if(!_resourcePhase.CanAssertBeforeRewardAbort || string.IsNullOrEmpty(_taskParam.ArtifactRunId) ||
++            string.IsNullOrEmpty(_taskParam.ArtifactStepId))return;
++        Logger.LogInformation("[AUTO_GAME_EVENT] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(new {
++            task="artifact-domain-pre-submit-aborted",status="pre_submit_aborted",runId=_taskParam.ArtifactRunId,
++            stepId=_taskParam.ArtifactStepId,resin=_taskParam.CondensedResinUseCount==1?"condensed":"original",
++            phase="before_reward_interaction",stage=_resourcePhase.Stage,activeRound=_resourcePhase.ActiveRound,
++            owner="AutoDomainTask",roundCount=_taskParam.DomainRoundNum,completedClaimCount=_resourcePhase.CompletedClaimCount,
++            rewardFlowEntered=_resourcePhase.RewardInteractionEntered,
++            rewardInteractionEntered=_resourcePhase.RewardInteractionEntered,claimSubmissionRequested=_resourcePhase.SubmissionRequested,
++            submissionRequests=_resourcePhase.SubmissionRequests,stateNotSubmitted=true,resourceOutcome="unknown",
++            source="invocation_owned_monotonic_resource_phase",observedAt=DateTimeOffset.UtcNow.ToString("O"),reason
+         }));
+     }
+ 
+@@ -152,7 +173,7 @@
+             if (timer.ElapsedMilliseconds >= 12000) break;
+             _ct.ThrowIfCancellationRequested();
+             if (submission.Submit(previous, current, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+-                    button => capture.Derive(button).Click()))
++                    button => { _resourcePhase.MarkSubmissionRequested();capture.Derive(button).Click(); }))
+             {
+                 Logger.LogInformation("受保护单次{Resource}提交请求已发送：完整资源标签和独立使用按钮双帧；singleClick=True button={Button}；消费与材料结果仍待外层实际库存和余额核验", condensed ? "浓缩" : "原粹20", current!.Button);
+                 break;
+@@ -173,6 +194,7 @@
+         if (!await ExitAfterSingleOriginalSubmission())
+             throw new NormalEndException("受保护单次树脂提交后安全退出未获双帧世界证明；结果未知，禁止再次领奖或普通退出兜底");
+         Logger.LogInformation("受保护单次树脂提交后已安全退出到世界双帧，native不宣称已消费或发奖，交外层库存/余额验收");
++        _resourcePhase.MarkClaimFlowCompleted(); // Flow completion is not verified account consumption or rewards.
+         return false;
+     }
+ 
+diff --git a/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/AutoFight/Model/ProtectedSwitchDiagnostics.cs
+@@ -0,0 +1,22 @@
++using System;
++using System.Linq;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.AutoFight.Model;
++
++public sealed record StrictSlotPixels(int Slot,Rect Bounds,double WhiteFraction,double WhiteEdgeFraction,int ExactDarkDigitPixels);
++public sealed record StrictSwitchFrame(long ObservedAt,long ElapsedMs,int Target,int Active,int ColorCandidate,
++    int ArrowCandidate,bool UiReady,bool GeometryChanged,int Presses,StrictSlotPixels[] Slots);
++
++/// <summary>Scalar diagnostics only; identity rules are still the existing strict helper.</summary>
++public static class ProtectedSwitchDiagnostics
++{
++    public static StrictSlotPixels[] Pixels(ImageRegion frame,Rect[] rects)=>rects.Select((rect,i)=>{
++        using var mat=new Mat(frame.CacheGreyMat,rect);int white=0,dark=0;
++        for(int y=0;y<mat.Rows;y++)for(int x=0;x<mat.Cols;x++) {
++            var v=mat.At<byte>(y,x);if(v>=251)white++;if(v==50)dark++;
++        }
++        return new StrictSlotPixels(i+1,rect,white/(double)(mat.Rows*mat.Cols),PartyAvatarSideIndexHelper.CalculateWhiteEdgePixelsRatio(mat),dark);
++    }).ToArray();
++}
+diff --git a/BetterGenshinImpact/GameTask/AutoDomain/ProtectedDomainResourcePhase.cs b/BetterGenshinImpact/GameTask/AutoDomain/ProtectedDomainResourcePhase.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/AutoDomain/ProtectedDomainResourcePhase.cs
+@@ -0,0 +1,20 @@
++namespace BetterGenshinImpact.GameTask.AutoDomain;
++
++/// <summary>Invocation-owned monotonic phase/latch evidence. Never proves actual account balances.</summary>
++public sealed class ProtectedDomainResourcePhase
++{
++    public bool ExactSingleContract {get;private set;}
++    public int ActiveRound {get;private set;}=-1;
++    public bool RewardInteractionEntered {get;private set;}
++    public bool SubmissionRequested {get;private set;}
++    public int SubmissionRequests {get;private set;}
++    public int CompletedClaimCount {get;private set;}
++    public string Stage {get;private set;}="entry";
++    public void Reset(bool exactSingle) {ExactSingleContract=exactSingle;ActiveRound=-1;RewardInteractionEntered=false;SubmissionRequested=false;SubmissionRequests=0;CompletedClaimCount=0;Stage="entry";}
++    public void EnterRound(int round) {ActiveRound=round;Stage="challenge_activation";}
++    public void SetStage(string stage)=>Stage=stage;
++    public void EnterRewardInteraction(){RewardInteractionEntered=true;Stage="reward_interaction";}
++    public void MarkSubmissionRequested(){SubmissionRequested=true;SubmissionRequests++;Stage="submission_requested";}
++    public void MarkClaimFlowCompleted(){CompletedClaimCount++;Stage="claim_flow_completed";}
++    public bool CanAssertBeforeRewardAbort=>ExactSingleContract && ActiveRound==0 && CompletedClaimCount==0 && !RewardInteractionEntered && !SubmissionRequested && SubmissionRequests==0;
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldSchedulingTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldSchedulingTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldSchedulingTests.cs
+@@ -0,0 +1,45 @@
++using BetterGenshinImpact.GameTask.AutoFight.Model;
++using BetterGenshinImpact.GameTask.AutoDomain;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class ProtectedShieldSchedulingTests
++{
++    [Fact]
++    public void PendingFirstIdentityFrameNeverTriggersAnotherTargetKey()
++    {
++        Assert.False(MaterialSwitchTimingPolicy.ShouldRetryTarget(true,-2,4,1200,0));
++        Assert.False(MaterialSwitchTimingPolicy.ShouldRetryTarget(true,-1,4,900,0));
++        Assert.True(MaterialSwitchTimingPolicy.ShouldRetryTarget(true,-1,4,1000,0));
++        Assert.False(MaterialSwitchTimingPolicy.ShouldRetryTarget(false,-1,4,1200,0));
++        Assert.False(MaterialSwitchTimingPolicy.ShouldRetryTarget(true,-1,4,5000,0));
++    }
++    [Fact]
++    public void GeometryRefreshOrTargetKeyMustRestartTheTwoFrameIdentitySequence()
++    {
++        var context=new AvatarActiveCheckContext {StrictIdentity=true};
++        Assert.Equal(-2,context.ObserveStrictCandidate(4));context.ResetStrictCandidate();
++        Assert.Equal(-2,context.ObserveStrictCandidate(4));Assert.Equal(4,context.ObserveStrictCandidate(4));
++    }
++    [Fact]
++    public void InvocationOwnedBeforeRewardProofRequiresTheExactFirstSingleRound()
++    {
++        var phase=new ProtectedDomainResourcePhase();phase.Reset(true);
++        Assert.False(phase.CanAssertBeforeRewardAbort);
++        phase.EnterRound(0);phase.SetStage("battle");Assert.True(phase.CanAssertBeforeRewardAbort);
++        phase.EnterRewardInteraction();Assert.False(phase.CanAssertBeforeRewardAbort);
++        phase.SetStage("battle");Assert.False(phase.CanAssertBeforeRewardAbort);
++        phase.Reset(true);phase.EnterRound(1);Assert.False(phase.CanAssertBeforeRewardAbort);
++        phase.Reset(false);phase.EnterRound(0);Assert.False(phase.CanAssertBeforeRewardAbort);
++    }
++    [Fact]
++    public void OnceSubmissionRequestedNoLaterFailureCanClaimNoSubmission()
++    {
++        var phase=new ProtectedDomainResourcePhase();phase.Reset(true);phase.EnterRound(0);
++        phase.MarkSubmissionRequested();Assert.False(phase.CanAssertBeforeRewardAbort);
++        phase.EnterRound(0);phase.SetStage("battle");Assert.False(phase.CanAssertBeforeRewardAbort);
++        Assert.True(phase.SubmissionRequested);Assert.Equal(1,phase.SubmissionRequests);
++        phase.MarkClaimFlowCompleted();Assert.Equal(1,phase.CompletedClaimCount);
++        Assert.False(phase.CanAssertBeforeRewardAbort);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/ProtectedShieldPrivateImageTests.cs
+@@ -0,0 +1,32 @@
++using BetterGenshinImpact.GameTask.AutoFight.Assets;
++using BetterGenshinImpact.GameTask.AutoFight.Model;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class ProtectedShieldPrivateImageTests(ITestOutputHelper output)
++{
++    [Fact]
++    [Trait("Fixture","PrivateShieldIdentity")]
++    public void RetainedStoppedSceneClassifiesUsingExistingStrictRulesWithoutPretendingLiveFrames()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_SHIELD_IDENTITY_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Explicit private manifest required; missing image does not pass.");
++        var f=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        Assert.True(f.ExpectedSlot.HasValue);Assert.Equal(4,f.ClientRect.Length);
++        using var image=Cv2.ImRead(f.File);using var client=new Mat(image,new Rect(f.ClientRect[0],f.ClientRect[1],f.ClientRect[2],f.ClientRect[3]));
++        foreach(var width in new[]{1536,1920})
++        {
++            using var full=new Mat();Cv2.Resize(client,full,new Size(width,width*9/16));using var frame=new ImageRegion(full.Clone(),0,0);
++            var rects=AutoFightAssets.Get(width,width*9/16).AvatarIndexRectList.ToArray();
++            var candidate=PartyAvatarSideIndexHelper.FindActiveIndexRectByColor(frame,rects,true);
++            output.WriteLine("Static scene width={0}; candidate={1}; {2}",width,candidate,Newtonsoft.Json.JsonConvert.SerializeObject(ProtectedSwitchDiagnostics.Pixels(frame,rects)));
++            Assert.Equal(f.ExpectedSlot,candidate);
++            // One retained image is only one candidate. No new-frame/live pair is invented here.
++            var context=new AvatarActiveCheckContext {StrictIdentity=true};Assert.Equal(-2,context.ObserveStrictCandidate(candidate));
++        }
++    }
++    private sealed class Fixture {public string File {get;set;}="";public int[] ClientRect {get;set;}=[];public int? ExpectedSlot {get;set;}}
++}

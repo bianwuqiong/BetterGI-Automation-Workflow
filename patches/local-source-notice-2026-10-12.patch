@@ -1,0 +1,35 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+index a4b11df..20910c1 100644
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -1,8 +1,8 @@
+ # 自动化工作流分支变更 / Automation Workflow Fork Changes
+ 
+-本文件用于显著记录相对 BetterGI 上游的修改。修改期间为 **2026-09-12 至 2026-10-11**。
++本文件用于显著记录相对 BetterGI 上游的修改。修改期间为 **2026-09-12 至 2026-10-12**。
+ 
+-This file prominently records changes from upstream BetterGI. The changes were made from **2026-09-12 through 2026-10-11**.
++This file prominently records changes from upstream BetterGI. The changes were made from **2026-09-12 through 2026-10-12**.
+ 
+ ## 2026-10-11 本机迁移启动修复 / Local migration startup fix
+ 
+@@ -85,3 +85,19 @@ Crafting, automatic-domain, and daily-reward checkpoints were individually valid
+ BetterGI 及本修改分支按仓库中的 [GNU GPL v3](./LICENSE) 发布。上游版权与许可证声明保持不变。若分发该分支的二进制文件，必须同时按 GPL v3 提供对应源码和构建脚本或等价的源码获取方式。
+ 
+ BetterGI and this modified branch are distributed under the repository's [GNU GPL v3](./LICENSE). Upstream copyright and license notices remain intact. Anyone distributing binaries from this branch must also provide the corresponding source and build scripts, or equivalent source access, as required by GPL v3.
++
++
++## 2026-10-12 培养与圣遗物增量 / Cultivation and artifact overlays
++
++当前对应源码为固定基线 `d8c0aa238a949d7d74bfe5087f3a48e39771575a` 加工作流仓库 `docs/SOURCE_PATCH_SEQUENCE_2026-10-11.json` 的完整有序补丁。该序列包含原始完整培养补丁和后续独立修复；不能只用基线或第一份补丁作为本版本源码。保留 GPL v3、原作者及所有来源声明。
++
++- 第五层复用原钟离开盾及补盾保护，增加受保护单颗浓缩领奖、原生奖励观察及不改生产配置的限额合浓缩入口。
++- 第六层增加独立斜杠图像与左右数字 OCR 的配方成本证据、固定武器经验矿读取，以及保留未知的摩拉只读接口。纯测试使用匿名数，私人回放路径和期望值来自本机忽略的清单。小摩拉图标身份未获核验，不声称已支持自动摩拉读取。
++- 第七层只读识别完整掉线弹窗并追加失败阶段诊断，不把弹窗缺失当连接正常，不更改角色或护盾阈值，不自动确认、重连或重放资源步骤。
++- 第八层在单浓缩路径识别当前完整的三次产出文案、同排唯一按钮及新鲜双帧。新增只从真实古树选择页起步的单浓缩领奖入口，不导航、不战斗、不点通用确认；提交后异常仍未知。原单20第一资源行合同不变。
++
++资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
++
++The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
++
++上文有关旧生产文件 920 个 PDB 源码文档及历史检查点的记录描述保留的基线核验，不能当作新增增量引擎的当前 PDB 或完整实机验收。新增版本的构建、补丁 SHA 和具体通过／失败范围由工作流仓库的独立验收记录给出。本文件只补充显著变更及日期，不改变执行代码。

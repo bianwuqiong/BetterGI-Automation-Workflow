@@ -1,0 +1,88 @@
+diff --git a/BetterGenshinImpact/Service/ScriptService.cs b/BetterGenshinImpact/Service/ScriptService.cs
+--- a/BetterGenshinImpact/Service/ScriptService.cs
++++ b/BetterGenshinImpact/Service/ScriptService.cs
+@@ -752,7 +752,12 @@
+                                     ||now>=StartupReadinessGate.DefaultTimeout)
+                                     throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
+                                 token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
+-                            },()=>BetterGenshinImpact.GameTask.Model.Area.GameCaptureRegion.GameRegion1080PPosClick(960,540));
++                            },()=>
++                            {
++                                if(!StartupKnownEnterGameGate.TryGetMatchedInputPoint(entry,out var point))
++                                    throw new InvalidOperationException("startup_matched_enter_game_point_missing");
++                                content.ClickTo(point.X,point.Y);
++                            });
+                             token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
+                             if(clicked)TaskControl.Logger.LogInformation("[AUTOGAME_STARTUP_ENTER] {Payload}",
+                                 Newtonsoft.Json.JsonConvert.SerializeObject(new{schemaVersion=1,method="existing_upstream_enter_game_once_v1",
+diff --git a/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs b/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs
+--- a/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs
++++ b/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs
+@@ -24,7 +24,7 @@
+             &&current.Width>0&&current.Height>0&&current.EnterGame.Matched
+             &&current.EnterGame.MatchBounds is {Width:>0,Height:>0}
+             &&current.CapturedAt<=now&&now-current.CapturedAt<=MaximumFrameAge;
+-        if(!eligible)return false;
++        if(!eligible||!TryGetMatchedInputPoint(current,out _))return false;
+         previous=current;
+         if(prior is null||current.Ordinal!=prior.Ordinal+1||current.GameWindow!=prior.GameWindow
+             ||current.Width!=prior.Width||current.Height!=prior.Height
+@@ -36,6 +36,18 @@
+     }
+ 
+     internal void ResetPair()=>previous=null;
++    internal static bool TryGetMatchedInputPoint(StartupEnterGameFrame frame,out Point2d point)
++    {
++        point=default;
++        if(!frame.EnterGame.Matched||frame.EnterGame.MatchBounds is not Rect bounds
++            ||bounds.Width<=0||bounds.Height<=0||bounds.X<0||bounds.Y<0
++            ||bounds.X+bounds.Width>frame.Width||bounds.Y+bounds.Height>frame.Height)return false;
++        var roi=frame.EnterGame.Region;
++        if(bounds.X<roi.X||bounds.Y<roi.Y||bounds.X+bounds.Width>roi.X+roi.Width
++            ||bounds.Y+bounds.Height>roi.Y+roi.Height)return false;
++        point=new(bounds.X+bounds.Width/2d,bounds.Y+bounds.Height/2d);
++        return true;
++    }
+     internal static bool CanAcceptReady(StartupSceneDecision decision,StartupEnterGameFrame frame)
+         =>decision.Ready&&!frame.EnterGame.Matched&&!frame.AccountChoice;
+ 
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs
+@@ -7,6 +7,27 @@
+ 
+ public sealed class StartupKnownEnterGameGateTests
+ {
++    [Fact] public void InputUsesTheActualMatchedLabelInsteadOfTheOldFixedCenter()
++    {
++        var frame=Frame(1,100) with {EnterGame=new("GameLoading","EnterGame",new(640,540,640,540),
++            0.8,true,0.85,new Rect(907,573,104,29))};
++        Assert.True(StartupKnownEnterGameGate.TryGetMatchedInputPoint(frame,out var point));
++        Assert.Equal(959,point.X);Assert.Equal(587.5,point.Y);
++        Assert.NotEqual(540,point.Y);
++    }
++    [Theory][InlineData(-1,573,104,29)][InlineData(1800,573,200,29)]
++    [InlineData(907,500,104,29)][InlineData(907,573,0,29)]
++    public void ABoxOutsideTheActualFrameOrTemplateRoiNeverSendsInput(int x,int y,int width,int height)
++    {
++        var frame=Frame(1,100) with {EnterGame=new("GameLoading","EnterGame",new(640,540,640,540),
++            0.8,true,0.85,new Rect(x,y,width,height))};
++        Assert.False(StartupKnownEnterGameGate.TryGetMatchedInputPoint(frame,out _));
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(frame,TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        Assert.False(gate.TryEnter(frame with {Ordinal=2,CapturedAt=TimeSpan.FromMilliseconds(620)},
++            TimeSpan.FromMilliseconds(630),()=>{},()=>clicks++));
++        Assert.Equal(0,clicks);
++    }
+     private static StartupEnterGameFrame Frame(int n,int ms,bool matched=true,bool conflict=false,bool foreground=true,
+         long hwnd=42,int width=1920,int x=915)=>new(n,hwnd,TimeSpan.FromMilliseconds(ms),width,1080,foreground,conflict,
+             new("GameLoading","EnterGame",new(640,540,640,540),0.8,matched,matched?0.95:null,
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -139,3 +139,5 @@
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+ 
+ 上文有关旧生产文件 920 个 PDB 源码文档及历史检查点的记录描述保留的基线核验，不能当作新增增量引擎的当前 PDB 或完整实机验收。新增版本的构建、补丁 SHA 和具体通过／失败范围由工作流仓库的独立验收记录给出。本文件只补充显著变更及日期，不改变执行代码。
++
++- 第三十四层仅把正常进入游戏的固定中心输入替换为同次严格两帧匹配的EnterGame文字框中心，复用原ImageRegion到桌面坐标转换与鼠标输入。输入框须完全位于当前帧及原模板ROI内；原所有权、捕获代次、前台、取消、期限、新鲜度和最多一次尝试保持。未知/认证/剧情无输入，不以一次点击代替进入世界验收。

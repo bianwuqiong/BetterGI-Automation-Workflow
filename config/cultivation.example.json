@@ -1,0 +1,25 @@
+{
+  "target": {
+    "characterName": "梦见月瑞希",
+    "targetLevel": 90,
+    "talentTargets": {"normal": 9, "skill": 9, "burst": 9},
+    "includeEquippedWeapon": true,
+    "weaponTargetLevel": 90
+  },
+  "executionEnabled": false,
+  "policy": {
+    "maxSteps": 1,
+    "maxMinutes": 15,
+    "allowDomain": false,
+    "domainValidated": false,
+    "allowBoss": false,
+    "bossValidated": false,
+    "domainResin": "original",
+    "originalResinBudget": 0,
+    "condensedResinBudget": 0,
+    "reserveOriginalResin": 0,
+    "domainPartyName": "",
+    "bossPartyName": "",
+    "strategyName": ""
+  }
+}

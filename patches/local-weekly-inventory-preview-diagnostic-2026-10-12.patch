@@ -1,0 +1,846 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -105,6 +105,7 @@
+ - 第十四层增加仅用于观测的天赋升级预览入口，复用角色导航，再核验完整官方角色名三帧、详情类型/完整标题/基础等级两帧及预览等级、具名材料tooltip和摩拉。提供尺寸、OCR字框/数字边缘、斜杠分离整数、等级字形颜色/加成及恢复世界的原始标量，供上层独立核验。未知字段为null；小币模型及稀字OCR/完整数量失败保持未知，不降低阈值。只有已核实页面的导航/材料tooltip/取消输入，未接入最终确认或升级消费。压缩静态回放存在失败，不等于物理新鲜截图通过；单角色实时预览仍待单独验收。
+ - 第十五层仅扩宽只读预览的角色姓名区域，并在原生及外层保留完整字框四边至少2px、三次独立全名要求，不修改一般GetCharacter读取或校正截边OCR框。清理每个已核实页面需双帧且只允许一次Esc；过渡和未知页面不反复按键，完整派蒙菜单八个按钮及布局获双帧证明后才允许一次back。原始失败阶段/原因与清理原因分别返回，不能被清理失败覆盖。菜单识别不读取账号头部、昵称、UID或生日作为条件，私人图片不进入源码。未增加升级确认或周本消费功能。
+ - 第十六层仅将Inspection姓名区域进一步扩至`(1420,110,360,68)`，覆盖完整姓名的自然左右边距且避开下一行，保持唯一完整OCR框、四边至少2px及三张独立官方全名。旧一般角色读取、清理调度和所有资源确认限制不变。第十五层清理已由实际新鲜世界双帧独立验收，完整天赋预览仍未据此宣称成功；旧截边与unknown原样保留。
++- 第十七层增加四种固定周本转化资源的独立只读库存入口，具名图标模型、页标、四侧选中框、完整数量双帧及世界恢复均需原始证据；缺失为null，不提供转化规划或消费动作。天赋预览仅增私有原生无缩放PNG/时间/字节及像素SHA诊断、卡片内充分数字边距、唯一完整货币数字行的有界重读和明确单一真实背景币图区域；初始失败原文/区域保留，0.75模型与两帧/完整名字标准不降低。诊断图片不代替验证、不公开。第十六层的姓名/详情/世界恢复已独立实机通过，完整预览仍有未知成本，不宣称升级完成。
+ 
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+diff --git a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+--- a/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
++++ b/BetterGenshinImpact/Core/Script/Dependence/Dispatcher.cs
+@@ -525,6 +525,13 @@
+         return await new GameTask.CharacterDevelopment.InspectTalentUpgradeTask().Start(characterName,talentType,linked.Token);
+     }
+ 
++    public async Task<string> ReadWeeklyConversionInventory(string requestJson="{}",CancellationToken? customCt=null)
++    {
++        var request=ReadWeeklyConversionInventoryTask.ParseRequest(requestJson);
++        using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,CancellationContext.Instance.Cts.Token);
++        return await new ReadWeeklyConversionInventoryTask(request).Start(linked.Token);
++    }
++
+     public async Task<string> ReadGameNetworkSnapshot(CancellationToken? customCt = null)
+     {
+         using var linked=CancellationTokenSource.CreateLinkedTokenSource(customCt??CancellationToken.None,
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -59,10 +59,26 @@
+     }
+     private async Task<(UpgradePreviewFrame First,UpgradePreviewFrame Second)> PreviewPair(ItemRecognizer recognizer,int level)
+     {
+-        UpgradePreviewFrame Read(){using var frame=Capture();var read=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,recognizer,Now());frames.Add(read);return read;}
++        UpgradePreviewFrame Read(){using var frame=Capture();var at=Now();var read=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,recognizer,at);
++            if(read.Page)read=read with{PrivateCapture=RetainPreviewCapture(frame,at)};frames.Add(read);return read;}
+         var first=Read();await Delay();var second=Read();
+         if(!TalentUpgradePreviewEvidence.PreviewPair(first,second,level,Now()))throw new InvalidOperationException("upgrade_preview_pair_unverified");
+         return(first,second);
++    }
++    private InspectionPrivateCapture? RetainPreviewCapture(ImageRegion frame,long at)
++    {
++        // Only after the complete preview page was proved. Private diagnostics cannot verify
++        // currency, numbers, freshness, consumption or identity in place of the normal evidence.
++        try
++        {
++            var folder=Global.Absolute("log\\talent-upgrade-inspection\\native-frames");System.IO.Directory.CreateDirectory(folder);
++            var path=System.IO.Path.Combine(folder,DateTimeOffset.FromUnixTimeMilliseconds(at).ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".png");
++            var encoded=InspectionNativeFrameEncoding.Encode(frame.SrcMat);
++            System.IO.File.WriteAllBytes(path,encoded.Png);
++            return new(at,frame.Width,frame.Height,frame.SrcMat.Type().ToString(),path,
++                encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize");
++        }
++        catch(Exception ex){logger.LogWarning("Private native preview PNG save failed: {Type}",ex.GetType().Name);return null;}
+     }
+     private async Task ClickKnownText(string text,Rect reference)
+     {
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewReader.cs
+@@ -144,19 +144,38 @@
+             .OrderBy(r=>r.Bounds.X).ToArray();
+         double s=frame.Width/1920d;
+         var materials=countRows.Select(row=>{
+-            var box=new Rect(row.Bounds.X-(int)Math.Round(8*s),row.Bounds.Y-(int)Math.Round(5*s),
++            var initialBox=new Rect(row.Bounds.X-(int)Math.Round(8*s),row.Bounds.Y-(int)Math.Round(5*s),
+                 row.Bounds.Width+(int)Math.Round(16*s),row.Bounds.Height+(int)Math.Round(10*s));
++            var initial=ReadRatio(frame,initialBox,ocr,at);
+             var center=row.Bounds.X+row.Bounds.Width/2;
+             var card=new Rect(center-(int)Math.Round(58*s),row.Bounds.Bottom-(int)Math.Round(138*s),(int)Math.Round(116*s),(int)Math.Round(146*s));
++            var box=TalentUpgradePreviewEvidence.MaterialQuantityCrop(row.Bounds,card,frame.Width);
+             var imageBox=new Rect(card.X,card.Y,card.Width,(int)Math.Round(112*s));
+             var icon=Icon(frame,imageBox,recognizer);
+-            return new UpgradePreviewMaterial(icon.Name,icon.Score,card,ReadRatio(frame,box,ocr,at)){IconRegion=imageBox};
++            var quantity=ReadRatio(frame,box,ocr,at) with{InitialReading=initial,CropMethod="source_count_row_pad20x5_intersect_card",SourceCountRow=row};
++            return new UpgradePreviewMaterial(icon.Name,icon.Score,card,quantity){IconRegion=imageBox};
+         }).ToArray();
+-        var coin=Icon(frame,Scale(new(853,799,37,37),frame.Width),recognizer);
++        var initialCoin=Icon(frame,Scale(new(853,799,37,37),frame.Width),recognizer);
++        // One explicitly selected real-background variant, no highest-score ROI search.
++        // Padding stays between the Need label and numeric balance, and does not synthesize pixels.
++        var coin=Icon(frame,Scale(new(845,791,53,53),frame.Width),recognizer);
++        var initialMora=ReadRatio(frame,Scale(new(903,797,275,55),frame.Width),ocr,at);
++        var mora=initialMora;
++        var numericRows=initialMora.OcrRows.Where(r=>TalentUpgradePreviewEvidence.Ratio(r.Text).Owned.HasValue).ToArray();
++        if(numericRows.Length==1 && Full(numericRows[0],initialMora.Bounds,s))
++        {
++            // Crop around the actual unique whole detector row with natural blank margins.
++            // Keep the initial conflicting whole/raw region for independent review.
++            var b=numericRows[0].Bounds;int pad=(int)Math.Round(12*s);
++            var refinedBox=new Rect(b.X-pad,b.Y-pad,b.Width+2*pad,b.Height+2*pad);
++            if(refinedBox.Left>=frame.Width*.44&&refinedBox.Right<=frame.Width*.65&&refinedBox.Top>=frame.Height*.7&&refinedBox.Bottom<=frame.Height*.81)
++                mora=ReadRatio(frame,refinedBox,ocr,at) with{InitialReading=initialMora,CropMethod="unique_initial_detector_row_pad12",SourceCountRow=numericRows[0]};
++        }
+         var current=Level(frame,new(760,245,160,65),ocr);var next=Level(frame,new(1000,245,170,65),ocr);
+         return new(at,true,current.Value,next.Value,materials,
+-            ReadRatio(frame,Scale(new(903,797,275,55),frame.Width),ocr,at),coin.Name,coin.Score,rows){
+-                Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width),CoinRegion=Scale(new(853,799,37,37),frame.Width),
++            mora,coin.Name,coin.Score,rows){
++                Width=frame.Width,Height=frame.Height,MarkerRegion=Scale(new(420,235,1100,750),frame.Width),CoinRegion=Scale(new(845,791,53,53),frame.Width),
++                CoinVariant="real_background_padding_8_reference_53",InitialCoinName=initialCoin.Name,InitialCoinScore=initialCoin.Score,InitialCoinRegion=Scale(new(853,799,37,37),frame.Width),
+                 CurrentLevelRegion=Scale(new(760,245,160,65),frame.Width),NextLevelRegion=Scale(new(1000,245,170,65),frame.Width),
+                 CurrentLevelRows=current.Rows,NextLevelRows=next.Rows,CurrentLevelRaw=current.Raw,NextLevelRaw=next.Raw};
+     }
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -16,6 +16,8 @@
+     public Rect? NumeratorRegion{get;init;}public Rect? DenominatorRegion{get;init;}
+     public UpgradePreviewRow[] NumeratorRows{get;init;}=[];public UpgradePreviewRow[] DenominatorRows{get;init;}=[];
+     public int SplitOcrScale{get;init;}public string Prefix{get;init;}="";
++    public UpgradePreviewRatio? InitialReading{get;init;}
++    public string CropMethod{get;init;}="fixed_or_initial";public UpgradePreviewRow? SourceCountRow{get;init;}
+ }
+ public sealed record UpgradePreviewMaterial(string Name,double IconScore,Rect Card,UpgradePreviewRatio Quantity)
+ {public Rect IconRegion{get;init;}}
+@@ -35,7 +37,11 @@
+     public Rect CurrentLevelRegion{get;init;}public Rect NextLevelRegion{get;init;}
+     public UpgradePreviewRow[] CurrentLevelRows{get;init;}=[];public UpgradePreviewRow[] NextLevelRows{get;init;}=[];
+     public string CurrentLevelRaw{get;init;}="";public string NextLevelRaw{get;init;}="";
++    public InspectionPrivateCapture? PrivateCapture{get;init;}
++    public string CoinVariant{get;init;}="tight_37";public string? InitialCoinName{get;init;}public double? InitialCoinScore{get;init;}public Rect? InitialCoinRegion{get;init;}
+ }
++public sealed record InspectionPrivateCapture(long ObservedAt,int Width,int Height,string PixelType,
++    string Path,string PngSha256,string NativePixelsSha256,string Source);
+ public sealed record UpgradePreviewTooltip(long ObservedAt,bool Page,string Name,string Kind,UpgradePreviewRatio Quantity,string RawName="",string AlternateRawName="")
+ {
+     public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public Rect KindRegion{get;init;}public Rect SourceRegion{get;init;}
+@@ -53,6 +59,17 @@
+     public static readonly Rect InspectionNameReference=new(1420,110,360,68);
+     public static string Normalize(string text)=>string.Concat(text.Normalize(NormalizationForm.FormKC).Where(c=>!char.IsWhiteSpace(c)));
+     public static string CanonicalMaterialName(string raw)=>Normalize(raw).Replace('[','「').Replace(']','」');
++    public static Rect MaterialQuantityCrop(Rect row,Rect card,int width)
++    {
++        int xpad=(int)Math.Round(20*width/1920d),ypad=(int)Math.Round(5*width/1920d);
++        int left=Math.Max(card.Left,row.Left-xpad),right=Math.Min(card.Right,row.Right+xpad);
++        int top=Math.Max(card.Top,row.Top-ypad),bottom=Math.Min(card.Bottom,row.Bottom+ypad);
++        return new(left,top,Math.Max(0,right-left),Math.Max(0,bottom-top));
++    }
++    private static bool ConflictingCoin(UpgradePreviewFrame frame)=>frame.InitialCoinScore.HasValue&&
++        double.IsFinite(frame.InitialCoinScore.Value)&&frame.InitialCoinScore.Value>=.75&&frame.InitialCoinName!="摩拉";
++    private static bool QuantityInsideCard(UpgradePreviewMaterial m)=>m.Quantity.Bounds.Width>0&&m.Quantity.Bounds.Height>0&&
++        m.Quantity.Bounds.Left>=m.Card.Left&&m.Quantity.Bounds.Right<=m.Card.Right&&m.Quantity.Bounds.Top>=m.Card.Top&&m.Quantity.Bounds.Bottom<=m.Card.Bottom;
+     public static void ValidateRequest(string name,string type)
+     {
+         if(string.IsNullOrWhiteSpace(name)||name!=name.Trim()||name.Length>80||name.Any(char.IsControl))
+@@ -88,10 +105,10 @@
+     public static bool QuantityPair(UpgradePreviewRatio a,UpgradePreviewRatio b,long now)=>a.Complete&&b.Complete&&
+         a.Owned is >=0&&a.Required is >0&&a.Owned==b.Owned&&a.Required==b.Required&&Fresh(a.ObservedAt,b.ObservedAt,now);
+     public static bool PreviewPair(UpgradePreviewFrame a,UpgradePreviewFrame b,int current,long now)=>
+-        a.Page&&b.Page&&a.Current==current&&b.Current==current&&a.Next==current+1&&b.Next==current+1&&current is >=1 and <=9&&
++        a.Page&&b.Page&&!ConflictingCoin(a)&&!ConflictingCoin(b)&&a.Current==current&&b.Current==current&&a.Next==current+1&&b.Next==current+1&&current is >=1 and <=9&&
+         Fresh(a.ObservedAt,b.ObservedAt,now)&&a.Materials.Length is >=1 and <=4&&a.Materials.Length==b.Materials.Length&&
+         a.Materials.Select(m=>m.Name).Distinct().Count()==a.Materials.Length &&
+-        a.Materials.Zip(b.Materials).All(p=>p.First.Name.Length>0&&p.First.Name==p.Second.Name&&double.IsFinite(p.First.IconScore)&&double.IsFinite(p.Second.IconScore)&&p.First.IconScore>=.75&&p.Second.IconScore>=.75&&
++        a.Materials.Zip(b.Materials).All(p=>QuantityInsideCard(p.First)&&QuantityInsideCard(p.Second)&&p.First.Name.Length>0&&p.First.Name==p.Second.Name&&double.IsFinite(p.First.IconScore)&&double.IsFinite(p.Second.IconScore)&&p.First.IconScore>=.75&&p.Second.IconScore>=.75&&
+             QuantityPair(p.First.Quantity,p.Second.Quantity,now))&&a.CoinName=="摩拉"&&b.CoinName=="摩拉"&&double.IsFinite(a.CoinScore)&&double.IsFinite(b.CoinScore)&&a.CoinScore>=.75&&b.CoinScore>=.75&&
+         QuantityPair(a.Mora,b.Mora,now);
+     public static bool SameCosts(UpgradePreviewFrame a,UpgradePreviewFrame b)=>a.Current==b.Current&&a.Next==b.Next&&
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectionNativeFrameEncoding.cs
+@@ -0,0 +1,19 @@
++using System;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++internal sealed record EncodedInspectionFrame(byte[] Png,string PngSha256,string NativePixelsSha256);
++/// <summary>Lossless diagnostics only. No capture, transformation, UI input or verification decision.</summary>
++internal static class InspectionNativeFrameEncoding
++{
++    internal static EncodedInspectionFrame Encode(Mat source)
++    {
++        using var exact=source.Clone(); // Contiguous copy only, pixels/geometry/type remain unchanged.
++        var pixels=new byte[checked((int)(exact.Total()*exact.ElemSize()))];
++        System.Runtime.InteropServices.Marshal.Copy(exact.Data,pixels,0,pixels.Length);
++        if(!Cv2.ImEncode(".png",exact,out var png)||png.Length==0)throw new InvalidOperationException("PNG encoding failed.");
++        return new(png,Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(png)),
++            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(pixels)));
++    }
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/WeeklyConversionInventoryEvidence.cs
+@@ -0,0 +1,143 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: bounded read-only weekly conversion inventory contracts.
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Text.RegularExpressions;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++public sealed record WeeklyInventoryMaterial(string MaterialId, string MaterialName, string Category);
++
++public static class WeeklyInventoryCatalog
++{
++    // ID/name pairs independently checked against local ItemV2 and pinned material data.
++    // Neither the model assets nor the raw data are redistributed with this source.
++    public static readonly IReadOnlyList<WeeklyInventoryMaterial> Materials = Array.AsReadOnly(new[] {
++        new WeeklyInventoryMaterial("113060", "残火灯烛", "characterDevelopmentItems"),
++        new WeeklyInventoryMaterial("113061", "丝织之羽", "characterDevelopmentItems"),
++        new WeeklyInventoryMaterial("113062", "否定裁断", "characterDevelopmentItems"),
++        new WeeklyInventoryMaterial("113021", "异梦溶媒", "preciousItems")
++    });
++    public static string Header(string category) => category switch {
++        "characterDevelopmentItems" => "角色培养道具", "preciousItems" => "贵重道具",
++        _ => throw new ArgumentException("Unsupported weekly inventory category.")
++    };
++    public static string TabPrefix(string category) => category switch {
++        "characterDevelopmentItems" => "BagCharacterDevelopmentItem", "preciousItems" => "BagPreciousItem",
++        _ => throw new ArgumentException("Unsupported weekly inventory category.")
++    };
++    public static GridScreenName Grid(string category) => category switch {
++        "characterDevelopmentItems" => GridScreenName.CharacterDevelopmentItems,
++        "preciousItems" => GridScreenName.PreciousItems,
++        _ => throw new ArgumentException("Unsupported weekly inventory category.")
++    };
++}
++
++public sealed class WeeklyConversionInventoryRequest
++{
++    public BackpackMaterial[] Materials { get; set; } = WeeklyInventoryCatalog.Materials
++        .Select(m => new BackpackMaterial { MaterialId = m.MaterialId, MaterialName = m.MaterialName }).ToArray();
++    public void Validate()
++    {
++        if (Materials is not { Length: > 0 and <= 4 } || Materials.Any(m => m is null ||
++            !WeeklyInventoryCatalog.Materials.Any(a => a.MaterialId == m.MaterialId && a.MaterialName == m.MaterialName)) ||
++            Materials.Select(m => m.MaterialId).Distinct(StringComparer.Ordinal).Count() != Materials.Length)
++            throw new ArgumentException("Only exact named 113060/113061/113062/113021 stacks may be observed.");
++    }
++}
++
++public sealed record WeeklyInventoryFrameEvidence(BackpackFrameEvidence Stack, int Width, int Height,
++    string Category, bool GameActive, bool PromptVisible, bool TabVerified,
++    BackpackRect HeaderRegion, BackpackOcrRow[] HeaderRows, string? IconName,double IconScore,BackpackRect IconRegion)
++{public string IconMethod {get;init;}="cell_resize_125x153_top_125x125";}
++public sealed record WeeklyInventoryObservation(BackpackSelection Selection,
++    WeeklyInventoryFrameEvidence First, WeeklyInventoryFrameEvidence Second);
++
++public sealed class WeeklyConversionInventoryResult
++{
++    public string Source { get; init; } = "weekly_conversion_backpack_selected_stack";
++    public string Category { get; init; } = "weeklyConversion";
++    public bool ReadOnly { get; init; } = true;
++    public string Status { get; set; } = "unknown";
++    public string Reason { get; set; } = "missing_or_unverified_stack";
++    public bool MainUiRestored { get; set; }
++    public bool CleanupCompleted { get; set; }
++    public string PrimaryReason {get;set;}="unverified";public string CleanupReason {get;set;}="cleanup_not_started";
++    public string? ObservedAt {get;set;}public string? RawReportPath{get;set;}
++    public List<WeeklyInventoryWorldFrame> WorldFrames{get;init;}=[];
++    public Dictionary<string, int?> Inventory { get; init; } = new(StringComparer.Ordinal);
++    public Dictionary<string, WeeklyInventoryObservation> Observations { get; init; } = new(StringComparer.Ordinal);
++    public Dictionary<string,List<WeeklyInventoryObservation>> RejectedObservations{get;init;}=new(StringComparer.Ordinal);
++}
++public sealed record WeeklyInventoryWorldFrame(long ObservedAt,int Width,int Height,bool Focused,bool World,bool Prompt,bool KnownBag,bool EscapeRequested);
++
++public static class WeeklyConversionInventoryEvidence
++{
++    public static BackpackRect HeaderRect(int width) => new((int)Math.Round(width * 100d / 1920), 0,
++        (int)Math.Round(width * 350d / 1920), (int)Math.Round(width * 100d / 1920));
++    public static bool HeaderVerified(BackpackOcrRow[] rows, BackpackRect region, string category) =>
++        rows.All(r => BackpackInventoryEvidenceSafety.Inside(new(r.X, r.Y, r.Width, r.Height), region)) &&
++        rows.Count(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == WeeklyInventoryCatalog.Header(category)) == 1 &&
++        rows.Where(r=>BackpackInventoryEvidenceSafety.Normalize(r.Text)==WeeklyInventoryCatalog.Header(category))
++            .All(r=>AwayFromEdges(r,region,2*region.Width/350d));
++    private static bool AwayFromEdges(BackpackOcrRow row, BackpackRect region, double margin) =>
++        row.X - region.X >= margin && row.Y - region.Y >= margin &&
++        region.X + region.Width - row.X - row.Width >= margin &&
++        region.Y + region.Height - row.Y - row.Height >= margin;
++    private static bool FrameVerified(WeeklyInventoryFrameEvidence f, WeeklyInventoryMaterial target)
++    {
++        if (f.Width < 800 || f.Width * 9 != f.Height * 16 || !f.GameActive || f.PromptVisible || !f.TabVerified ||
++            f.Category != target.Category || f.IconName != target.MaterialName || !double.IsFinite(f.IconScore)||f.IconScore<.75||
++            f.HeaderRegion != HeaderRect(f.Width) || !HeaderVerified(f.HeaderRows, f.HeaderRegion, target.Category)) return false;
++        var stack = f.Stack;
++        var selected=stack.SelectedItemRect;
++        var expectedIcon=new BackpackRect(selected.X,selected.Y,selected.Width,(int)Math.Round(selected.Height*125d/153));
++        if(f.IconRegion!=expectedIcon||f.IconMethod!="cell_resize_125x153_top_125x125")return false;
++        // Evidence must retain actual four-side selected-border proof, not only a Boolean assertion.
++        if (stack.SelectionEvidence is not BackpackBorderEvidence { Verified: true, Method: "four_side_neutral_outline" } border ||
++            border.MinimumChannel != 225 || border.MaximumSpread != 35 || border.MinimumFraction != .9 ||
++            border.Sides.Length != 4 || border.Sides.Count(s => s.Axis == "x") != 2 || border.Sides.Count(s => s.Axis == "y") != 2 ||
++            border.Sides.Any(s => s.SampleCount <= 0 || s.NeutralCount > s.SampleCount || s.NeutralCount / (double)s.SampleCount < .9)) return false;
++        var rect=stack.SelectedItemRect.ToRect();int radius=Math.Max(3,(int)Math.Round(rect.Width*8d/125));
++        bool Side(string axis,int edge)
++        {
++            int begin=axis=="x"?rect.Y+(int)(rect.Height*.2):rect.X+(int)(rect.Width*.12);
++            int end=axis=="x"?rect.Y+(int)(rect.Height*.75):rect.X+(int)(rect.Width*.55);
++            var matches=border.Sides.Where(s=>s.Axis==axis&&Math.Abs(s.Coordinate-edge)<=radius).ToArray();
++            return matches.Length==1&&matches[0].SampleCount==end-begin&&matches[0].Samples.Length>0&&matches[0].Samples.All(p=>
++                (axis=="x"?p.X:p.Y)==matches[0].Coordinate&&(axis=="x"?p.Y:p.X)>=begin&&(axis=="x"?p.Y:p.X)<end&&
++                p.B is >=0 and <=255&&p.G is >=0 and <=255&&p.R is >=0 and <=255);
++        }
++        if(!Side("x",rect.X)||!Side("x",rect.Right-1)||!Side("y",rect.Y)||!Side("y",rect.Bottom-1))return false;
++        if(!Regex.IsMatch(BackpackInventoryEvidenceSafety.Normalize(stack.RawCountText),@"\A(?:0|[1-9][0-9]{0,8})\z"))return false;
++        if (stack.NameRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(f.Width)) ||
++            stack.CountRegion != BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(stack.SelectedItemRect.ToRect())) ||
++            stack.CountRows.Length != 1) return false;
++        var names = stack.NameRows.Where(r => BackpackInventoryEvidenceSafety.Normalize(r.Text) == target.MaterialName).ToArray();
++        var name = names.Length == 1 ? names[0] : null;
++        double margin = 2*f.Width/1920d;
++        return name is not null && AwayFromEdges(name, stack.NameRegion, margin) &&
++            AwayFromEdges(stack.CountRows[0], stack.CountRegion, margin);
++    }
++    public static int? Count(WeeklyInventoryObservation pair, WeeklyInventoryMaterial target)
++    {
++        if (ReferenceEquals(pair.First, pair.Second) || pair.First.Width != pair.Second.Width ||
++            pair.First.Height != pair.Second.Height || !FrameVerified(pair.First, target) || !FrameVerified(pair.Second, target)) return null;
++        var backpackPair = new BackpackObservation(pair.Selection, pair.First.Stack, pair.Second.Stack);
++        return BackpackInventoryEvidenceSafety.Verified(backpackPair, target.MaterialName)
++            ? BackpackInventoryEvidenceSafety.RawCount(pair.Second.Stack, target.MaterialName, pair.Selection) : null;
++    }
++    public static bool CanPublish(WeeklyConversionInventoryResult result, WeeklyConversionInventoryRequest request) =>
++        result.ReadOnly && result.MainUiRestored && result.CleanupCompleted &&
++        result.WorldFrames.Count>=2 && WorldPair(result.WorldFrames[^2],result.WorldFrames[^1]) &&
++        request.Materials.All(m => result.Inventory.TryGetValue(m.MaterialId, out var count) && count.HasValue &&
++            result.Observations.TryGetValue(m.MaterialId, out var pair) &&
++            Count(pair, WeeklyInventoryCatalog.Materials.Single(a => a.MaterialId == m.MaterialId)) == count);
++    public static bool WorldPair(WeeklyInventoryWorldFrame a,WeeklyInventoryWorldFrame b)=>
++        !ReferenceEquals(a,b)&&a.Width>=800&&a.Width*9==a.Height*16&&a.Width==b.Width&&a.Height==b.Height&&
++        a.Focused&&b.Focused&&a.World&&b.World&&!a.Prompt&&!b.Prompt&&
++        b.ObservedAt>a.ObservedAt&&b.ObservedAt-a.ObservedAt<=5000;
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/ReadWeeklyConversionInventoryTask.cs
+@@ -0,0 +1,248 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: read-only weekly boss-drop and Dream Solvent inventory observation.
++using System;
++using System.Collections.Concurrent;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.Core.Config;
++using BetterGenshinImpact.Core.Simulator;
++using BetterGenshinImpact.Core.Simulator.Extensions;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Microsoft.Extensions.Logging;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
++using OpenCvSharp;
++using Vanara.PInvoke;
++
++namespace BetterGenshinImpact.GameTask.Common.Job;
++
++/// <summary>Only opens inventory, changes verified bag tabs, scrolls and selects named stacks.
++/// No conversion, crafting, battle, claim, upgrade, use, or general confirmation input exists here.</summary>
++public sealed class ReadWeeklyConversionInventoryTask
++{
++    private readonly WeeklyConversionInventoryRequest request;
++    private readonly ILogger logger = App.GetLogger<ReadWeeklyConversionInventoryTask>();
++    private static readonly JsonSerializerSettings JsonSettings = new() {
++        ContractResolver = new CamelCasePropertyNamesContractResolver(), MissingMemberHandling = MissingMemberHandling.Error };
++    public ReadWeeklyConversionInventoryTask(WeeklyConversionInventoryRequest request)
++    {
++        request.Validate();
++        // Freeze caller-owned mutable arrays before any awaits.
++        this.request = new() { Materials = request.Materials.Select(m => new BackpackMaterial {
++            MaterialId = m.MaterialId, MaterialName = m.MaterialName }).ToArray() };
++    }
++    public static WeeklyConversionInventoryRequest ParseRequest(string json)
++    {
++        var parsed = JsonConvert.DeserializeObject<WeeklyConversionInventoryRequest>(json, JsonSettings)
++            ?? throw new ArgumentException("Empty weekly inventory request.");
++        parsed.Validate(); return parsed;
++    }
++    public static string Serialize(WeeklyConversionInventoryResult result) => JsonConvert.SerializeObject(result, JsonSettings);
++    private static bool Prompt(ImageRegion frame)
++    {using var confirm=frame.Find(ElementRecognition.Get("BtnBlackConfirm",frame));return Bv.IsInPromptDialog(frame)||Bv.IsInRevivePrompt(frame)||confirm.IsExist();}
++    private static bool Tab(ImageRegion frame, string category, string suffix)
++    {
++        using var tab = frame.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + suffix, frame));
++        return tab.IsExist();
++    }
++    private static BackpackOcrRow[] Rows(ImageRegion frame, Rect rect)
++    {
++        using var crop = frame.DeriveCrop(rect);
++        return OcrFactory.Paddle.OcrResult(crop.SrcMat).Regions.Select(r => {
++            var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + rect.X, b.Y + rect.Y, b.Width, b.Height);
++        }).ToArray();
++    }
++    private static bool Header(ImageRegion frame, string category)
++    {
++        var rect = WeeklyConversionInventoryEvidence.HeaderRect(frame.Width);
++        return WeeklyConversionInventoryEvidence.HeaderVerified(Rows(frame, rect.ToRect()), rect, category);
++    }
++    private static void RequirePage(ImageRegion frame, string category, CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested();
++        if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(frame) || !Tab(frame, category, "Checked") || !Header(frame, category))
++            throw new InvalidOperationException("Weekly inventory page, complete header or game focus unverified.");
++        ct.ThrowIfCancellationRequested();
++    }
++    private static async Task SelectTab(string category, CancellationToken ct)
++    {
++        for (int i = 0; i < 8; i++)
++        {
++            ct.ThrowIfCancellationRequested(); using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++            if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(frame))
++                throw new InvalidOperationException("Weekly inventory tab switch blocked by focus or dialog.");
++            if (Tab(frame, category, "Checked") && Header(frame, category)) return;
++            // Only known inventory tab templates may be clicked. Never any generic button.
++            using var tab = frame.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + "Unchecked", frame));
++            if (tab.IsExist()) { ct.ThrowIfCancellationRequested(); tab.Click(); }
++            await Task.Delay(250, ct);
++        }
++        throw new InvalidOperationException("Weekly inventory category/header could not be selected.");
++    }
++    public async Task<string> Start(CancellationToken ct)
++    {
++        var result = new WeeklyConversionInventoryResult();
++        foreach (var m in request.Materials) result.Inventory.Add(m.MaterialId, null);
++        bool opened = false, observationCompleted = false;
++        var saved = new ConcurrentDictionary<string, ITaskTrigger>(GameTaskManager.TriggerDictionary ?? new());
++        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
++        // Six seconds are reserved for bounded cleanup; total cooperative budget is 120 seconds.
++        timeout.CancelAfter(TimeSpan.FromSeconds(114));
++        try
++        {
++            TaskTriggerDispatcher.Instance().ClearTriggers(); Simulation.ReleaseAllKey();
++            for (int i = 0; i < 2; i++)
++            {
++                timeout.Token.ThrowIfCancellationRequested(); using var initial = TaskControl.CaptureToRectArea(forceNew: true);
++                if (!SystemControl.IsGenshinImpactActiveByProcess() || !ReadBackpackInventoryTask.World(initial) || Prompt(initial))
++                    throw new InvalidOperationException("Weekly inventory needs two fresh outside-world entry frames.");
++                await Task.Delay(200, timeout.Token);
++            }
++            timeout.Token.ThrowIfCancellationRequested();
++            Simulation.SendInput.SimulateAction(GIActions.OpenInventory); opened = true;
++            await Task.Delay(800, timeout.Token);
++            using var recognizer = new ItemRecognizer();
++            var targets = WeeklyInventoryCatalog.Materials.Where(m => request.Materials.Any(r => r.MaterialId == m.MaterialId)).ToArray();
++            foreach (var group in targets.GroupBy(m => m.Category))
++            {
++                await SelectTab(group.Key, timeout.Token);
++                var gridParams = GridParams.Templates[WeeklyInventoryCatalog.Grid(group.Key)];
++                var grid = new GridScreen(gridParams, logger, timeout.Token); int pages = 0;
++                grid.OnBeforeScroll = () => {
++                    using var fresh = TaskControl.CaptureToRectArea(forceNew: true);
++                    RequirePage(fresh, group.Key, timeout.Token);
++                };
++                grid.OnAfterTurnToNewPage = _ => {
++                    timeout.Token.ThrowIfCancellationRequested();
++                    if (++pages > 30) throw new InvalidOperationException("Weekly inventory reached bounded 30-page limit.");
++                };
++                await foreach (var (page, itemRect) in grid)
++                {
++                    timeout.Token.ThrowIfCancellationRequested();
++                    using var item = page.DeriveCrop(itemRect); using var icon = item.SrcMat.GetGridIcon();
++                    var candidate = recognizer.Match(icon);
++                    var target = group.FirstOrDefault(m => m.MaterialName == candidate.Name && double.IsFinite(candidate.Score)&&candidate.Score>=.75&&!result.Observations.ContainsKey(m.MaterialId));
++                    if (target is null) continue;
++                    var fullRect = new Rect(itemRect.X + gridParams.Roi.X, itemRect.Y + gridParams.Roi.Y, itemRect.Width, itemRect.Height);
++                    BackpackSelection selection;
++                    using (var fresh = TaskControl.CaptureToRectArea(forceNew: true))
++                    {
++                        RequirePage(fresh, group.Key, timeout.Token);
++                        using var cell = fresh.DeriveCrop(fullRect); using var currentIcon = cell.SrcMat.GetGridIcon();
++                        var current=recognizer.Match(currentIcon);
++                        if (current.Name != target.MaterialName||!double.IsFinite(current.Score)||current.Score<.75) continue;
++                        selection = ReadBackpackInventoryTask.SelectCell(BackpackRect.From(fullRect), () => cell.Click(),
++                            () => fresh.MoveTo(fresh.Width / 2, fresh.Height - 40),
++                            () => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), timeout.Token);
++                    }
++                    // Captures are independent and contain same-frame model/header/title/border/raw count evidence.
++                    var pair = await ObservePair(selection, (s, token) => ReadFrame(s, group.Key, recognizer, token),
++                        (ms, token) => Task.Delay(ms, token), timeout.Token);
++                    var count = WeeklyConversionInventoryEvidence.Count(pair, target);
++                    if (count.HasValue) { result.Observations.Add(target.MaterialId, pair); result.Inventory[target.MaterialId] = count; }
++                    else
++                    {
++                        if(!result.RejectedObservations.TryGetValue(target.MaterialId,out var rejected))result.RejectedObservations[target.MaterialId]=rejected=[];
++                        if(rejected.Count<2)rejected.Add(pair);
++                        logger.LogWarning("Named weekly inventory stack evidence rejected; count remains unknown.");
++                    }
++                    if (group.All(m => result.Observations.ContainsKey(m.MaterialId))) break;
++                }
++            }
++            result.PrimaryReason = result.Inventory.Values.All(v => v.HasValue) ? "selected_stack_model_header_raw_ocr_pair" : "missing_or_unverified_stack";
++            observationCompleted = true;
++        }
++        catch (Exception ex)
++        {
++            result.PrimaryReason = ex is OperationCanceledException ? "observation_cancelled_or_timeout" : ex.Message;
++        }
++        finally
++        {
++            try { result.MainUiRestored = await Restore(opened,result); result.CleanupCompleted = result.MainUiRestored;result.CleanupReason=result.MainUiRestored?"world_restored":"world_restore_unverified"; }
++            catch { result.MainUiRestored = false; result.CleanupCompleted = false; result.CleanupReason="world_restore_deadline_or_failure"; }
++            finally
++            {
++                Simulation.ReleaseAllKey(); TaskTriggerDispatcher.Instance().ClearTriggers();
++                GameTaskManager.TriggerDictionary = saved;
++                TaskTriggerDispatcher.Instance().SetTriggers(saved.Values.OrderByDescending(t => t.Priority).ToList());
++            }
++        }
++        result.Status = observationCompleted && WeeklyConversionInventoryEvidence.CanPublish(result, request) ? "verified" : "unknown";
++        if (!result.MainUiRestored)
++            foreach (var id in result.Inventory.Keys.ToArray()) result.Inventory[id] = null;
++        result.Reason=result.PrimaryReason=="selected_stack_model_header_raw_ocr_pair"&&!result.MainUiRestored?result.CleanupReason:result.PrimaryReason;
++        if(result.Status=="verified")result.ObservedAt=DateTimeOffset.FromUnixTimeMilliseconds(result.Observations.Values.Max(p=>p.Second.Stack.ObservedAt)).ToString("O");
++        ct.ThrowIfCancellationRequested();
++        var folder=Global.Absolute("log\\weekly-conversion-inventory");
++        result.RawReportPath=System.IO.Path.Combine(folder,DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmssfff")+"-"+Guid.NewGuid().ToString("N")[..8]+".json");
++        var payload=Serialize(result);
++        try{System.IO.Directory.CreateDirectory(folder);System.IO.File.WriteAllText(result.RawReportPath,payload);}catch(Exception ex){logger.LogWarning("Weekly read-only report save failed: {Type}",ex.GetType().Name);}
++        return payload;
++    }
++    internal static async Task<WeeklyInventoryObservation> ObservePair(BackpackSelection selection,
++        Func<BackpackSelection, CancellationToken, WeeklyInventoryFrameEvidence> capture,
++        Func<int, CancellationToken, Task> delay, CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested(); await delay(300, ct); ct.ThrowIfCancellationRequested();
++        var first = capture(selection, ct); ct.ThrowIfCancellationRequested();
++        await delay(250, ct); ct.ThrowIfCancellationRequested();
++        var second = capture(selection, ct); ct.ThrowIfCancellationRequested();
++        return new(selection, first, second);
++    }
++    internal static WeeklyInventoryFrameEvidence ReadFrame(BackpackSelection selection, string category,
++        ItemRecognizer recognizer, CancellationToken ct)
++    {
++        ct.ThrowIfCancellationRequested(); using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++        long at = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); ct.ThrowIfCancellationRequested();
++        var nameRect = BackpackInventoryEvidenceSafety.NameRect(frame.Width);
++        var countRect = BackpackInventoryEvidenceSafety.RawCountRect(selection.ItemRect.ToRect());
++        var headerRect = WeeklyConversionInventoryEvidence.HeaderRect(frame.Width);
++        var names = Rows(frame, nameRect); var counts = Rows(frame, countRect); var headers = Rows(frame, headerRect.ToRect());
++        using var count = frame.DeriveCrop(countRect);
++        var raw = OcrFactory.Paddle.OcrWithoutDetector(count.SrcMat);
++        using var cell = frame.DeriveCrop(selection.ItemRect.ToRect()); using var icon = cell.SrcMat.GetGridIcon();
++        var matched = recognizer.Match(icon);
++        var border = BackpackInventoryEvidenceSafety.ReadSelectedBorder(frame.SrcMat, selection.ItemRect.ToRect());
++        bool tab = Tab(frame, category, "Checked"); bool active = SystemControl.IsGenshinImpactActiveByProcess(); bool prompt = Prompt(frame);
++        ct.ThrowIfCancellationRequested();
++        var stack = new BackpackFrameEvidence { ObservedAt = at, NameRegion = BackpackRect.From(nameRect), NameRows = names,
++            CountRegion = BackpackRect.From(countRect), CountRows = counts, RawCountText = raw,
++            SelectedItemVerified = tab && active && !prompt && border.Verified,
++            SelectedItemRect = border.Verified ? selection.ItemRect : new(0, 0, 0, 0), SelectionEvidence = border };
++        var iconRegion=new BackpackRect(selection.ItemRect.X,selection.ItemRect.Y,selection.ItemRect.Width,(int)Math.Round(selection.ItemRect.Height*125d/153));
++        return new(stack, frame.Width, frame.Height, category, active, prompt, tab, headerRect, headers, matched.Name,matched.Score,iconRegion);
++    }
++    private static async Task<bool> Restore(bool opened,WeeklyConversionInventoryResult result)
++    {
++        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(6)); bool escaped = false;WeeklyInventoryWorldFrame? previous=null;int bagFrames=0;
++        for (int i = 0; i < 20; i++)
++        {
++            cleanup.Token.ThrowIfCancellationRequested(); using var frame = TaskControl.CaptureToRectArea(forceNew: true);
++            var active=SystemControl.IsGenshinImpactActiveByProcess();var prompt=Prompt(frame);
++            var world=active&&ReadBackpackInventoryTask.World(frame)&&!prompt;
++            bool recognized=!world&&!prompt&&new[]{"characterDevelopmentItems","preciousItems"}.Any(c=>Tab(frame,c,"Checked")&&Header(frame,c));
++            var current=new WeeklyInventoryWorldFrame(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),frame.Width,frame.Height,active,world,prompt,recognized,false);
++            if (!active)return false;
++            if(world)
++            {result.WorldFrames.Add(current);if(previous is not null&&WeeklyConversionInventoryEvidence.WorldPair(previous,current))return true;previous=current;}
++            else
++            {
++                previous=null;bagFrames=recognized?bagFrames+1:0;
++                if (bagFrames>=2&&BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened, recognized, prompt, escaped))
++                {
++                    cleanup.Token.ThrowIfCancellationRequested(); Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE); escaped = true;
++                    current=current with{EscapeRequested=true};
++                }
++                result.WorldFrames.Add(current);
++            }
++            await Task.Delay(200, cleanup.Token);
++        }
++        return false;
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeeklyConversionInventoryTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeeklyConversionInventoryTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/WeeklyConversionInventoryTests.cs
+@@ -0,0 +1,166 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: synthetic contract tests; no game processes or account fixtures.
++using System;
++using System.Linq;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.GameUI;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Linq;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public sealed class WeeklyConversionInventoryTests
++{
++    private static readonly BackpackSelection Selection = new(new(110, 300, 125, 150), 172, 365, 1000);
++    private static WeeklyInventoryMaterial Target(string id = "113060") => WeeklyInventoryCatalog.Materials.Single(m => m.MaterialId == id);
++    private static BackpackBorderEvidence Border(bool verified = true)
++    {
++        var rect=Selection.ItemRect.ToRect();
++        BackpackBorderSide Side(string axis,int coordinate)
++        {
++            int begin=axis=="x"?rect.Y+(int)(rect.Height*.2):rect.X+(int)(rect.Width*.12);
++            int end=axis=="x"?rect.Y+(int)(rect.Height*.75):rect.X+(int)(rect.Width*.55);
++            return new(axis,coordinate,end-begin,end-begin,[new(axis=="x"?coordinate:begin,axis=="x"?begin:coordinate,250,250,250)]);
++        }
++        return new(verified,"four_side_neutral_outline",225,35,.9,[Side("x",rect.X),Side("x",rect.Right-1),Side("y",rect.Y),Side("y",rect.Bottom-1)]);
++    }
++    private static WeeklyInventoryFrameEvidence Frame(long at, WeeklyInventoryMaterial? target = null, string raw = "9",
++        string? name = null, string? header = null, bool selected = true, bool edge = false, bool border = true)
++    {
++        target ??= Target();
++        var nameRect = BackpackRect.From(BackpackInventoryEvidenceSafety.NameRect(1920));
++        var countRect = BackpackRect.From(BackpackInventoryEvidenceSafety.RawCountRect(Selection.ItemRect.ToRect()));
++        var headerRect = WeeklyConversionInventoryEvidence.HeaderRect(1920);
++        var stack = new BackpackFrameEvidence { ObservedAt = at, NameRegion = nameRect,
++            NameRows = [new(name ?? target.MaterialName, nameRect.X + 10, nameRect.Y + 10, 200, 30)],
++            CountRegion = countRect, CountRows = [new(raw, countRect.X + (edge ? 0 : 3), countRect.Y + 3, 100, countRect.Height - 6)],
++            RawCountText = raw, SelectedItemVerified = selected, SelectedItemRect = Selection.ItemRect, SelectionEvidence = Border(border) };
++        return new(stack, 1920, 1080, target.Category, true, false, true, headerRect,
++            [new(header ?? WeeklyInventoryCatalog.Header(target.Category), 120, 30, 200, 25)], target.MaterialName,.9,
++            new(Selection.ItemRect.X,Selection.ItemRect.Y,Selection.ItemRect.Width,(int)Math.Round(Selection.ItemRect.Height*125d/153)));
++    }
++    private static WeeklyInventoryObservation Pair(string id = "113060", string raw = "9") =>
++        new(Selection, Frame(1400, Target(id), raw), Frame(1700, Target(id), raw));
++
++    [Fact] public void CatalogHasExactIdsNamesAndCategoryRouting()
++    {
++        Assert.Equal(new[] { "113060", "113061", "113062", "113021" }, WeeklyInventoryCatalog.Materials.Select(m => m.MaterialId));
++        Assert.Equal("异梦溶媒", Target("113021").MaterialName);
++        Assert.Equal("preciousItems", Target("113021").Category);
++        Assert.Equal("BagPreciousItem", WeeklyInventoryCatalog.TabPrefix("preciousItems"));
++        Assert.Equal("贵重道具", WeeklyInventoryCatalog.Header("preciousItems"));
++        Assert.Equal(GridScreenName.PreciousItems, WeeklyInventoryCatalog.Grid("preciousItems"));
++        Assert.Equal(GridScreenName.CharacterDevelopmentItems, WeeklyInventoryCatalog.Grid("characterDevelopmentItems"));
++        Assert.Throws<ArgumentException>(() => WeeklyInventoryCatalog.Grid("crafting"));
++    }
++    [Theory]
++    [InlineData("101016", "异梦溶媒")]
++    [InlineData("113021", "残火灯烛")]
++    [InlineData("113060", "灯烛")]
++    [InlineData("113060", "残火灯烛 ")]
++    [InlineData("201", "原石")]
++    [InlineData("107001", "脆弱树脂")]
++    public void RequestRejectsWrongIdsPartialNamesAndForbiddenResources(string id, string name) =>
++        Assert.Throws<ArgumentException>(() => new WeeklyConversionInventoryRequest {
++            Materials = [new() { MaterialId = id, MaterialName = name }] }.Validate());
++    [Fact] public void JsonBoundaryRejectsCallerCoordinatesCategoryAndUnknownReplayFields()
++    {
++        Assert.Equal(4, ReadWeeklyConversionInventoryTask.ParseRequest("{}").Materials.Length);
++        foreach (var json in new[] { "{\"x\":100}", "{\"category\":\"crafting\"}", "{\"confirm\":true}", "{\"replay\":true}" })
++            Assert.Throws<JsonSerializationException>(() => ReadWeeklyConversionInventoryTask.ParseRequest(json));
++        Assert.Throws<ArgumentException>(() => ReadWeeklyConversionInventoryTask.ParseRequest("{\"materials\":[]}"));
++        Assert.Throws<ArgumentException>(() => ReadWeeklyConversionInventoryTask.ParseRequest("{\"materials\":null}"));
++        var duplicate = new WeeklyConversionInventoryRequest { Materials = [
++            new() { MaterialId = "113021", MaterialName = "异梦溶媒" }, new() { MaterialId = "113021", MaterialName = "异梦溶媒" }] };
++        Assert.Throws<ArgumentException>(duplicate.Validate);
++    }
++    [Fact] public void EachCategoryRequiresItsOwnHeaderAndSameFrameModelProof()
++    {
++        foreach (var target in WeeklyInventoryCatalog.Materials)
++        {
++            var a = Frame(1400, target); var b = Frame(1700, target);
++            Assert.Equal(9, WeeklyConversionInventoryEvidence.Count(new(Selection, a, b), target));
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, a, b with { IconName = "相邻物品" }), target));
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, a, b with { GameActive = false }), target));
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, a, b with { PromptVisible = true }), target));
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, a, b with { TabVerified = false }), target));
++            Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, a, Frame(1700, target, header: "合成")), target));
++        }
++    }
++    [Fact] public void CountsNeedIndependentFreshMatchingSelectedFramesAndCompleteTitle()
++    {
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1400)), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(7000), Frame(7300)), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1700, raw: "8")), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1700, selected: false)), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1700, name: "灯烛")), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1700, border: false)), Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, Frame(1400), Frame(1700, edge: true)), Target()));
++        var one = Frame(1400);
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection, one, one), Target()));
++    }
++    [Theory] [InlineData("O")] [InlineData("1/9")] [InlineData("可转化9")] [InlineData("")] [InlineData("1000000000")] [InlineData("009")]
++    public void RawCountCannotBeRepairedOrTakenFromARecipe(string raw) =>
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(Pair(raw: raw), Target()));
++    [Fact] public void OnePixelEdgesLowOrNonFiniteScoresAndDuplicatedBorderSideStayUnknown()
++    {
++        var a=Frame(1400);var b=Frame(1700);
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection,a,b with{IconScore=.749}),Target()));
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection,a,b with{IconScore=double.PositiveInfinity}),Target()));
++        var row=b.Stack.CountRows[0];
++        var onePixel=new BackpackFrameEvidence{ObservedAt=1700,NameRegion=b.Stack.NameRegion,NameRows=b.Stack.NameRows,
++            CountRegion=b.Stack.CountRegion,CountRows=[row with{X=b.Stack.CountRegion.X+1}],RawCountText=b.Stack.RawCountText,
++            SelectedItemVerified=true,SelectedItemRect=Selection.ItemRect,SelectionEvidence=Border()};
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection,a,b with{Stack=onePixel}),Target()));
++        var border=Border();var bad=new BackpackBorderEvidence(true,border.Method,225,35,.9,[border.Sides[0],border.Sides[0],border.Sides[2],border.Sides[3]]);
++        var duplicate=new BackpackFrameEvidence{ObservedAt=1700,NameRegion=b.Stack.NameRegion,NameRows=b.Stack.NameRows,CountRegion=b.Stack.CountRegion,
++            CountRows=b.Stack.CountRows,RawCountText=b.Stack.RawCountText,SelectedItemVerified=true,SelectedItemRect=Selection.ItemRect,SelectionEvidence=bad};
++        Assert.Null(WeeklyConversionInventoryEvidence.Count(new(Selection,a,b with{Stack=duplicate}),Target()));
++    }
++    [Fact] public void ExplicitVerifiedZeroIsAcceptedAndMissingStackRemainsNull()
++    {
++        Assert.Equal(0, WeeklyConversionInventoryEvidence.Count(Pair(raw: "0"), Target()));
++        var result = new WeeklyConversionInventoryResult(); result.Inventory["113021"] = null;
++        var json = JObject.Parse(ReadWeeklyConversionInventoryTask.Serialize(result));
++        Assert.Equal(JTokenType.Null, json["inventory"]!["113021"]!.Type);
++        Assert.Equal("unknown", json.Value<string>("status"));
++        Assert.True(json.Value<bool>("readOnly"));
++        Assert.Empty(result.Observations);
++    }
++    [Fact] public void PublicationRequiresAllRevalidatedInventoryAndTwoIndependentWorldFrames()
++    {
++        var result = new WeeklyConversionInventoryResult { Status = "verified", MainUiRestored = true, CleanupCompleted = true };
++        foreach (var (id, count) in new[] { ("113060", 2), ("113061", 4), ("113062", 8), ("113021", 6) })
++        {
++            result.Inventory[id] = count; result.Observations[id] = Pair(id, count.ToString());
++        }
++        var request=new WeeklyConversionInventoryRequest();
++        Assert.False(WeeklyConversionInventoryEvidence.CanPublish(result,request));
++        result.WorldFrames.Add(new(2000,1920,1080,true,true,false,false,false));
++        result.WorldFrames.Add(new(2300,1920,1080,true,true,false,false,false));
++        Assert.True(WeeklyConversionInventoryEvidence.CanPublish(result,request));
++        result.Inventory["113021"] = null;
++        Assert.False(WeeklyConversionInventoryEvidence.CanPublish(result,request));
++        result.Inventory["113021"] = 6; result.MainUiRestored = false;
++        Assert.False(WeeklyConversionInventoryEvidence.CanPublish(result,request));
++        result.MainUiRestored = true; result.CleanupCompleted = false;
++        Assert.False(WeeklyConversionInventoryEvidence.CanPublish(result,request));
++    }
++    [Fact] public async Task PairCollectorCancelsBeforeEveryCaptureAndCannotPublishOneFrame()
++    {
++        int captures = 0;
++        var pair = await ReadWeeklyConversionInventoryTask.ObservePair(Selection,
++            (_, _) => Frame(++captures == 1 ? 1400 : 1700), (_, _) => Task.CompletedTask, CancellationToken.None);
++        Assert.Equal(2, captures); Assert.Equal(9, WeeklyConversionInventoryEvidence.Count(pair, Target()));
++        using var cancelled = new CancellationTokenSource(); captures = 0;
++        await Assert.ThrowsAsync<OperationCanceledException>(() => ReadWeeklyConversionInventoryTask.ObservePair(Selection,
++            (_, _) => { captures++; cancelled.Cancel(); return Frame(1400); }, (_, _) => Task.CompletedTask, cancelled.Token));
++        Assert.Equal(1, captures); captures = 0;
++        await Assert.ThrowsAsync<OperationCanceledException>(() => ReadWeeklyConversionInventoryTask.ObservePair(Selection,
++            (_, _) => { captures++; return Frame(1400); }, (_, _) => Task.CompletedTask, cancelled.Token));
++        Assert.Equal(0, captures);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionNativeFrameEncodingTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionNativeFrameEncodingTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/InspectionNativeFrameEncodingTests.cs
+@@ -0,0 +1,18 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class InspectionNativeFrameEncodingTests
++{
++    [Fact] public void DiagnosticPngPreservesEveryPixelAndReportsActualEncodedHash()
++    {
++        using var original=new Mat(18,32,MatType.CV_8UC3,new Scalar(12,34,56));original.Set(7,11,new Vec3b(255,127,3));
++        var encoded=InspectionNativeFrameEncoding.Encode(original);
++        using var decoded=Cv2.ImDecode(encoded.Png,ImreadModes.Unchanged);
++        Assert.Equal(original.Size(),decoded.Size());Assert.Equal(original.Type(),decoded.Type());
++        Assert.Equal(0,Cv2.Norm(original,decoded,NormTypes.INF));
++        Assert.Equal(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(encoded.Png)),encoded.PngSha256);
++        Assert.Equal(encoded.NativePixelsSha256,InspectionNativeFrameEncoding.Encode(decoded).NativePixelsSha256);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/PreviewPaddingPrivateDiagnosticTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/PreviewPaddingPrivateDiagnosticTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/PreviewPaddingPrivateDiagnosticTests.cs
+@@ -0,0 +1,37 @@
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class PreviewPaddingPrivateDiagnosticTests(ITestOutputHelper output)
++{
++    [Fact] [Trait("Fixture","PrivatePreviewPaddingDiagnostic")]
++    public void OneFixedRealBackgroundVariantRetainsInitialReadingsWithoutClaimingIdentitySuccess()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_UPGRADE_MANIFEST");
++        Assert.False(string.IsNullOrWhiteSpace(path),"Explicit private manifest required.");
++        var f=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        Assert.False(string.IsNullOrWhiteSpace(f.DiagnosticPath));
++        using var model=new ItemRecognizer();var results=new List<UpgradePreviewFrame>();
++        foreach(var file in f.Previews)
++        {
++            using var image=Cv2.ImRead(file);var c=f.ClientRect;using var client=new Mat(image,new Rect(c[0],c[1],c[2],c[3]));
++            using var full=new Mat();Cv2.Resize(client,full,new Size(1920,1080));using var frame=new ImageRegion(full.Clone(),0,0);
++            var result=TalentUpgradePreviewReader.Preview(frame,OcrFactory.Paddle,model,0);results.Add(result);
++            Assert.True(result.Page);Assert.Equal("real_background_padding_8_reference_53",result.CoinVariant);
++            Assert.Equal(new Rect(845,791,53,53),result.CoinRegion);Assert.Equal(new Rect(853,799,37,37),result.InitialCoinRegion);
++            Assert.NotNull(result.Mora.InitialReading);
++            Assert.True(result.CoinRegion.Right<result.Mora.InitialReading!.Bounds.Left);
++            Assert.All(result.Materials,m=>Assert.NotNull(m.Quantity.InitialReading));
++            output.WriteLine("STATIC only: selected={0}:{1:F4}; original={2}:{3:F4}; quantityVerified={4}; MoraNumericVerified={5}",
++                result.CoinName,result.CoinScore,result.InitialCoinName,result.InitialCoinScore,result.Materials.Count(m=>m.Quantity.Complete),result.Mora.Complete);
++        }
++        // Private raw parser diagnostics are retained separately. No account quantities enter public tests.
++        File.WriteAllText(f.DiagnosticPath,Newtonsoft.Json.JsonConvert.SerializeObject(new{source="private_static_parser_diagnostic_not_live",frames=results}));
++    }
++    private sealed class Fixture {public int[] ClientRect{get;set;}=[];public string[] Previews{get;set;}=[];public string DiagnosticPath{get;set;}="";}
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentUpgradePreviewEvidenceTests.cs
+@@ -40,6 +40,7 @@
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinName="原石"},1,500));
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinScore=.74},1,500));
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{CoinScore=double.PositiveInfinity},1,500));
++        Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{InitialCoinName="其他货币",InitialCoinScore=.9},1,500));
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Materials=[b.Materials[0],b.Materials[0]]},1,500));
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,b with{Mora=b.Mora with{Complete=false}},1,500));
+         Assert.False(TalentUpgradePreviewEvidence.PreviewPair(a,Frame(500,1235),1,500));
+@@ -61,4 +62,12 @@
+     public void OnlyTheThreeCombatTalentTypesCanBeRequested(string type)=>TalentUpgradePreviewEvidence.ValidateRequest("目标角色",type);
+     [Theory] [InlineData("被动天赋")] [InlineData("确认升级")]
+     public void ArbitraryUpgradeActionsCannotBeRequested(string type)=>Assert.Throws<ArgumentException>(()=>TalentUpgradePreviewEvidence.ValidateRequest("目标角色",type));
++    [Fact] public void QuantityPaddingStaysInsideItsActualCardAndNeverAltersObservedRow()
++    {
++        var card=new Rect(969,627,116,146);var row=new Rect(988,741,79,27);
++        var crop=TalentUpgradePreviewEvidence.MaterialQuantityCrop(row,card,1920);
++        Assert.Equal(new Rect(969,736,116,37),crop);
++        Assert.True(crop.Left>=card.Left&&crop.Right<=card.Right&&crop.Top>=card.Top&&crop.Bottom<=card.Bottom);
++        Assert.Equal(new Rect(988,741,79,27),row);
++    }
+ }

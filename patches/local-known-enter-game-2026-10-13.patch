@@ -1,0 +1,288 @@
+diff --git a/BetterGenshinImpact/Service/ScriptService.cs b/BetterGenshinImpact/Service/ScriptService.cs
+--- a/BetterGenshinImpact/Service/ScriptService.cs
++++ b/BetterGenshinImpact/Service/ScriptService.cs
+@@ -655,18 +655,37 @@
+                 var closableUi = false;
+                 var domain = false;
+                 StartupSceneObservation? lastScene=null;
++                var enterGame=new StartupKnownEnterGameGate();
++                var startupContext=TaskContext.Instance();
++                var startupWindow=startupContext.GameHandle;
++                var startupSystemInfo=startupContext.SystemInfo;
++                var startupCapture=TaskTriggerDispatcher.GlobalGameCapture;
++                var startupBitBlt=startupCapture as Fischless.GameCapture.BitBlt.BitBltCapture;
++                var startupCaptureGeneration=startupBitBlt?.SessionGeneration;
++                bool IsBoundForeground()=>startupWindow!=IntPtr.Zero&&startupContext.IsInitialized
++                    &&startupContext.GameHandle==startupWindow&&ReferenceEquals(startupContext.SystemInfo,startupSystemInfo)
++                    &&ReferenceEquals(TaskTriggerDispatcher.GlobalGameCapture,startupCapture)
++                    &&startupBitBlt is not null&&startupCaptureGeneration>0
++                    &&startupBitBlt.SessionGeneration==startupCaptureGeneration&&startupCapture?.IsCapturing==true
++                    &&SystemControl.GetForegroundWindowHandle()==startupWindow
++                    &&SystemControl.GetCaptureRect(startupWindow).Equals(startupSystemInfo.CaptureAreaRect);
+                 void RecordBlock(StartupSceneDecision decision)
+                 {
+                     var receipt=new{schemaVersion=1,method="startup_readonly_scene_block_v1",reason=decision.Reason,scene=decision.Scene,
+                         elapsedMilliseconds=(long)clock.GetElapsedTime(startTimestamp).TotalMilliseconds,
+                         automaticTriggersSuppressed=TaskTriggerDispatcher.StartupTriggersSuppressed,startupOwnerSource=startupOwner?.Source,
+-                        wakeInputAttempts=0,nodeExecutionAllowed=false,nativeObservation=lastScene};
++                        wakeInputAttempts=enterGame.Attempts,nodeExecutionAllowed=false,nativeObservation=lastScene};
+                     TaskControl.Logger.LogWarning("[AUTOGAME_STARTUP_BLOCK] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(receipt,
+                         new Newtonsoft.Json.JsonSerializerSettings{ContractResolver=new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver()}));
+                 }
+-                BetterGenshinImpact.GameTask.Model.Area.ImageRegion CaptureStartupFrame()
+-                {
+-                    try{return TaskControl.CaptureToRectArea();}
++                BetterGenshinImpact.GameTask.Model.Area.ImageRegion? CaptureStartupFrame()
++                {
++                    try
++                    {
++                        // A startup capture must not enter TaskControl's retry/Sleep focus-restoration path on unknown pages.
++                        var mat=TaskControl.CaptureGameImageNoRetry(TaskTriggerDispatcher.GlobalGameCapture);
++                        return mat is null?null:new CaptureContent(mat,0,0).CaptureRectArea;
++                    }
+                     catch(Exception ex) when(ex is not OperationCanceledException)
+                     {
+                         var failed=StartupSceneReadinessPolicy.Decide(width,height,false,false,false,false,false,false);
+@@ -681,11 +700,19 @@
+                         lastScene=null;width=0;height=0;mainUi=false;closableUi=false;domain=false;
+                         if (!homePageViewModel.TaskDispatcherEnabled || !TaskContext.Instance().IsInitialized)
+                         {
++                            enterGame.ResetPair();
+                             return Task.FromResult(false);
+                         }
+ 
++                        token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                        var frameStarted=clock.GetElapsedTime(startTimestamp);
++                        var foregroundBeforeCapture=IsBoundForeground();
+                         using var content = CaptureStartupFrame();
+                         token.ThrowIfCancellationRequested();startupOwner!.AssertOwnership();
++                        if(content is null)
++                        {
++                            enterGame.ResetPair();return Task.FromResult(false);
++                        }
+                         capturedFrames++;
+                         width = content.SrcMat.Width;
+                         height = content.SrcMat.Height;
+@@ -704,7 +731,36 @@
+                         {
+                             RecordBlock(sceneDecision);throw new StartupLocalUserRequiredException(sceneDecision.Reason);
+                         }
+-                        if(sceneDecision.Ready){startupOwner.AssertOwnership();return Task.FromResult(true);}
++                        // Entry/account pages cannot inherit a coincident generic closable-UI ready match.
++                        var entry=StartupKnownEnterGameGate.Read(content,lastScene,capturedFrames,
++                            startupWindow.ToInt64(),frameStarted,foregroundBeforeCapture&&IsBoundForeground());
++                        token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                        if(entry.AccountChoice)
++                        {
++                            var blocked=StartupSceneReadinessPolicy.Decide(width,height,true,false,false,false,false,false,true);
++                            RecordBlock(blocked);throw new StartupLocalUserRequiredException(blocked.Reason);
++                        }
++                        if(StartupKnownEnterGameGate.CanAcceptReady(sceneDecision,entry)){startupOwner.AssertOwnership();return Task.FromResult(true);}
++                        if(enterGame.Attempts==0)
++                        {
++                            bool clicked=enterGame.TryEnter(entry,clock.GetElapsedTime(startTimestamp),()=>
++                            {
++                                token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                                var now=clock.GetElapsedTime(startTimestamp);
++                                if(!TaskTriggerDispatcher.StartupTriggersSuppressed||!IsBoundForeground()
++                                    ||now-frameStarted>StartupKnownEnterGameGate.MaximumFrameAge
++                                    ||now>=StartupReadinessGate.DefaultTimeout)
++                                    throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
++                                token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                            },()=>BetterGenshinImpact.GameTask.Model.Area.GameCaptureRegion.GameRegion1080PPosClick(960,540));
++                            token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                            if(clicked)TaskControl.Logger.LogInformation("[AUTOGAME_STARTUP_ENTER] {Payload}",
++                                Newtonsoft.Json.JsonConvert.SerializeObject(new{schemaVersion=1,method="existing_upstream_enter_game_once_v1",
++                                    attempts=enterGame.Attempts,gameWindow=startupWindow.ToInt64(),firstFrame=capturedFrames-1,
++                                    secondFrame=capturedFrames,elapsedMilliseconds=(long)clock.GetElapsedTime(startTimestamp).TotalMilliseconds,
++                                    entryTemplate=entry.EnterGame,readyVerified=false,nodeExecutionAllowed=false}));
++                            // One recognized entry click never means ready. The next fresh observation must prove the existing ready UI.
++                        }
+ 
+                         if (first)
+                         {
+@@ -744,7 +800,7 @@
+                         "启动等待超时，禁止执行任务节点：总耗时={Elapsed:F1}s，模式={Mode}，截图器={Dispatcher}，上下文={Initialized}，尺寸={Width}x{Height}，帧数={Frames}，像素均值={Mean}，标准差={Deviation}，主UI={MainUi}，可关闭UI={ClosableUi}，秘境={Domain}，点击次数={Attempts}。请检查启动前 BitBlt 兼容设置、捕获帧和 UI 模板；本日志不保存图像。",
+                         clock.GetElapsedTime(startTimestamp).TotalSeconds, homePageViewModel.Config.CaptureMode,
+                         homePageViewModel.TaskDispatcherEnabled, TaskContext.Instance().IsInitialized,
+-                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, 0);
++                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, enterGame.Attempts);
+                     throw new StartupLocalUserRequiredException(blocked.Reason,ex);
+                 }
+             }, cancellationToken);
+diff --git a/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs b/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/Service/StartupKnownEnterGameGate.cs
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: one normal upstream EnterGame input; no login, account selection or unknown-page input.
++using System;
++using BetterGenshinImpact.Core.Recognition;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.Service;
++
++internal sealed record StartupEnterGameFrame(int Ordinal,long GameWindow,TimeSpan CapturedAt,int Width,int Height,
++    bool Foreground,bool ConflictingUi,StartupTemplateObservation EnterGame,bool AccountChoice=false);
++
++internal sealed class StartupKnownEnterGameGate
++{
++    internal static readonly TimeSpan MaximumPairGap=TimeSpan.FromMilliseconds(1000);
++    internal static readonly TimeSpan MaximumFrameAge=TimeSpan.FromMilliseconds(500);
++    private StartupEnterGameFrame? previous;
++    internal int Attempts { get; private set; }
++
++    internal bool TryEnter(StartupEnterGameFrame current,TimeSpan now,Action assertActualOwnerAndWindow,Action click)
++    {
++        var prior=previous;previous=null;
++        bool eligible=Attempts==0&&current.Foreground&&!current.ConflictingUi&&!current.AccountChoice&&current.GameWindow!=0
++            &&current.Width>0&&current.Height>0&&current.EnterGame.Matched
++            &&current.EnterGame.MatchBounds is {Width:>0,Height:>0}
++            &&current.CapturedAt<=now&&now-current.CapturedAt<=MaximumFrameAge;
++        if(!eligible)return false;
++        previous=current;
++        if(prior is null||current.Ordinal!=prior.Ordinal+1||current.GameWindow!=prior.GameWindow
++            ||current.Width!=prior.Width||current.Height!=prior.Height
++            ||current.CapturedAt<=prior.CapturedAt||current.CapturedAt-prior.CapturedAt>MaximumPairGap
++            ||current.EnterGame.MatchBounds!=prior.EnterGame.MatchBounds)return false;
++        assertActualOwnerAndWindow();
++        // Mark before invoking input: an exception or uncertain effect must never permit a second attempt.
++        Attempts=1;previous=null;click();return true;
++    }
++
++    internal void ResetPair()=>previous=null;
++    internal static bool CanAcceptReady(StartupSceneDecision decision,StartupEnterGameFrame frame)
++        =>decision.Ready&&!frame.EnterGame.Matched&&!frame.AccountChoice;
++
++    internal static StartupEnterGameFrame Read(ImageRegion frame,StartupSceneObservation scene,int ordinal,
++        long gameWindow,TimeSpan capturedAt,bool foreground)
++    {
++        var definition=RecognitionAssets.Get("GameLoading","EnterGame",frame);
++        using var match=frame.Find(definition);
++        bool found=match.IsExist();
++        var entry=new StartupTemplateObservation("GameLoading","EnterGame",definition.RegionOfInterest,
++            definition.Threshold,found,found?match.MatchScore:null,
++            found?new Rect(match.X,match.Y,match.Width,match.Height):null);
++        bool accountChoice=Has(frame,"GameLoading","ChooseEnterGame");
++        bool conflict=accountChoice||scene.MainUi||scene.ClosableUi||scene.Domain||scene.DialogueVisible||scene.ChoiceVisible;
++        if(found)
++        {
++            // These existing templates are refusal predicates only. Never execute their actions or OCR login/story text.
++            conflict|=Has(frame,"GameLoading","GirlMoon")
++                ||Has(frame,"GameLoading","WelkinMoon")||Has(frame,@"Common\Element","BtnWhiteConfirm")
++                ||Has(frame,@"Common\Element","BtnWhiteCancel")||Has(frame,@"Common\Element","Primogem");
++        }
++        return new(ordinal,gameWindow,capturedAt,frame.Width,frame.Height,foreground,conflict,entry,accountChoice);
++    }
++    private static bool Has(ImageRegion frame,string task,string name)
++    {
++        using var result=frame.Find(RecognitionAssets.Get(task,name,frame));return result.IsExist();
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupKnownEnterGameGateTests.cs
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: anonymous normal-entry pairs; no desktop, game or authentication interaction.
++using BetterGenshinImpact.Service;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.ServiceTests;
++
++public sealed class StartupKnownEnterGameGateTests
++{
++    private static StartupEnterGameFrame Frame(int n,int ms,bool matched=true,bool conflict=false,bool foreground=true,
++        long hwnd=42,int width=1920,int x=915)=>new(n,hwnd,TimeSpan.FromMilliseconds(ms),width,1080,foreground,conflict,
++            new("GameLoading","EnterGame",new(640,540,640,540),0.8,matched,matched?0.95:null,
++                matched?new Rect(x,760,104,28):null));
++    [Fact] public void TwoAdjacentCurrentFramesSendOnceAndNeverClaimReady()
++    {
++        var gate=new StartupKnownEnterGameGate();int checks=0,clicks=0;
++        Assert.False(gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(120),()=>checks++,()=>clicks++));
++        Assert.True(gate.TryEnter(Frame(2,620),TimeSpan.FromMilliseconds(650),()=>checks++,()=>clicks++));
++        Assert.False(gate.TryEnter(Frame(3,1140),TimeSpan.FromMilliseconds(1150),()=>checks++,()=>clicks++));
++        Assert.Equal(1,checks);Assert.Equal(1,clicks);Assert.Equal(1,gate.Attempts);
++        Assert.False(StartupSceneReadinessPolicy.Decide(1920,1080,true,false,false,false,false,false).Ready);
++    }
++    [Theory]
++    [InlineData("unknown")][InlineData("conflict")][InlineData("foreground")][InlineData("window")]
++    [InlineData("size")][InlineData("bounds")][InlineData("skipped")][InlineData("duplicate")]
++    [InlineData("oldpair")][InlineData("oldframe")][InlineData("future")]
++    public void MissingConflictingStaleOrUnboundEvidenceCannotSend(string fault)
++    {
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        var current=Frame(2,620);
++        current=fault switch {
++            "unknown"=>Frame(2,620,matched:false),"conflict"=>Frame(2,620,conflict:true),
++            "foreground"=>Frame(2,620,foreground:false),"window"=>Frame(2,620,hwnd:43),
++            "size"=>Frame(2,620,width:1600),"bounds"=>Frame(2,620,x:916),
++            "skipped"=>Frame(3,620),"duplicate"=>Frame(1,620),
++            "oldpair"=>Frame(2,1200),"future"=>Frame(2,700),_=>current};
++        var now=TimeSpan.FromMilliseconds(fault=="oldpair"?1210:fault=="oldframe"?1200:650);
++        Assert.False(gate.TryEnter(current,now,()=>{},()=>clicks++));Assert.Equal(0,clicks);Assert.Equal(0,gate.Attempts);
++    }
++    [Fact] public void AnInterveningUnknownFrameInvalidatesTheOldPair()
++    {
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        gate.TryEnter(Frame(2,620,matched:false),TimeSpan.FromMilliseconds(630),()=>{},()=>clicks++);
++        Assert.False(gate.TryEnter(Frame(3,1140),TimeSpan.FromMilliseconds(1150),()=>{},()=>clicks++));
++        Assert.Equal(0,clicks);
++    }
++    [Fact] public void CaptureFailureOrUninitializedContextResetsPair()
++    {
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);gate.ResetPair();
++        Assert.False(gate.TryEnter(Frame(2,620),TimeSpan.FromMilliseconds(630),()=>{},()=>clicks++));Assert.Equal(0,clicks);
++    }
++    [Theory][InlineData("owner")][InlineData("cancel")][InlineData("focus")][InlineData("deadline")]
++    public void ActualInputGuardFailureNeverCallsClick(string fault)
++    {
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        Assert.Throws<InvalidOperationException>(()=>gate.TryEnter(Frame(2,620),TimeSpan.FromMilliseconds(630),
++            ()=>throw new InvalidOperationException(fault),()=>clicks++));Assert.Equal(0,clicks);
++    }
++    [Fact] public void ThrowingInputIsAnAttemptAndCannotBeReplayed()
++    {
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(Frame(1,100),TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        Assert.Throws<InvalidOperationException>(()=>gate.TryEnter(Frame(2,620),TimeSpan.FromMilliseconds(630),
++            ()=>{},()=>{clicks++;throw new InvalidOperationException("unknown input effect");}));
++        Assert.False(gate.TryEnter(Frame(3,1140),TimeSpan.FromMilliseconds(1150),()=>{},()=>clicks++));
++        Assert.Equal(1,clicks);Assert.Equal(1,gate.Attempts);
++    }
++    [Theory][InlineData(false)][InlineData(true)]
++    public void EntryOrAccountPageCannotUseCoincidentGenericClosableReady(bool account)
++    {
++        var ready=StartupSceneReadinessPolicy.Decide(1920,1080,true,false,true,false,false,false);
++        var frame=account?Frame(1,100,matched:false) with {AccountChoice=true}:Frame(1,100,conflict:true);
++        Assert.False(StartupKnownEnterGameGate.CanAcceptReady(ready,frame));
++        var gate=new StartupKnownEnterGameGate();int clicks=0;
++        gate.TryEnter(frame,TimeSpan.FromMilliseconds(110),()=>{},()=>clicks++);
++        Assert.False(gate.TryEnter(frame with {Ordinal=2,CapturedAt=TimeSpan.FromMilliseconds(620)},
++            TimeSpan.FromMilliseconds(630),()=>{},()=>clicks++));Assert.Equal(0,clicks);
++    }
++    [Fact] public void ExistingFreshWorldReadyRemainsRequiredAfterEntry()
++    {
++        var ready=StartupSceneReadinessPolicy.Decide(1920,1080,true,true,false,false,false,false);
++        Assert.True(StartupKnownEnterGameGate.CanAcceptReady(ready,Frame(3,1140,matched:false)));
++    }
++}
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -132,6 +132,8 @@
+ 
+ - 第三十二层仅修复启动阶段的输入门禁：在原主界面、可关闭页面和秘境判据之前，以既有 AutoSkip 的 DisabledUiButton 和 OptionIcon 模板只读识别剧情/选项，命中即明确要求本机用户处理；未知页面保持原180秒总期限只读等待，删除未核实页面上的键鼠唤醒中心点击及前台激活重试。启动核验前取得真实任务信号量所有权，跨截图器实例暂停自动触发器并等待整个既有同步 Tick/OnCapture 调用结束；取消或超时立即返回失败，但真实锁、暂停和必要的旧任务清理保持到实际不可取消的同步屏障完成。原任务上下文关闭立即失效，不能凭仍持有的物理锁恢复权限；旧任务界面/触发器清理须在屏障完成且暂停仍有效时执行，随后恢复原触发器状态并释放锁，失败清理保留闭锁。普通无启动保留的任务清理路径继续原行为并确保异常时释放锁。仅新增启动失败标量诊断，不保存未知/认证界面图像、不选择剧情、不领取资源、不把诊断或旧截图当作当前任务完成/消费证明。
+ 
++- 第三十三层仅在已暂停并排空真实触发器的启动scope内，复用现有GameLoading EnterGame原模板和客户区960×540输入路径处理正常“点击进入”：两张严格相邻新采集、同窗口/尺寸/匹配位置及原阈值、无剧情/选择/账号切换或互斥弹窗，并在输入前再次核实真实owner、取消令牌、前台窗口、捕获生命周期、坐标和500毫秒新鲜度；每scope最多一次尝试，输入异常或未就绪保持unknown、不重复。入口或账号选择命中不能被通用关闭UI误放行；点击后仍需新鲜现有world/已知UI判据。新启动采集直接使用原native单次Capture而不进入旧重试Sleep的自动抢焦点路径。既有32锁保留/排空/退出语义不变；不调用完整GameLoading触发器、不处理认证、年龄提示、账号选择、剧情或领奖，不保存未知/认证图像、不启用消费。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.

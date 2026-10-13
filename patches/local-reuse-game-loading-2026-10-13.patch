@@ -1,0 +1,133 @@
+diff --git a/BetterGenshinImpact/Service/ScriptService.cs b/BetterGenshinImpact/Service/ScriptService.cs
+--- a/BetterGenshinImpact/Service/ScriptService.cs
++++ b/BetterGenshinImpact/Service/ScriptService.cs
+@@ -655,7 +655,8 @@
+                 var closableUi = false;
+                 var domain = false;
+                 StartupSceneObservation? lastScene=null;
+-                var enterGame=new StartupKnownEnterGameGate();
++                var normalEntry=GameTaskManager.TriggerDictionary?.Values
++                    .OfType<BetterGenshinImpact.GameTask.GameLoading.GameLoadingTrigger>().SingleOrDefault();
+                 var startupContext=TaskContext.Instance();
+                 var startupWindow=startupContext.GameHandle;
+                 var startupSystemInfo=startupContext.SystemInfo;
+@@ -674,7 +675,7 @@
+                     var receipt=new{schemaVersion=1,method="startup_readonly_scene_block_v1",reason=decision.Reason,scene=decision.Scene,
+                         elapsedMilliseconds=(long)clock.GetElapsedTime(startTimestamp).TotalMilliseconds,
+                         automaticTriggersSuppressed=TaskTriggerDispatcher.StartupTriggersSuppressed,startupOwnerSource=startupOwner?.Source,
+-                        wakeInputAttempts=enterGame.Attempts,nodeExecutionAllowed=false,nativeObservation=lastScene};
++                        wakeInputAttempts=normalEntry?.NormalEntryAttemptCount??0,nodeExecutionAllowed=false,nativeObservation=lastScene};
+                     TaskControl.Logger.LogWarning("[AUTOGAME_STARTUP_BLOCK] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(receipt,
+                         new Newtonsoft.Json.JsonSerializerSettings{ContractResolver=new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver()}));
+                 }
+@@ -700,7 +701,6 @@
+                         lastScene=null;width=0;height=0;mainUi=false;closableUi=false;domain=false;
+                         if (!homePageViewModel.TaskDispatcherEnabled || !TaskContext.Instance().IsInitialized)
+                         {
+-                            enterGame.ResetPair();
+                             return Task.FromResult(false);
+                         }
+ 
+@@ -711,7 +711,7 @@
+                         token.ThrowIfCancellationRequested();startupOwner!.AssertOwnership();
+                         if(content is null)
+                         {
+-                            enterGame.ResetPair();return Task.FromResult(false);
++                            return Task.FromResult(false);
+                         }
+                         capturedFrames++;
+                         width = content.SrcMat.Width;
+@@ -741,9 +741,9 @@
+                             RecordBlock(blocked);throw new StartupLocalUserRequiredException(blocked.Reason);
+                         }
+                         if(StartupKnownEnterGameGate.CanAcceptReady(sceneDecision,entry)){startupOwner.AssertOwnership();return Task.FromResult(true);}
+-                        if(enterGame.Attempts==0)
+-                        {
+-                            bool clicked=enterGame.TryEnter(entry,clock.GetElapsedTime(startTimestamp),()=>
++                        if(entry.EnterGame.Matched&&!entry.ConflictingUi&&entry.Foreground&&normalEntry is not null)
++                        {
++                            bool clicked=normalEntry.TryNormalEntryCapture(new CaptureContent(content),()=>
+                             {
+                                 token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
+                                 var now=clock.GetElapsedTime(startTimestamp);
+@@ -752,16 +752,11 @@
+                                     ||now>=StartupReadinessGate.DefaultTimeout)
+                                     throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
+                                 token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
+-                            },()=>
+-                            {
+-                                if(!StartupKnownEnterGameGate.TryGetMatchedInputPoint(entry,out var point))
+-                                    throw new InvalidOperationException("startup_matched_enter_game_point_missing");
+-                                content.ClickTo(point.X,point.Y);
+                             });
+                             token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
+                             if(clicked)TaskControl.Logger.LogInformation("[AUTOGAME_STARTUP_ENTER] {Payload}",
+-                                Newtonsoft.Json.JsonConvert.SerializeObject(new{schemaVersion=1,method="existing_upstream_enter_game_once_v1",
+-                                    attempts=enterGame.Attempts,gameWindow=startupWindow.ToInt64(),firstFrame=capturedFrames-1,
++                                Newtonsoft.Json.JsonConvert.SerializeObject(new{schemaVersion=1,method="existing_game_loading_normal_entry_v1",
++                                    attempts=normalEntry.NormalEntryAttemptCount,gameWindow=startupWindow.ToInt64(),firstFrame=capturedFrames,
+                                     secondFrame=capturedFrames,elapsedMilliseconds=(long)clock.GetElapsedTime(startTimestamp).TotalMilliseconds,
+                                     entryTemplate=entry.EnterGame,readyVerified=false,nodeExecutionAllowed=false}));
+                             // One recognized entry click never means ready. The next fresh observation must prove the existing ready UI.
+@@ -805,7 +800,7 @@
+                         "启动等待超时，禁止执行任务节点：总耗时={Elapsed:F1}s，模式={Mode}，截图器={Dispatcher}，上下文={Initialized}，尺寸={Width}x{Height}，帧数={Frames}，像素均值={Mean}，标准差={Deviation}，主UI={MainUi}，可关闭UI={ClosableUi}，秘境={Domain}，点击次数={Attempts}。请检查启动前 BitBlt 兼容设置、捕获帧和 UI 模板；本日志不保存图像。",
+                         clock.GetElapsedTime(startTimestamp).TotalSeconds, homePageViewModel.Config.CaptureMode,
+                         homePageViewModel.TaskDispatcherEnabled, TaskContext.Instance().IsInitialized,
+-                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, enterGame.Attempts);
++                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, normalEntry?.NormalEntryAttemptCount??0);
+                     throw new StartupLocalUserRequiredException(blocked.Reason,ex);
+                 }
+             }, cancellationToken);
+diff --git a/BetterGenshinImpact/GameTask/GameLoading/GameLoading.cs b/BetterGenshinImpact/GameTask/GameLoading/GameLoading.cs
+--- a/BetterGenshinImpact/GameTask/GameLoading/GameLoading.cs
++++ b/BetterGenshinImpact/GameTask/GameLoading/GameLoading.cs
+@@ -387,16 +387,7 @@
+             }
+         }
+ 
+-        // 点击进入游戏按钮
+-        var ra = content.CaptureRectArea.Find(RecognitionAssets.Get("GameLoading", "EnterGame", content.CaptureRectArea));
+-
+-        if (!ra.IsEmpty())
+-        {
+-            // PostMessage 在远程/独立会话中可能不会到达游戏。模板已确认入口存在，
+-            // 这里使用 BetterGI 其他前台操作共用的游戏客户区坐标点击路径。
+-            TryClickEnterGame(() => GameCaptureRegion.GameRegion1080PPosClick(960, 540), "点击进入");
+-            return;
+-        }
++        if (TryNormalEntryCapture(content)) return;
+ 
+         // 只有在"进入游戏"按钮未出现时，才进行B服登录处理
+         if (IsBili && !biliLoginClicked)
+@@ -452,6 +443,22 @@
+             Debug.WriteLine("[GameLoading] 跳过原石");
+             return;
+         }
++    }
++
++    internal int NormalEntryAttemptCount => _enterGameClickAttempts;
++
++    // Reuse the existing normal-entry matcher and retry/throttle state. The owned
++    // startup caller invokes only this branch, without login/age/reward handlers.
++    internal bool TryNormalEntryCapture(CaptureContent content, Action? assertBeforeInput = null)
++    {
++        if (!_config.AutoEnterGameEnabled) return false;
++        using var entry = content.CaptureRectArea.Find(RecognitionAssets.Get("GameLoading", "EnterGame", content.CaptureRectArea));
++        if (entry.IsEmpty()) return false;
++        return TryClickEnterGame(() =>
++        {
++            assertBeforeInput?.Invoke();
++            entry.Click();
++        }, "点击进入");
+     }
+ 
+     private bool TryClickEnterGame(Action click, string buttonName)
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -141,3 +141,5 @@
+ 上文有关旧生产文件 920 个 PDB 源码文档及历史检查点的记录描述保留的基线核验，不能当作新增增量引擎的当前 PDB 或完整实机验收。新增版本的构建、补丁 SHA 和具体通过／失败范围由工作流仓库的独立验收记录给出。本文件只补充显著变更及日期，不改变执行代码。
+ 
+ - 第三十四层仅把正常进入游戏的固定中心输入替换为同次严格两帧匹配的EnterGame文字框中心，复用原ImageRegion到桌面坐标转换与鼠标输入。输入框须完全位于当前帧及原模板ROI内；原所有权、捕获代次、前台、取消、期限、新鲜度和最多一次尝试保持。未知/认证/剧情无输入，不以一次点击代替进入世界验收。
++
++- 第三十五层恢复复用历史GameLoadingTrigger正常开门调用链：抽出原EnterGame模板与既有5秒节流/最多5次状态为同一个正常分支，OnCapture与实际owned启动等待共同调用。不再使用独立单次点击器或新分阶段算法；入口出现于加载前/后均由原模板处理。只读启动不调用认证、账号选择、适龄或奖励分支，仍有真实owner/捕获绑定/前台/原180秒期限/当前500ms核验。输入使用匹配区域Click及既有坐标转换。

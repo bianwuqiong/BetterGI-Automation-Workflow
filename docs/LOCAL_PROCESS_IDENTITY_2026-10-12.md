@@ -1,0 +1,15 @@
+# 第二十四层：有限查询权限的真实进程身份
+
+本层仅追加在固定基线与完整有序1..23补丁之后，修复新只读库存绑定在读取`Process.MainModule.FileName`时可能遭遇的访问拒绝。预绑定未完成时没有实际图像、库存或输入证据；历史unknown与null不重写。本层不采用管理员权限或安全设置变更。
+
+内部`LimitedInventoryProcessIdentity`只请求`PROCESS_QUERY_LIMITED_INFORMATION=0x1000`。对同一真实进程handle使用`GetProcessId`、`QueryFullProcessImageNameW`、`GetProcessTimes`及查询前后`GetExitCodeProcess`，完整绝对exe路径和实际创建FILETIME转换为精确十进制UTC ticks字符串。非活动exitCode、非零exitTime、缺失路径、异常创建时间都拒绝；即使进程以STILL_ACTIVE数值退出，实际exitTime仍阻断。
+
+查询前后通过操作系统分别取得同一HWND的owner PID与前台窗口，须与可信TaskContext指定PID/HWND完全相同。构造绑定和每次`AssertCurrent`均重新查询实际身份，继续核验原exe/startTicks、SystemInfo对象、真实BitBlt会话generation、capture程序集MVID、1920×1080当前client与完整capture矩形。同步BitBlt采集和前后检查、原模型/数量/页标/新鲜度标准均保持。
+
+本机私有诊断保留原异常类型、Win32 native code、HResult及堆栈，并追加固定的查询operation/native phase/API phase数据。公开说明不包含本机PID、HWND、路径、运行标识、截图、库存、授权或账号信息。预绑定错误仍是原错误；上层不能以空收据代替实际绑定或把异常提升为成功。
+
+Release x64构建0错误，限定新身份守卫与具名库存、生命周期、数量、周本及摩拉共享纯回归81项通过、0失败、0跳过。新增两项覆盖精确FILETIME转换及owner/PID/focus/退出变化的拒绝；没有启动游戏、采集或输入。完整1..24独立重构和本层正向/反向检查、冻结与部署哈希另记录于本机私有审计。
+
+`actualNamedInventoryVerified=false`、`actualBoundMoraVerified=false`继续保持，消费Session及升级/转换/资源确认仍未注册。本层无消费能力，离线通过不等于新鲜实机验收。GPL v3、原作者及完整对应源码声明保留。
+
+部署与对应源码核验：共享闭锁期间Game/BGI/testhost均为0；240份User文件状态前后完全相同，凭据内容跳过数0。成对部署引擎与同次build输出capture依赖，capture源码未改。DLL24：`30AC88888FBC38E772B678787274E7670038AE5EF97361B8320256FCD2A22ADC`；capture DLL：`F05BF69A9BA2752234BF4CFBCEAC25E06F7FA5177EEB02A6A12E59E595A52892`；patch24：`254F9994DE65F55A955AE7EC6EF41A94B0524A9949DA72400B7B370679B223DB`。独立完整1..24重构159份patch对应文件通过；主DLL嵌入PDB的975份非生成源码和capture PDB的16份非生成源码校验全部匹配。生成器未落盘文档不计入该源码检查。原1..23补丁/私有冻结和隔离天赋候选保持原哈希；新对应源与运行文件冻结于本机私有审计。

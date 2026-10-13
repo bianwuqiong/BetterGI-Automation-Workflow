@@ -1,0 +1,142 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -114,6 +114,8 @@
+ 
+ - 第二十一层仅为天赋列表入口分离当前姓名来源：属性右侧姓名标准继续用于原三帧身份，天赋入口改从左上完整“元素/全名”实际header单行及完整框读取，明确NameSource/全header框归属，不伪造姓名substring框或复制先前姓名。实际Header区域排除Q键提示，独立天赋菜单区域避开上一项；完整名字/分隔符、四边2px、当前同帧与两张/点击前第三张位置绑定全部保持。整头部文字变化拒绝。只导航一次且移开鼠标减少遮挡；已知天赋菜单及三条完整等级的无弹窗/失焦页面可留存失败header的私有原PNG，诊断不替代成功身份。私有静态回放不是实时通过。未加入通用8材料或任何实际升级、转化、确认消费。
+ 
++- 第二十二层仅把天赋入口的两帧加独立第三帧检查改为原12秒/300ms/最多41次窗口内的连续三帧滚动观察。第三帧漏识别仍原样保留，只有首次完整连续三张的全局header/菜单/三条完整等级、原新鲜度及6px位置绑定全部通过才在该第三张当前图像点击一次；不挑旧pair、不多抓第四张、不重按导航或放宽门槛。读完成时间另记录用于独立核对原1500ms新鲜度，不冒充采集时间；弹窗/失焦/复活立即停，原deadline不延。未加入通用库存或消费事务。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -124,14 +124,14 @@
+         read=read with{FailureReason=TalentEntryObservationEvidence.FrameFailure(read,official)};
+         if(TalentEntryObservationEvidence.KnownPage(read,official)||TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(read))
+             read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};
+-        frames.Add(read);return read;
++        read=read with{ReadCompletedAt=Now()};frames.Add(read);return read;
+     }
+     private async Task OpenTalent()
+     {
+         inspectionPhase="talent_tab_navigation";
+         await ClickKnownText("天赋",new(0,80,370,900));
+         inspectionPhase="talent_entry_pair";
+-        var timer=System.Diagnostics.Stopwatch.StartNew();UpgradePreviewTalentEntries? previous=null;
++        var timer=System.Diagnostics.Stopwatch.StartNew();UpgradePreviewTalentEntries? first=null,second=null;
+         string failure="wrong_candidate_count";
+         // One navigation only. Each observation is new; incomplete/unstable pairs never cause an input.
+         for(int i=0;i<41&&timer.ElapsedMilliseconds<TalentEntryObservationEvidence.ObservationLimitMs;i++)
+@@ -139,20 +139,22 @@
+             token.ThrowIfCancellationRequested();using var observation=Common.TaskControl.CaptureToRectArea(forceNew:true);
+             var current=ReadTalentEntries(observation);
+             if(timer.ElapsedMilliseconds>=TalentEntryObservationEvidence.ObservationLimitMs){failure="talent_entry_observation_deadline";break;}
+-            failure=previous is null?current.FailureReason:TalentEntryObservationEvidence.PairFailure(previous,current,official,Now());
+-            if(failure=="verified_entry_pair") {twoPickedEntryFrames=[previous!,current];break;}
+             if(!current.Focused||current.ReviveVisible||current.PromptVisible)throw new InvalidOperationException(current.FailureReason);
+-            previous=current;
++            failure=second is null?current.FailureReason:TalentEntryObservationEvidence.PairFailure(second,current,official,Now());
++            if(first is not null&&second is not null&&TalentEntryObservationEvidence.ContiguousTriple(first,second,current,official,current.ReadCompletedAt))
++            {
++                if(timer.ElapsedMilliseconds>=TalentEntryObservationEvidence.ObservationLimitMs){failure="talent_entry_observation_deadline";break;}
++                twoPickedEntryFrames=[first,second];entryClickFrame=current;
++                inspectionPhase="talent_entry_click";
++                int index=type switch{"普通攻击"=>0,"元素战技"=>1,_=>2};var point=current.Candidates[index].Bounds;
++                token.ThrowIfCancellationRequested();observation.ClickTo(point.X+point.Width/2,point.Y+point.Height/2);
++                await Delay(500);return;
++            }
++            first=second;second=current;
+             await Delay(TalentEntryObservationEvidence.ObservationIntervalMs);
+         }
+-        if(twoPickedEntryFrames.Length!=2)throw new InvalidOperationException(failure);
+-        int index=type switch{"普通攻击"=>0,"元素战技"=>1,_=>2};
+-        inspectionPhase="talent_entry_click";
+-        using var frame=Capture();entryClickFrame=ReadTalentEntries(frame);
+-        if(!TalentEntryObservationEvidence.ClickBound(twoPickedEntryFrames[1],entryClickFrame,official,Now()))
+-            throw new InvalidOperationException("fresh_talent_entry_click_binding_unverified");
+-        var point=entryClickFrame.Candidates[index].Bounds;
+-        frame.ClickTo(point.X+point.Width/2,point.Y+point.Height/2);await Delay(500);
++        throw new InvalidOperationException(timer.ElapsedMilliseconds>=TalentEntryObservationEvidence.ObservationLimitMs?
++            "talent_entry_observation_deadline":failure=="verified_entry_pair"?"contiguous_entry_triple_unverified":failure);
+     }
+     private async Task<UpgradePreviewTooltip[]> Tooltip(UpgradePreviewMaterial material)
+     {
+@@ -293,7 +295,9 @@
+             reason=primaryReason!="verified_read_only_preview"?primaryReason:restored?primaryReason:cleanupReason,
+             observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
+             evidence=new{characterIdentityMethod="bounded_rolling_exact_triple",characterIdentityObservationLimitMs=12000,characterIdentityPollMs=300,
+-                characterIdentityTrials=nameList,characterIdentity=names,talentEntryIdentitySource="talent_global_header",twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
++                characterIdentityTrials=nameList,characterIdentity=names,talentEntryIdentitySource="talent_global_header",
++                talentEntryObservationMethod="bounded_contiguous_entry_triple",talentEntryObservationLimitMs=12000,talentEntryObservationPollMs=300,
++                twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+         },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
+         try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+@@ -15,6 +15,7 @@
+     public string FailureReason{get;init;}="unverified";
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
+     public Rect MenuRegion{get;init;}public UpgradePreviewRow[] MenuRows{get;init;}=[];
++    public long ReadCompletedAt{get;init;}
+ }
+ 
+ /// <summary>Read-only observations after one navigation. Never retries an input or relaxes identity.</summary>
+@@ -74,4 +75,7 @@
+     public static bool ClickBound(UpgradePreviewTalentEntries second,UpgradePreviewTalentEntries click,string official,long now)=>
+         PairFailure(second,click,official,now)=="verified_entry_pair"&&second.Candidates.Zip(click.Candidates).All(p=>
+             Math.Abs((p.First.Bounds.X+p.First.Bounds.Width/2)-(p.Second.Bounds.X+p.Second.Bounds.Width/2))<=6);
++    public static bool ContiguousTriple(UpgradePreviewTalentEntries first,UpgradePreviewTalentEntries second,
++        UpgradePreviewTalentEntries third,string official,long now)=>PairFailure(first,second,official,now)=="verified_entry_pair"&&
++        ClickBound(second,third,official,now);
+ }
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryContiguousTripleTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryContiguousTripleTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentEntryContiguousTripleTests.cs
+@@ -0,0 +1,41 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentEntryContiguousTripleTests
++{
++    private const string Official="目标角色";
++    private static UpgradePreviewTalentEntries Frame(long at,int count=3,int shift=0)
++    {
++        var header="风元素/"+Official;var name=new UpgradePreviewCharacter(at,true,Official){Width=1920,Height=1080,
++            NameSource="talent_global_header",NameBoxMethod="whole_header_ocr_box_contains_name",HeaderRaw=header,HeaderElement="风",
++            NameRegion=TalentGlobalHeaderEvidence.ReferenceRegion,NameRows=[new(header,new(145,42,220,28))]};
++        var rows=Enumerable.Range(0,count).Select(i=>new UpgradePreviewRow("Lv.1",new(1640+shift,170+i*90,60,28))).ToArray();
++        return new(at,1920,1080,true,true,false,false,name,TalentEntryObservationEvidence.ReferenceRegion,rows,rows){
++            MenuRegion=TalentGlobalHeaderEvidence.TalentMenuReference,MenuRows=[new("天赋",new(155,415,80,30))]};
++    }
++    [Fact] public void RejectedThirdIsKeptAndOnlyTheNextContiguousTripleCanBeSelected()
++    {
++        var trials=new[]{Frame(100),Frame(400),Frame(700,2),Frame(1000),Frame(1300),Frame(1600)};
++        var accepted=new List<int>();
++        for(int i=2;i<trials.Length;i++)
++            if(TalentEntryObservationEvidence.ContiguousTriple(trials[i-2],trials[i-1],trials[i],Official,trials[i].ObservedAt))accepted.Add(i);
++        Assert.Equal(new[]{5},accepted);Assert.Equal(2,trials[2].Candidates.Length);
++        Assert.Equal("wrong_candidate_count",TalentEntryObservationEvidence.FrameFailure(trials[2],Official));
++    }
++    [Theory] [InlineData("prompt")] [InlineData("focus")] [InlineData("revive")] [InlineData("header")]
++    public void ThirdModalFocusOrCurrentHeaderFailureNeverPermitsClick(string fault)
++    {
++        var c=Frame(700);c=fault switch{"prompt"=>c with{PromptVisible=true},"focus"=>c with{Focused=false},
++            "revive"=>c with{ReviveVisible=true},_=>c with{Character=c.Character with{HeaderRaw="风元素/另一角色"}}};
++        Assert.False(TalentEntryObservationEvidence.ContiguousTriple(Frame(100),Frame(400),c,Official,700));
++    }
++    [Fact] public void ThirdIsStillBoundToCurrentPositionAndIndependentTime()
++    {
++        Assert.False(TalentEntryObservationEvidence.ContiguousTriple(Frame(100),Frame(400),Frame(700,shift:7),Official,700));
++        Assert.False(TalentEntryObservationEvidence.ContiguousTriple(Frame(100),Frame(400),Frame(400),Official,700));
++        Assert.False(TalentEntryObservationEvidence.ContiguousTriple(Frame(100),Frame(400),Frame(2000),Official,2000));
++        Assert.Equal(12000,TalentEntryObservationEvidence.ObservationLimitMs);Assert.Equal(300,TalentEntryObservationEvidence.ObservationIntervalMs);
++    }
++}

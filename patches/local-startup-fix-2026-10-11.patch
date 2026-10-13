@@ -1,0 +1,609 @@
+diff --git a/Fischless.GameCapture/BitBlt/BitBltRegistryHelper.cs b/Fischless.GameCapture/BitBlt/BitBltRegistryHelper.cs
+--- a/Fischless.GameCapture/BitBlt/BitBltRegistryHelper.cs
++++ b/Fischless.GameCapture/BitBlt/BitBltRegistryHelper.cs
+@@ -17,16 +17,71 @@
+     {
+         try
+         {
+-            const string keyPath = @"Software\Microsoft\DirectX\UserGpuPreferences";
+-            const string valueName = "DirectXUserGlobalSettings";
+-            const string valueData = "SwapEffectUpgradeEnable=0;";
+-
+-            using var key = Registry.CurrentUser.CreateSubKey(keyPath);
+-            key.SetValue(valueName, valueData, RegistryValueKind.String);
++            EnsureDirectXUserGlobalSettings();
+         }
+         catch (Exception e)
+         {
+             Debug.WriteLine(e);
+         }
+     }
++
++    /// <summary>必须在创建游戏进程之前调用；失败时禁止继续关联启动。</summary>
++    public static bool EnsureDirectXUserGlobalSettings()
++    {
++        const string keyPath = @"Software\Microsoft\DirectX\UserGpuPreferences";
++        const string valueName = "DirectXUserGlobalSettings";
++        using var key = Registry.CurrentUser.CreateSubKey(keyPath)
++            ?? throw new InvalidOperationException("无法打开 BitBlt 兼容设置注册表键");
++        var original = key.GetValue(valueName) as string ?? "";
++        var updated = MergeDirectXUserGlobalSettings(original);
++        if (string.Equals(original, updated, StringComparison.Ordinal))
++        {
++            return false;
++        }
++
++        key.SetValue(valueName, updated, RegistryValueKind.String);
++        if (!string.Equals(key.GetValue(valueName) as string, updated, StringComparison.Ordinal))
++        {
++            throw new InvalidOperationException("BitBlt 兼容设置写入后核验失败");
++        }
++        return true;
++    }
++
++    /// <summary>仅替换兼容字段，保留其他全局 GPU 偏好；不读取或写入注册表。</summary>
++    public static string MergeDirectXUserGlobalSettings(string original)
++    {
++        const string settingName = "SwapEffectUpgradeEnable";
++        var parts = original.Split(';').ToList();
++        var firstMatch = -1;
++        for (var i = 0; i < parts.Count; i++)
++        {
++            var equals = parts[i].IndexOf('=');
++            if (equals < 0 || !string.Equals(parts[i][..equals].Trim(), settingName,
++                    StringComparison.OrdinalIgnoreCase))
++            {
++                continue;
++            }
++
++            if (firstMatch < 0)
++            {
++                firstMatch = i;
++                parts[i] = settingName + "=0";
++            }
++            else
++            {
++                parts.RemoveAt(i--);
++            }
++        }
++
++        // Split 保留最后的分号；添加新字段前只移除末尾空片段。
++        if (parts.Count > 0 && parts[^1].Length == 0)
++        {
++            parts.RemoveAt(parts.Count - 1);
++        }
++        if (firstMatch < 0)
++        {
++            parts.Add(settingName + "=0");
++        }
++        return string.Join(';', parts) + ";";
++    }
+ }
+diff --git a/BetterGenshinImpact/ViewModel/Pages/HomePageViewModel.cs b/BetterGenshinImpact/ViewModel/Pages/HomePageViewModel.cs
+--- a/BetterGenshinImpact/ViewModel/Pages/HomePageViewModel.cs
++++ b/BetterGenshinImpact/ViewModel/Pages/HomePageViewModel.cs
+@@ -25,6 +25,7 @@
+ using CommunityToolkit.Mvvm.Messaging;
+ using CommunityToolkit.Mvvm.Messaging.Messages;
+ using Fischless.GameCapture;
++using Fischless.GameCapture.BitBlt;
+ using Microsoft.Extensions.Logging;
+ using Microsoft.Win32;
+ using System;
+@@ -316,6 +317,15 @@
+                     return;
+                 }
+ 
++                // Windows 在创建游戏进程时决定窗口优化策略；截图器启动后修改已太晚。
++                if (OsVersionHelper.IsWindows11_OrGreater && Config.AutoFixWin11BitBlt &&
++                    GetCaptureMode() == CaptureModes.BitBlt)
++                {
++                    var changed = BitBltRegistryHelper.EnsureDirectXUserGlobalSettings();
++                    _logger.LogInformation(
++                        "原神进程创建前已核验 BitBlt 兼容设置（本次写入={Changed}，保留其他 GPU 偏好）", changed);
++                }
++
+                 hWnd = await SystemControl.StartFromLocalAsync(Config.GenshinStartConfig.InstallPath);
+                 if (hWnd != IntPtr.Zero)
+                 {
+diff --git a/BetterGenshinImpact/Service/ScriptService.cs b/BetterGenshinImpact/Service/ScriptService.cs
+--- a/BetterGenshinImpact/Service/ScriptService.cs
++++ b/BetterGenshinImpact/Service/ScriptService.cs
+@@ -25,6 +25,7 @@
+ using BetterGenshinImpact.Service.Notification.Model.Enum;
+ using BetterGenshinImpact.ViewModel.Pages;
+ using Microsoft.Extensions.Logging;
++using OpenCvSharp;
+ 
+ namespace BetterGenshinImpact.Service;
+ 
+@@ -143,7 +144,20 @@
+         // }
+ 
+         // 没启动时候，启动截图器
+-        await StartGameTask();
++        try
++        {
++            await StartGameTask();
++        }
++        catch (OperationCanceledException)
++        {
++            _logger.LogInformation("配置组 {Name} 在启动核验期间被取消，未执行任务节点", groupName);
++            return;
++        }
++        catch (Exception ex)
++        {
++            _logger.LogError(ex, "配置组 {Name} 启动核验失败，未执行任务节点", groupName);
++            return;
++        }
+         if (CancellationContext.Instance.IsCancellationRequested)
+         {
+             _logger.LogInformation("配置组 {Name} 在启动阶段被取消", groupName);
+@@ -604,96 +618,162 @@
+ 
+     public static async Task StartGameTask(bool waitForMainUi = true)
+     {
++        var clock = TimeProvider.System;
++        var startTimestamp = clock.GetTimestamp();
++        var cancellationToken = CancellationContext.Instance.Cts.Token;
+         // 没启动时候，启动截图器
+         var homePageViewModel = App.GetService<HomePageViewModel>();
+         if (!homePageViewModel!.TaskDispatcherEnabled)
+         {
+             await homePageViewModel.OnStartTriggerAsync();
+-
+-            if (waitForMainUi)
+-            {
+-                await Task.Run(async () =>
+-                {
+-                    await Task.Delay(200);
+-                    var first = true;
+-                    var waitStart = DateTime.Now;
+-                    var lastHotSwitchClick = DateTime.MinValue;
+-                    var hotSwitchAttempts = 0;
+-                    const int maxHotSwitchAttempts = 20;
+-                    var hotSwitchInitialDelay = TimeSpan.FromSeconds(20);
+-                    var hotSwitchRetryInterval = TimeSpan.FromSeconds(15);
+-                    while (true)
++        }
++
++        cancellationToken.ThrowIfCancellationRequested();
++        if (!homePageViewModel.TaskDispatcherEnabled)
++        {
++            throw new InvalidOperationException("原神窗口或截图器未启动，禁止执行任务节点");
++        }
++
++        if (waitForMainUi)
++        {
++            await Task.Run(async () =>
++            {
++                var first = true;
++                var lastHotSwitchClick = TimeSpan.MinValue;
++                var nextProgress = TimeSpan.Zero;
++                var hotSwitchAttempts = 0;
++                var capturedFrames = 0;
++                var width = 0;
++                var height = 0;
++                double? pixelMean = null;
++                double? pixelDeviation = null;
++                var mainUi = false;
++                var closableUi = false;
++                var domain = false;
++                const int maxHotSwitchAttempts = 20;
++                var hotSwitchInitialDelay = TimeSpan.FromSeconds(20);
++                var hotSwitchRetryInterval = TimeSpan.FromSeconds(15);
++                try
++                {
++                    await StartupReadinessGate.WaitAsync(async (elapsed, token) =>
+                     {
+-                        if (CancellationContext.Instance.IsCancellationRequested)
+-                        {
+-                            TaskControl.Logger.LogInformation("检测到停止指令，退出启动等待");
+-                            return;
+-                        }
+-
+                         if (!homePageViewModel.TaskDispatcherEnabled || !TaskContext.Instance().IsInitialized)
+                         {
+-                            await Task.Delay(500);
+-                            continue;
++                            return false;
+                         }
+ 
+                         using var content = TaskControl.CaptureToRectArea();
+-                        if (Bv.IsInMainUi(content) || Bv.IsInAnyClosableUi(content) || Bv.IsInDomain(content))
+-                        {
+-                            TaskControl.Logger.LogInformation("检测到已进入主界面或可交互UI，结束启动等待");
+-                            return;
++                        capturedFrames++;
++                        width = content.SrcMat.Width;
++                        height = content.SrcMat.Height;
++                        mainUi = Bv.IsInMainUi(content);
++                        closableUi = Bv.IsInAnyClosableUi(content);
++                        domain = Bv.IsInDomain(content);
++                        if (mainUi || closableUi || domain)
++                        {
++                            return true;
+                         }
+ 
+                         if (first)
+                         {
+                             first = false;
+                             TaskControl.Logger.LogInformation("当前不在游戏主界面，等待进入主界面后执行任务...");
+-                            TaskControl.Logger.LogInformation("等待期间不会持续抢占鼠标或窗口焦点；自动开门仅在识别到按钮时执行有限次数点击。");
++                            TaskControl.Logger.LogInformation("启动阶段总期限为 {Timeout:F0}s；超时未核验则禁止执行任务节点。默认仅记录标量诊断，不保存界面图像。",
++                                StartupReadinessGate.DefaultTimeout.TotalSeconds);
++                        }
++
++                        if (elapsed >= nextProgress)
++                        {
++                            Cv2.MeanStdDev(content.SrcMat, out var mean, out var deviation);
++                            var channels = Math.Min(3, content.SrcMat.Channels());
++                            pixelMean = (mean.Val0 + (channels > 1 ? mean.Val1 : 0) +
++                                (channels > 2 ? mean.Val2 : 0)) / channels;
++                            pixelDeviation = (deviation.Val0 + (channels > 1 ? deviation.Val1 : 0) +
++                                (channels > 2 ? deviation.Val2 : 0)) / channels;
++                            TaskControl.Logger.LogInformation(
++                                "启动核验标量：模式={Mode}，尺寸={Width}x{Height}，帧数={Frames}，像素均值={Mean:F2}，标准差={Deviation:F2}，主UI={MainUi}，可关闭UI={ClosableUi}，秘境={Domain}，耗时={Elapsed:F1}s",
++                                homePageViewModel.Config.CaptureMode, width, height, capturedFrames,
++                                pixelMean, pixelDeviation, mainUi, closableUi, domain, elapsed.TotalSeconds);
++                            nextProgress = elapsed + TimeSpan.FromSeconds(15);
+                         }
+ 
+                         // 若游戏处于手柄操作模式，主界面 UI 为手柄按键提示，导致视觉识别无法命中主界面。
+                         // 在等待超过 20 秒且仍未进入主界面时，自动激活游戏前台并在窗口中心执行鼠标点击与微移，
+-                        // 触发原神内置的键鼠操控模式热切换。持续重试直至进入主界面或达到最大次数。
+-                        var now = DateTime.Now;
+-                        if (now - waitStart >= hotSwitchInitialDelay &&
+-                            now - lastHotSwitchClick >= hotSwitchRetryInterval &&
++                        // 触发原神内置的键鼠操控模式热切换。总期限优先于点击重试次数。
++                        if (elapsed >= hotSwitchInitialDelay &&
++                            (lastHotSwitchClick == TimeSpan.MinValue || elapsed - lastHotSwitchClick >= hotSwitchRetryInterval) &&
+                             hotSwitchAttempts < maxHotSwitchAttempts)
+                         {
+                             var gameHandle = TaskContext.Instance().GameHandle;
+                             if (gameHandle != IntPtr.Zero)
+                             {
+                                 hotSwitchAttempts++;
+-                                lastHotSwitchClick = now;
+-                                var elapsedSec = (now - waitStart).TotalSeconds;
++                                lastHotSwitchClick = elapsed;
+                                 TaskControl.Logger.LogInformation(
+                                     "启动等待中尝试前台鼠标点击（第 {Attempt}/{MaxAttempts} 次，等待已进行 {Elapsed:F0}s），以触发原神键鼠模式热切换与唤醒焦点",
+-                                    hotSwitchAttempts, maxHotSwitchAttempts, elapsedSec);
++                                    hotSwitchAttempts, maxHotSwitchAttempts, elapsed.TotalSeconds);
+ 
+                                 try
+                                 {
+                                     if (SystemControl.ActivateWindow(gameHandle))
+                                     {
+-                                        await Task.Delay(200);
++                                        await Task.Delay(200, token);
++                                        token.ThrowIfCancellationRequested();
++                                        if (clock.GetElapsedTime(startTimestamp) >= StartupReadinessGate.DefaultTimeout)
++                                        {
++                                            return false;
++                                        }
+                                         SystemControl.ClickWindowCenterWithoutMovingCursor(gameHandle);
+                                     }
+                                 }
+-                                catch (Exception ex)
++                                catch (Exception ex) when (ex is not OperationCanceledException)
+                                 {
+                                     TaskControl.Logger.LogWarning("尝试键鼠热切换点击时异常: {Message}", ex.Message);
+                                 }
+                             }
+                         }
+ 
+-                        await Task.Delay(500);
+-                    }
+-                });
+-            }
++                        return false;
++                    }, clock, startTimestamp, StartupReadinessGate.DefaultTimeout, cancellationToken);
++                    TaskControl.Logger.LogInformation("检测到已进入主界面或可交互UI，结束启动等待");
++                }
++                catch (TimeoutException)
++                {
++                    TaskControl.Logger.LogError(
++                        "启动等待超时，禁止执行任务节点：总耗时={Elapsed:F1}s，模式={Mode}，截图器={Dispatcher}，上下文={Initialized}，尺寸={Width}x{Height}，帧数={Frames}，像素均值={Mean}，标准差={Deviation}，主UI={MainUi}，可关闭UI={ClosableUi}，秘境={Domain}，点击次数={Attempts}。请检查启动前 BitBlt 兼容设置、捕获帧和 UI 模板；本日志不保存图像。",
++                        clock.GetElapsedTime(startTimestamp).TotalSeconds, homePageViewModel.Config.CaptureMode,
++                        homePageViewModel.TaskDispatcherEnabled, TaskContext.Instance().IsInitialized,
++                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, hotSwitchAttempts);
++                    throw;
++                }
++            }, cancellationToken);
+         }
+ 
+         // 等待命令行启动时并行执行的自动更新完成（如果有）
+         var pendingUpdate = ScriptRepoUpdater.Instance.CommandLineAutoUpdateTask;
+         if (pendingUpdate != null)
+         {
+-            await pendingUpdate;
++            if (waitForMainUi)
++            {
++                var remaining = StartupReadinessGate.DefaultTimeout - clock.GetElapsedTime(startTimestamp);
++                if (remaining <= TimeSpan.Zero)
++                {
++                    throw new TimeoutException("启动阶段总期限已耗尽，禁止等待仓库更新后执行任务节点");
++                }
++                try
++                {
++                    await pendingUpdate.WaitAsync(remaining, cancellationToken);
++                }
++                catch (TimeoutException)
++                {
++                    TaskControl.Logger.LogError("启动阶段等待仓库更新超时，禁止执行任务节点");
++                    throw;
++                }
++            }
++            else
++            {
++                await pendingUpdate;
++            }
+             ScriptRepoUpdater.Instance.CommandLineAutoUpdateTask = null;
+         }
+     }
+diff --git a/BetterGenshinImpact/ViewModel/Pages/OneDragonFlowViewModel.cs b/BetterGenshinImpact/ViewModel/Pages/OneDragonFlowViewModel.cs
+--- a/BetterGenshinImpact/ViewModel/Pages/OneDragonFlowViewModel.cs
++++ b/BetterGenshinImpact/ViewModel/Pages/OneDragonFlowViewModel.cs
+@@ -609,7 +609,20 @@
+         int enabledoneTaskCount = taskListCopy.Count(t => t.IsEnabled);
+         _logger.LogInformation($"启用一条龙任务的数量: {enabledoneTaskCount}");
+ 
+-        await ScriptService.StartGameTask();
++        try
++        {
++            await ScriptService.StartGameTask();
++        }
++        catch (OperationCanceledException)
++        {
++            _logger.LogInformation("一条龙在启动核验期间被取消，未执行任务节点");
++            return;
++        }
++        catch (Exception ex)
++        {
++            _logger.LogError(ex, "一条龙启动核验失败，未执行任务节点");
++            return;
++        }
+         if (CancellationContext.Instance.IsCancellationRequested)
+         {
+             _logger.LogInformation("一条龙在启动阶段被取消");
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -1,8 +1,19 @@
+ # 自动化工作流分支变更 / Automation Workflow Fork Changes
+ 
+-本文件用于显著记录相对 BetterGI 上游的修改。修改期间为 **2026-09-12 至 2026-10-08**。
++本文件用于显著记录相对 BetterGI 上游的修改。修改期间为 **2026-09-12 至 2026-10-11**。
+ 
+-This file prominently records changes from upstream BetterGI. The changes were made from **2026-09-12 through 2026-10-08**.
++This file prominently records changes from upstream BetterGI. The changes were made from **2026-09-12 through 2026-10-11**.
++
++## 2026-10-11 本机迁移启动修复 / Local migration startup fix
++
++- 完整迁移补丁仍基于 `d8c0aa238a949d7d74bfe5087f3a48e39771575a`，未改写或重复叠加。
++- 新增独立 `local-startup-fix-2026-10-11.patch`，仅在完整迁移补丁后应用一次。
++- Windows 11 BitBlt 必需的窗口优化兼容设置在创建游戏进程前核验，仅合并 `SwapEffectUpgradeEnable=0`，保留其他全局 GPU 偏好；不写原神画质、代理或 TUN。
++- 启动等待使用 180 秒单调时钟总期限，包含关联启动耗时、截图器初始化等待与 UI 识别；超时、取消或其他启动失败在任务入口阻止节点继续。
++- 保留原有主 UI、可关闭 UI、秘境识别标准；诊断只记模式、尺寸、帧数、像素统计和匹配布尔值，不自动保存可能含认证输入的图像。
++- 新增 16 项纯离线回归，验证 GPU 设置保留/幂等、期限、迟到匹配、取消及任务放行边界。离线通过不等于实机验收。
++
++The local overlay prepares BitBlt compatibility before creating the game process, preserves other GPU settings, bounds startup readiness with a monotonic deadline, and prevents task nodes after unverified startup. Existing visual criteria and upstream licensing remain unchanged. Diagnostics contain scalar values only; no authentication screenshots are stored automatically.
+ 
+ ## 2026-10-08 当前源码基线 / Current source baseline
+ 
+diff --git a/BetterGenshinImpact/Service/StartupReadinessGate.cs b/BetterGenshinImpact/Service/StartupReadinessGate.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/Service/StartupReadinessGate.cs
+@@ -0,0 +1,45 @@
++using System;
++using System.Threading;
++using System.Threading.Tasks;
++
++namespace BetterGenshinImpact.Service;
++
++/// <summary>启动阶段的单调时钟期限；未经核验或已超时绝不能放行任务节点。</summary>
++public static class StartupReadinessGate
++{
++    public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(180);
++    private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(500);
++
++    public static async Task WaitAsync(
++        Func<TimeSpan, CancellationToken, Task<bool>> isReady,
++        TimeProvider timeProvider,
++        long startTimestamp,
++        TimeSpan timeout,
++        CancellationToken cancellationToken)
++    {
++        while (true)
++        {
++            cancellationToken.ThrowIfCancellationRequested();
++            var elapsed = timeProvider.GetElapsedTime(startTimestamp);
++            if (elapsed >= timeout)
++            {
++                throw new TimeoutException("启动等待超时，未核验可交互 UI，禁止执行任务节点");
++            }
++
++            var ready = await isReady(elapsed, cancellationToken);
++            cancellationToken.ThrowIfCancellationRequested();
++            var remaining = timeout - timeProvider.GetElapsedTime(startTimestamp);
++            if (remaining <= TimeSpan.Zero)
++            {
++                throw new TimeoutException("启动核验超过总期限，禁止执行任务节点");
++            }
++            if (ready)
++            {
++                return;
++            }
++
++            await Task.Delay(remaining < PollInterval ? remaining : PollInterval,
++                timeProvider, cancellationToken);
++        }
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessGateTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessGateTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessGateTests.cs
+@@ -0,0 +1,121 @@
++using BetterGenshinImpact.Service;
++using Microsoft.Extensions.Time.Testing;
++
++namespace BetterGenshinImpact.UnitTest.ServiceTests;
++
++public class StartupReadinessGateTests
++{
++    [Fact]
++    public async Task VerifiedUiWithinDeadlineAllowsTheNextStage()
++    {
++        var clock = new FakeTimeProvider();
++        var nodes = 0;
++        await StartupReadinessGate.WaitAsync((_, _) => Task.FromResult(true), clock,
++            clock.GetTimestamp(), TimeSpan.FromSeconds(1), CancellationToken.None);
++        nodes++;
++        Assert.Equal(1, nodes);
++    }
++
++    [Fact]
++    public async Task UnverifiedUiTimesOutAndCannotReachTheNextStage()
++    {
++        var clock = new FakeTimeProvider();
++        var nodes = 0;
++        async Task Run()
++        {
++            await StartupReadinessGate.WaitAsync((_, _) => Task.FromResult(false), clock,
++                clock.GetTimestamp(), TimeSpan.FromMilliseconds(500), CancellationToken.None);
++            nodes++;
++        }
++        var run = Run();
++        clock.Advance(TimeSpan.FromMilliseconds(500));
++        await Assert.ThrowsAsync<TimeoutException>(() => run.WaitAsync(TimeSpan.FromSeconds(2)));
++        Assert.Equal(0, nodes);
++    }
++
++    [Fact]
++    public async Task ADeadlineConsumedByProcessStartupDoesNotProbeOrReset()
++    {
++        var clock = new FakeTimeProvider();
++        var processStart = clock.GetTimestamp();
++        clock.Advance(StartupReadinessGate.DefaultTimeout);
++        var probes = 0;
++        await Assert.ThrowsAsync<TimeoutException>(() => StartupReadinessGate.WaitAsync((_, _) =>
++            {
++                probes++;
++                return Task.FromResult(true);
++            }, clock, processStart, StartupReadinessGate.DefaultTimeout, CancellationToken.None));
++        Assert.Equal(0, probes);
++    }
++
++    [Fact]
++    public async Task AUiMatchArrivingAfterTheDeadlineDoesNotPass()
++    {
++        var clock = new FakeTimeProvider();
++        await Assert.ThrowsAsync<TimeoutException>(() => StartupReadinessGate.WaitAsync((_, _) =>
++            {
++                clock.Advance(TimeSpan.FromSeconds(2));
++                return Task.FromResult(true);
++            }, clock, clock.GetTimestamp(), TimeSpan.FromSeconds(1), CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task WaitingForDispatcherInitializationSharesTheSameDeadline()
++    {
++        var clock = new FakeTimeProvider();
++        var start = clock.GetTimestamp();
++        clock.Advance(TimeSpan.FromSeconds(179.5));
++        var wait = StartupReadinessGate.WaitAsync((_, _) => Task.FromResult(false), clock,
++            start, StartupReadinessGate.DefaultTimeout, CancellationToken.None);
++        clock.Advance(TimeSpan.FromMilliseconds(500));
++        await Assert.ThrowsAsync<TimeoutException>(() => wait.WaitAsync(TimeSpan.FromSeconds(2)));
++    }
++
++    [Fact]
++    public async Task CancellationStopsPollingAndDoesNotAcceptALaterMatch()
++    {
++        var clock = new FakeTimeProvider();
++        using var stop = new CancellationTokenSource();
++        var probes = 0;
++        var wait = StartupReadinessGate.WaitAsync((_, _) =>
++            {
++                probes++;
++                return Task.FromResult(false);
++            }, clock, clock.GetTimestamp(), TimeSpan.FromSeconds(10), stop.Token);
++        stop.Cancel();
++        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait.WaitAsync(TimeSpan.FromSeconds(2)));
++        clock.Advance(TimeSpan.FromSeconds(20));
++        Assert.Equal(1, probes);
++    }
++
++    [Fact]
++    public async Task CancellationDuringRecognitionOverridesAUiMatch()
++    {
++        var clock = new FakeTimeProvider();
++        using var stop = new CancellationTokenSource();
++        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => StartupReadinessGate.WaitAsync((_, _) =>
++            {
++                stop.Cancel();
++                return Task.FromResult(true);
++            }, clock, clock.GetTimestamp(), TimeSpan.FromSeconds(10), stop.Token));
++    }
++
++    [Fact]
++    public async Task SystemWallClockChangesDoNotInvalidateTheMonotonicDeadline()
++    {
++        var clock = new WallClockJumpProvider();
++        await StartupReadinessGate.WaitAsync((_, _) =>
++            {
++                clock.UtcNow = clock.UtcNow.AddYears(10);
++                return Task.FromResult(true);
++            }, clock, clock.GetTimestamp(), TimeSpan.FromSeconds(1), CancellationToken.None);
++    }
++
++    private sealed class WallClockJumpProvider : TimeProvider
++    {
++        public DateTimeOffset UtcNow { get; set; } = DateTimeOffset.UtcNow;
++        public override DateTimeOffset GetUtcNow() => UtcNow;
++        public override long GetTimestamp() => 100;
++        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/BitBltRegistrySettingsTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/BitBltRegistrySettingsTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/BitBltRegistrySettingsTests.cs
+@@ -0,0 +1,33 @@
++using Fischless.GameCapture.BitBlt;
++
++namespace BetterGenshinImpact.UnitTest.ServiceTests;
++
++public class BitBltRegistrySettingsTests
++{
++    [Theory]
++    [InlineData("", "SwapEffectUpgradeEnable=0;")]
++    [InlineData("SwapEffectUpgradeEnable=1;", "SwapEffectUpgradeEnable=0;")]
++    [InlineData("AutoHDREnable=1;SwapEffectUpgradeEnable=1;VRROptimizeEnable=1;",
++        "AutoHDREnable=1;SwapEffectUpgradeEnable=0;VRROptimizeEnable=1;")]
++    [InlineData("AutoHDREnable=1;VRROptimizeEnable=1;",
++        "AutoHDREnable=1;VRROptimizeEnable=1;SwapEffectUpgradeEnable=0;")]
++    [InlineData(" PrefixSwapEffectUpgradeEnable=1;UnknownFlag=value with spaces;",
++        " PrefixSwapEffectUpgradeEnable=1;UnknownFlag=value with spaces;SwapEffectUpgradeEnable=0;")]
++    [InlineData(" SwapEffectUpgradeEnable =1;Other=Keep;swapEffectUpgradeEnable=1;",
++        "SwapEffectUpgradeEnable=0;Other=Keep;")]
++    [InlineData("Other=Keep;;SwapEffectUpgradeEnable=1;", "Other=Keep;;SwapEffectUpgradeEnable=0;")]
++    public void CompatibilityPreparationPreservesUnrelatedGpuPreferences(string original, string expected)
++    {
++        Assert.Equal(expected, BitBltRegistryHelper.MergeDirectXUserGlobalSettings(original));
++    }
++
++    [Fact]
++    public void RepeatedCaptureOrStartupPreparationIsIdempotent()
++    {
++        const string original = "AutoHDREnable=1;SwapEffectUpgradeEnable=0;VRROptimizeEnable=1;";
++        var once = BitBltRegistryHelper.MergeDirectXUserGlobalSettings(original);
++        var twice = BitBltRegistryHelper.MergeDirectXUserGlobalSettings(once);
++        Assert.Equal(original, once);
++        Assert.Equal(once, twice);
++    }
++}

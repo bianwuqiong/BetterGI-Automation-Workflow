@@ -1,0 +1,5 @@
+{
+  "executionEnabled": false,
+  "target": {"characterName":"梦见月瑞希","artifactSet":"翠绿之影","domainName":"铭记之谷","partyName":"待命队伍","strategyName":"木偶星超导","mainStats":{"sands":"元素精通","goblet":"元素精通","circlet":"元素精通"}},
+  "policy": {"scopeId":"20000101T000000-00000001","maxClaims":1,"maxMinutes":15,"originalResinBudget":0,"condensedResinBudget":0,"maxCrafts":0,"reserveOriginalResin":0,"preferCondensed":true,"craftOriginalResinCost":null,"condensedCapacity":null,"craftingCountry":"蒙德","domainValidated":false,"craftingValidated":false,"requireZhongliShieldCast":true,"fragileResinBudget":0,"transientResinBudget":0,"primogemBudget":0}
+}

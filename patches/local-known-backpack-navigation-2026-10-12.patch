@@ -1,0 +1,358 @@
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: exact known backpack pages for navigation/cleanup only; no inventory reader routes.
++using System;
++using System.Linq;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Common.Element.Assets;
++using BetterGenshinImpact.GameTask.Model.Area;
++
++namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++
++public sealed record InventoryBackpackTabMatch(string ObjectName, double Threshold, BackpackRect Match);
++public sealed record InventoryKnownBackpackProof(long ObservedAt, int Width, int Height, string TabObjectName,
++    BackpackRect HeaderRegion, BackpackOcrRow[] HeaderRows, InventoryBackpackTabMatch[] SelectedTabMatches,
++    bool Focused, bool PromptVisible, bool NegativeSceneAnchorsAbsent);
++
++internal static class KnownBackpackNavigation
++{
++    // Exact upstream GridScreenName descriptions and existing Recognition.json Checked objects.
++    // The development page retains the two already reviewed complete-title variants.
++    private static readonly (string Tab, string[] Headers)[] Pages = [
++        ("BagWeaponChecked", ["武器"]), ("BagArtifactChecked", ["圣遗物"]),
++        ("BagCharacterDevelopmentItemChecked", ["角色培养道具", "养成道具"]),
++        ("BagFoodChecked", ["食物"]), ("BagMaterialChecked", ["材料"]),
++        ("BagGadgetChecked", ["小道具"]), ("BagQuestChecked", ["任务"]),
++        ("BagPreciousItemChecked", ["贵重道具"]), ("BagFurnishingChecked", ["摆设"])
++    ];
++    internal static bool Prompt(ImageRegion image)
++    {
++        using var confirm = image.Find(ElementRecognition.Get("BtnBlackConfirm", image));
++        return Bv.IsInPromptDialog(image) || Bv.IsInRevivePrompt(image) || confirm.IsExist();
++    }
++    internal static bool HeaderVerified(BackpackOcrRow[] rows, BackpackRect region, string tab)
++    {
++        var page = Pages.SingleOrDefault(p => p.Tab == tab);
++        if (page.Headers is null || rows.Length == 0) return false;
++        var exact = rows.Where(r => page.Headers.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text), StringComparer.Ordinal)).ToArray();
++        int allKnownHeaders = rows.Count(r => Pages.Any(p => p.Headers.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text), StringComparer.Ordinal)));
++        double margin = 2 * region.Width / 350d;
++        return rows.All(r => BackpackInventoryEvidenceSafety.Inside(new(r.X, r.Y, r.Width, r.Height), region))
++            && exact.Length == 1 && allKnownHeaders == 1 && exact[0].Width > 0 && exact[0].Height > 0
++            && exact[0].X - region.X >= margin && exact[0].Y - region.Y >= margin
++            && region.X + region.Width - exact[0].X - exact[0].Width >= margin
++            && region.Y + region.Height - exact[0].Y - exact[0].Height >= margin;
++    }
++    internal static bool Verified(InventoryKnownBackpackProof? proof)
++    {
++        if (proof is null || proof.ObservedAt < 0 || proof.Width != 1920 || proof.Height != 1080
++            || !proof.Focused || proof.PromptVisible || !proof.NegativeSceneAnchorsAbsent
++            || proof.HeaderRegion != WeeklyConversionInventoryEvidence.HeaderRect(proof.Width)
++            || proof.SelectedTabMatches.Length != Pages.Length) return false;
++        for (int i = 0; i < Pages.Length; i++)
++        {
++            var match = proof.SelectedTabMatches[i];
++            if (match.ObjectName != Pages[i].Tab || match.Threshold != .8
++                || (match.Match != new BackpackRect(0, 0, 0, 0) && (match.Match.Width <= 0 || match.Match.Height <= 0
++                    || !BackpackInventoryEvidenceSafety.Inside(match.Match, new(0, 0, proof.Width, proof.Height))))) return false;
++        }
++        var selected = proof.SelectedTabMatches.Where(m => m.Match.Width > 0 && m.Match.Height > 0).ToArray();
++        return selected.Length == 1 && selected[0].ObjectName == proof.TabObjectName
++            && HeaderVerified(proof.HeaderRows, proof.HeaderRegion, proof.TabObjectName);
++    }
++    internal static bool CleanupPair(InventoryKnownBackpackProof? first, InventoryKnownBackpackProof? second) =>
++        !ReferenceEquals(first, second) && Verified(first) && Verified(second)
++        && first!.TabObjectName == second!.TabObjectName && second.ObservedAt > first.ObservedAt
++        && second.ObservedAt - first.ObservedAt <= 5000;
++    internal static InventoryKnownBackpackProof? Read(ImageRegion image, long observedAt, InventoryWorldProof world)
++    {
++        bool active = SystemControl.IsGenshinImpactActiveByProcess(), prompt = Prompt(image);
++        bool negativeAbsent = world.Width == image.Width && world.Height == image.Height && world.ObservedAt == observedAt
++            && world.Anchors.Length == 6 && world.Anchors.Skip(1).All(a => a.Match == new BackpackRect(0, 0, 0, 0));
++        if (!active || prompt || !negativeAbsent || image.Width != 1920 || image.Height != 1080) return null;
++        var matches = Pages.Select(page => {
++            var ro = ElementRecognition.Get(page.Tab, image); using var selected = image.Find(ro);
++            return new InventoryBackpackTabMatch(page.Tab, ro.Threshold,
++                selected.IsExist() ? new(selected.X, selected.Y, selected.Width, selected.Height) : new(0, 0, 0, 0));
++        }).ToArray();
++        var picked = matches.Where(m => m.Match.Width > 0 && m.Match.Height > 0).ToArray();
++        if (picked.Length != 1) return null;
++        var box = WeeklyConversionInventoryEvidence.HeaderRect(image.Width); using var crop = image.DeriveCrop(box.ToRect());
++        var rows = StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r => {
++            var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + box.X, b.Y + box.Y, b.Width, b.Height);
++        }).ToArray();
++        var proof = new InventoryKnownBackpackProof(observedAt, image.Width, image.Height, picked[0].ObjectName,
++            box, rows, matches, active, prompt, negativeAbsent);
++        return Verified(proof) ? proof : null;
++    }
++    internal static InventoryKnownBackpackProof? For(InventoryCapturedImage shot) => shot.KnownBackpack;
++}
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+@@ -29,16 +29,8 @@
+                 AssertOwner();
+                 var world=InventoryWorldEvidence.Read(shot.Image,shot.Proof.CallReturnedAt);
+                 bool known=InventoryWorldEvidence.Verified(world);
+-                if(!known&&world.Anchors.Skip(1).All(a=>a.Match==new BackpackRect(0,0,0,0)))
+-                {
+-                    var region=WeeklyConversionInventoryEvidence.HeaderRect(shot.Image.Width);
+-                    using var crop=shot.Image.DeriveCrop(region.ToRect());
+-                    var rows=StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r=>{
+-                        var b=r.Rect.BoundingRect();return new BackpackOcrRow(r.Text,b.X+region.X,b.Y+region.Y,b.Width,b.Height);}).ToArray();
+-                    known=new[]{"characterDevelopmentItems","preciousItems"}.Any(category=>{
+-                        using var tab=shot.Image.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category)+"Checked",shot.Image));
+-                        return tab.IsExist()&&WeeklyConversionInventoryEvidence.HeaderVerified(rows,region,category);});
+-                }
++                var knownBag=known?null:KnownBackpackNavigation.Read(shot.Image,shot.Proof.CallReturnedAt,world);
++                known|=KnownBackpackNavigation.Verified(knownBag);
+                 // Unknown layers, authentication and external menus are never retained or used for input.
+                 if(!known)throw new InvalidOperationException("bound_inventory_capture_unreviewed_page_no_private_png");
+                 var encoded=InspectionNativeFrameEncoding.Encode(shot.Image.SrcMat);Directory.CreateDirectory(directory);
+@@ -48,7 +40,7 @@
+                 if(!File.ReadAllBytes(path).SequenceEqual(encoded.Png))throw new IOException("inventory_private_native_png_readback_failed");
+                 var pixels=new InspectionPrivateCapture(shot.Proof.CallReturnedAt,shot.Image.Width,shot.Image.Height,shot.Image.SrcMat.Type().ToString(),
+                     path,encoded.PngSha256,encoded.NativePixelsSha256,"diagnostic_only_lossless_native_srcmat_no_resize");
+-                return new(shot.Image,shot,JObject.FromObject(shot.Proof,Camel),pixels){WorldEvidence=world};
++                return new(shot.Image,shot,JObject.FromObject(shot.Proof,Camel),pixels){WorldEvidence=world,KnownBackpack=knownBag};
+             }
+             catch{shot.Dispose();throw;}
+         }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventorySynchronousCapture.cs
+@@ -18,13 +18,15 @@
+     public JObject ActualCapture { get; } = (JObject)actualCapture.DeepClone();
+     public InspectionPrivateCapture OriginalPixels { get; } = originalPixels;
+     internal InventoryWorldProof? WorldEvidence { get; set; }
++    internal InventoryKnownBackpackProof? KnownBackpack { get; init; }
+     public long ObservedAt => ActualCapture.Value<long>("callReturnedAt");
+     public void Dispose() => owner.Dispose();
+ }
+ 
+ public sealed record InventoryBoundRawFrame(string Phase, long ObservedAt, JObject ActualCapture,
+     InspectionPrivateCapture PrivateCapture, JObject Recognized)
+-{ public InventoryWorldProof? WorldEvidence { get; init; } }
++{ public InventoryWorldProof? WorldEvidence { get; init; }
++  public InventoryKnownBackpackProof? KnownBackpack { get; init; } }
+ 
+ /// <summary>No default TaskControl/Now fallback. Passed only by trusted native construction.</summary>
+ internal sealed class InventoryCaptureSource(Func<CancellationToken, InventoryCapturedImage> capture,
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadNamedCultivationInventoryTask.cs
+@@ -48,7 +48,8 @@
+         var camel = JsonSerializer.Create(Settings);
+         var raw = new InventoryBoundRawFrame(phase, shot.ObservedAt, (JObject)shot.ActualCapture.DeepClone(),
+             shot.OriginalPixels, JObject.FromObject(recognized, camel))
+-            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null };
++            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null,
++              KnownBackpack = KnownBackpackNavigation.For(shot) };
+         if (activeResult.RawFrames.Count > 0 && activeResult.RawFrames[^1].ObservedAt == shot.ObservedAt)
+             activeResult.RawFrames[^1] = raw;
+         else { if (activeResult.RawFrames.Count >= 2048) throw new InvalidOperationException("named_inventory_raw_frame_limit"); activeResult.RawFrames.Add(raw); }
+@@ -100,7 +101,7 @@
+             if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(image))
+                 throw new InvalidOperationException("named_inventory_tab_navigation_blocked");
+             if (Tab(image, category, "Checked") && Header(image, category)) return;
+-            if(!new[]{"characterDevelopmentItems","preciousItems"}.Any(c=>Tab(image,c,"Checked")&&Header(image,c)))
++            if(!KnownBackpackNavigation.Verified(KnownBackpackNavigation.For(shot)))
+                 throw new InvalidOperationException("named_inventory_current_known_bag_required_before_tab_input");
+             using var uncheckedTab = image.Find(ElementRecognition.Get(WeeklyInventoryCatalog.TabPrefix(category) + "Unchecked", image));
+             if (uncheckedTab.IsExist()) { captures.AssertFresh(shot.ObservedAt); ct.ThrowIfCancellationRequested(); uncheckedTab.Click(); }
+@@ -264,29 +265,32 @@
+     private async Task<bool> Restore(bool opened, NamedCultivationInventoryResult result)
+     {
+         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6));
+-        WeeklyInventoryWorldFrame? previous = null; bool escaped = false; int knownBagFrames = 0;
++        WeeklyInventoryWorldFrame? previous = null; bool escaped = false; InventoryKnownBackpackProof? previousBag = null;
+         for (int i = 0; i < 20; i++)
+         {
+             timeout.Token.ThrowIfCancellationRequested(); using var shot = Capture(timeout.Token); var image = shot.Image;
+             var current = WorldFrame(shot);
++            var knownBag = KnownBackpackNavigation.For(shot);
+             bool bag = current.Focused && !current.World && !current.Prompt && opened
+-                && new[] { "characterDevelopmentItems", "preciousItems" }.Any(c => Tab(image, c, "Checked") && Header(image, c));
++                && KnownBackpackNavigation.Verified(knownBag);
+             current = current with { KnownBag = bag }; result.WorldFrames.Add(current);
+             if (!current.Focused) return false;
+             if (current.World)
+             {
+                 if (previous is not null && WeeklyConversionInventoryEvidence.WorldPair(previous, current))
+                 { Remember("world_restore", shot, current); return true; }
+-                previous = current; knownBagFrames = 0;
++                previous = current; previousBag = null;
+             }
+             else
+             {
+-                previous = null; knownBagFrames = bag ? knownBagFrames + 1 : 0;
+-                if (knownBagFrames >= 2 && BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened, bag, current.Prompt, escaped))
++                previous = null;
++                if (bag && KnownBackpackNavigation.CleanupPair(previousBag,knownBag)
++                    && BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened, bag, current.Prompt, escaped))
+                 {
+                     captures.AssertFresh(shot.ObservedAt); timeout.Token.ThrowIfCancellationRequested(); Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE); escaped = true;
+                     current = current with { EscapeRequested = true }; result.WorldFrames[^1] = current;
+                 }
++                previousBag = bag ? knownBag : null;
+             }
+             Remember("world_restore", shot, current);
+             // Unknown layers and transitions only wait; no ReturnMainUiTask or blind Esc.
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/ReadBoundMoraSnapshotTask.cs
+@@ -38,7 +38,8 @@
+     {
+         var frame = new InventoryBoundRawFrame(phase, shot.ObservedAt, (JObject)shot.ActualCapture.DeepClone(),
+             shot.OriginalPixels, JObject.FromObject(recognized, serializer))
+-            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null };
++            { WorldEvidence = recognized is WeeklyInventoryWorldFrame ? InventoryWorldEvidence.For(shot) : null,
++              KnownBackpack = KnownBackpackNavigation.For(shot) };
+         if (rawFrames.Count > 0 && rawFrames[^1].ObservedAt == shot.ObservedAt) rawFrames[^1] = frame;
+         else { if (rawFrames.Count >= 64) throw new InvalidOperationException("bound_Mora_frame_limit"); rawFrames.Add(frame); }
+     }
+@@ -89,8 +90,7 @@
+                 using var shot = Capture(deadline.Token); var image = shot.Image; Remember("precious_tab_navigation", shot, World(shot));
+                 if (!SystemControl.IsGenshinImpactActiveByProcess() || Prompt(image)) throw new InvalidOperationException("bound_Mora_unknown_page_or_focus");
+                 if (Page(image)) { selected = true; break; }
+-                using var development=image.Find(ElementRecognition.Get("BagCharacterDevelopmentItemChecked",image));
+-                if(!development.IsExist()||!Header(image,"characterDevelopmentItems"))
++                if(!KnownBackpackNavigation.Verified(KnownBackpackNavigation.For(shot)))
+                     throw new InvalidOperationException("bound_Mora_current_known_bag_required_before_tab_input");
+                 using var tab = image.Find(ElementRecognition.Get("BagPreciousItemUnchecked", image));
+                 if (tab.IsExist()) { captures.AssertFresh(shot.ObservedAt); deadline.Token.ThrowIfCancellationRequested(); tab.Click(); }
+@@ -157,33 +157,30 @@
+             f.WorldEvidence?.ObservedAt==w.ObservedAt&&InventoryWorldEvidence.Verified(f.WorldEvidence))==1);
+     private async Task<bool> Restore(bool opened, List<WeeklyInventoryWorldFrame> worldFrames)
+     {
+-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6)); WeeklyInventoryWorldFrame? previous = null; bool escaped = false; int bagPairs = 0;
++        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(6)); WeeklyInventoryWorldFrame? previous = null; bool escaped = false; InventoryKnownBackpackProof? previousBag = null;
+         for (int i = 0; i < 20; i++)
+         {
+             using var shot = Capture(timeout.Token); var current = World(shot);
+-            bool bag = opened && current.Focused && !current.World && !current.Prompt && Page(shot.Image);
+-            var headerRegion = WeeklyConversionInventoryEvidence.HeaderRect(shot.Image.Width);
+-            using var headerCrop = shot.Image.DeriveCrop(headerRegion.ToRect());
+-            var headerRows = StrictInventoryOcrSession.Current.OcrResult(headerCrop.SrcMat).Regions.Select(r => {
+-                var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + headerRegion.X, b.Y + headerRegion.Y, b.Width, b.Height);
+-            }).ToArray();
+-            bag &= WeeklyConversionInventoryEvidence.HeaderVerified(headerRows, headerRegion, "preciousItems");
++            var knownBag = KnownBackpackNavigation.For(shot);
++            bool bag = opened && current.Focused && !current.World && !current.Prompt && KnownBackpackNavigation.Verified(knownBag);
+             current = current with { KnownBag = bag };
+             if (!current.Focused) { Remember("world_restore", shot, current); worldFrames.Add(current); return false; }
+             if (current.World)
+             {
+                 if (previous is not null && WeeklyConversionInventoryEvidence.WorldPair(previous, current))
+                 { Remember("world_restore", shot, current); worldFrames.Add(current); return true; }
+-                previous = current; bagPairs = 0;
++                previous = current; previousBag = null;
+             }
+             else
+             {
+-                previous = null; bagPairs = bag ? bagPairs + 1 : 0;
+-                if (bagPairs >= 2 && !escaped)
++                previous = null;
++                if (bag && KnownBackpackNavigation.CleanupPair(previousBag,knownBag)
++                    && BackpackInventoryEvidenceSafety.CanEscapeBackpack(opened,bag,current.Prompt,escaped))
+                 {
+                     captures.AssertFresh(shot.ObservedAt); timeout.Token.ThrowIfCancellationRequested(); Simulation.SendInput.Keyboard.KeyPress(User32.VK.VK_ESCAPE);
+                     escaped = true; current = current with { EscapeRequested = true };
+                 }
++                previousBag = bag ? knownBag : null;
+             }
+             Remember("world_restore", shot, current); worldFrames.Add(current); await Task.Delay(200, timeout.Token);
+         }
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs
+@@ -0,0 +1,72 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-12: exact known-page navigation/cleanup guards; anonymous pure cases only.
++using System;
++using System.Linq;
++using BetterGenshinImpact.GameTask.Common.Job;
++using BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
++using Xunit;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++public sealed class KnownBackpackNavigationTests
++{
++    private static readonly string[] Tabs=["BagWeaponChecked","BagArtifactChecked","BagCharacterDevelopmentItemChecked",
++        "BagFoodChecked","BagMaterialChecked","BagGadgetChecked","BagQuestChecked","BagPreciousItemChecked","BagFurnishingChecked"];
++    private static InventoryKnownBackpackProof Proof(string tab="BagWeaponChecked",string title="武器",long at=1000)=>new(at,1920,1080,tab,
++        WeeklyConversionInventoryEvidence.HeaderRect(1920),[new(title,120,30,160,25)],
++        Tabs.Select(t=>new InventoryBackpackTabMatch(t,.8,t==tab?new(600,20,40,40):new(0,0,0,0))).ToArray(),true,false,true);
++    [Theory]
++    [InlineData("BagWeaponChecked","武器")]
++    [InlineData("BagArtifactChecked","圣遗物")]
++    [InlineData("BagCharacterDevelopmentItemChecked","养成道具")]
++    [InlineData("BagCharacterDevelopmentItemChecked","角色培养道具")]
++    [InlineData("BagFoodChecked","食物")]
++    [InlineData("BagMaterialChecked","材料")]
++    [InlineData("BagGadgetChecked","小道具")]
++    [InlineData("BagQuestChecked","任务")]
++    [InlineData("BagPreciousItemChecked","贵重道具")]
++    [InlineData("BagFurnishingChecked","摆设")]
++    public void ExactSelectedPageCanBeKnownForNavigationOnly(string tab,string title)=>Assert.True(KnownBackpackNavigation.Verified(Proof(tab,title)));
++    [Fact] public void PartialMismatchedAmbiguousOrClippedHeaderNeverAuthorizesNavigation()
++    {
++        foreach(var title in new[]{"武","武器详情","任务道具","贵重道具","","登录"})
++            Assert.False(KnownBackpackNavigation.Verified(Proof(title:title)));
++        var p=Proof();var row=p.HeaderRows[0];
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row,row]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row,new("圣遗物",120,60,160,25)]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row with{X=p.HeaderRegion.X+1}]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row with{Y=p.HeaderRegion.Y+1}]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row with{X=p.HeaderRegion.X+p.HeaderRegion.Width-row.Width-1}]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[row with{Y=p.HeaderRegion.Y+p.HeaderRegion.Height-row.Height-1}]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRegion=new(0,0,350,100)}));
++    }
++    [Fact] public void MissingOrMultipleSelectionFocusPromptAndNegativeSceneAreRejected()
++    {
++        var p=Proof();
++        Assert.False(KnownBackpackNavigation.Verified(p with{Focused=false}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{PromptVisible=true}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{NegativeSceneAnchorsAbsent=false}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{Width=1280,Height=720}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=p.SelectedTabMatches[..8]}));
++        var two=p.SelectedTabMatches.ToArray();two[1]=two[1] with{Match=new(650,20,40,40)};
++        Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=two}));
++        var none=p.SelectedTabMatches.ToArray();none[0]=none[0] with{Match=new(0,0,0,0)};
++        Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=none}));
++        var threshold=p.SelectedTabMatches.ToArray();threshold[0]=threshold[0] with{Threshold=.79};
++        Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=threshold}));
++    }
++    [Fact] public void CleanupRequiresIndependentFreshSamePagePairAndOriginalOnceEscapeGate()
++    {
++        var a=Proof();var b=Proof(at:1200);
++        Assert.True(KnownBackpackNavigation.CleanupPair(a,b));
++        Assert.False(KnownBackpackNavigation.CleanupPair(a,a));
++        Assert.False(KnownBackpackNavigation.CleanupPair(a,Proof(at:1000)));
++        Assert.False(KnownBackpackNavigation.CleanupPair(a,Proof(at:6001)));
++        Assert.False(KnownBackpackNavigation.CleanupPair(a,Proof("BagPreciousItemChecked","贵重道具",1200)));
++        Assert.False(KnownBackpackNavigation.CleanupPair(a,b with{PromptVisible=true}));
++        Assert.True(BackpackInventoryEvidenceSafety.CanEscapeBackpack(true,true,false,false));
++        Assert.False(BackpackInventoryEvidenceSafety.CanEscapeBackpack(true,true,false,true));
++        Assert.False(BackpackInventoryEvidenceSafety.CanEscapeBackpack(false,true,false,false));
++        Assert.Throws<ArgumentException>(()=>WeeklyInventoryCatalog.Grid("weapons"));
++        Assert.Throws<ArgumentException>(()=>WeeklyInventoryCatalog.TabPrefix("food"));
++    }
++}
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -120,6 +120,8 @@
+ 
+ - 第二十四层仅修复只读绑定的实际进程身份查询：使用固定PROCESS_QUERY_LIMITED_INFORMATION(0x1000)同一真实handle读取完整exe路径、创建FILETIME及前后exitCode/exitTime，避免MainModule所需的模块/VM读取权限。窗口owner/PID与前台在查询前后均须相同；原精确启动ticks字符串、exe、SystemInfo/真实BitBlt代次、MVID及1920×1080物理坐标仍持续核验。原Win32异常、code/HResult与堆栈保留，仅追加本机私有source/phase诊断；不得将预绑定失败伪称请求scope不匹配。没有管理员提权、游戏输入、消费者注册或资源功能，纯回归和编译不代表具名库存或摩拉实机通过。
+ 
++- 第二十五层仅为只读库存的导航与恢复识别默认背包页：复用上游九个完整页名及原Checked模板/0.8阈值、唯一选中tab、同张原OCR完整header与四边2px、focus/noPrompt/noRevive和原负场景锚点，才允许本机私有原图留存。武器等非目标页只允许导航到原两类目标tab或在同页独立双帧后一次Esc恢复世界；通用培养库存CSV类别、材料数量、模型、新鲜度与Mora标准不扩不改。未知页仍不留图、不盲Esc、不恢复焦点；原header/selected匹配证据随私有rawFrame保留。没有消费者注册、升级/转换确认或资源操作，旧未知结果不重写。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.

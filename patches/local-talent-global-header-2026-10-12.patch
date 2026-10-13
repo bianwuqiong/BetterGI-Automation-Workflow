@@ -1,0 +1,249 @@
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -112,6 +112,8 @@
+ 
+ - 第二十层仅修复独立周本具名库存读取：旧完整标题/115×22数量原文与字框保存，新标题留自然边距；数量从实际选中卡底带上下各8px真实背景，复用3xHSV及轮廓定位、48px字形和24px留白，记录全部组件/来源/投影/像素SHA。配置V6无检测读数与固定已有V4检测识别必须同一输入完整ASCII整数一致，不采用1/7结构替换、全角替换、去波浪符或模型择优；源框与归一化框四边2px保持。明确模型身份、五个实际bundle文件的只读锁/哈希及配置前后读回，当前受审cfg8之外保持未知，不改全局OCR/矿石读取。官方姓名改最多12秒、300ms只读滚动三张连续完整exact全名，标点失败及私有原PNG保留，首次有效三张即停止，无重选或最终确认。真实原PNG回放不代表新鲜实时通过；通用8材料读取、转化及实际升级未纳入本层。
+ 
++- 第二十一层仅为天赋列表入口分离当前姓名来源：属性右侧姓名标准继续用于原三帧身份，天赋入口改从左上完整“元素/全名”实际header单行及完整框读取，明确NameSource/全header框归属，不伪造姓名substring框或复制先前姓名。实际Header区域排除Q键提示，独立天赋菜单区域避开上一项；完整名字/分隔符、四边2px、当前同帧与两张/点击前第三张位置绑定全部保持。整头部文字变化拒绝。只导航一次且移开鼠标减少遮挡；已知天赋菜单及三条完整等级的无弹窗/失焦页面可留存失败header的私有原PNG，诊断不替代成功身份。私有静态回放不是实时通过。未加入通用8材料或任何实际升级、转化、确认消费。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/InspectTalentUpgradeTask.cs
+@@ -104,19 +104,26 @@
+             matches[0].Bounds.X<roi.X || matches[0].Bounds.Right>roi.Right || matches[0].Bounds.Y<roi.Y || matches[0].Bounds.Bottom>roi.Bottom)
+             throw new InvalidOperationException("unique_navigation_label_unverified");
+         frame.ClickTo(matches[0].Bounds.X+matches[0].Bounds.Width/2,matches[0].Bounds.Y+matches[0].Bounds.Height/2);
++        if(text=="天赋")frame.MoveTo(frame.Width/2,frame.Height-180);
+         await Delay(500);
+     }
+     private UpgradePreviewTalentEntries ReadTalentEntries(ImageRegion frame)
+     {
+         var at=Now();var focused=SystemControl.IsGenshinImpactActiveByProcess();
+         var overview=focused&&Overview(frame);var prompt=focused&&Bv.IsInPromptDialog(frame);var revive=focused&&Bv.IsInRevivePrompt(frame);
+-        var character=overview&&!prompt&&!revive?Character(frame) with{ObservedAt=at}:new UpgradePreviewCharacter(at,false,""){
+-            Width=frame.Width,Height=frame.Height,NameRegion=TalentUpgradePreviewReader.Scale(TalentUpgradePreviewEvidence.InspectionNameReference,frame.Width)};
++        var headerRows=overview&&!prompt&&!revive?TalentUpgradePreviewReader.Rows(frame,TalentGlobalHeaderEvidence.ReferenceRegion,OcrFactory.Paddle):[];
++        var headerRaw=string.Concat(headerRows.Select(r=>r.Text));var parsed=TalentGlobalHeaderEvidence.Parse(headerRaw);
++        var character=new UpgradePreviewCharacter(at,overview,parsed.Name){Width=frame.Width,Height=frame.Height,
++            NameRegion=TalentUpgradePreviewReader.Scale(TalentGlobalHeaderEvidence.ReferenceRegion,frame.Width),NameRows=headerRows,
++            NameSource="talent_global_header",NameBoxMethod="whole_header_ocr_box_contains_name",HeaderRaw=headerRaw,HeaderElement=parsed.Element};
+         var rows=overview&&!prompt&&!revive?TalentUpgradePreviewReader.Rows(frame,TalentEntryObservationEvidence.ReferenceRegion,OcrFactory.Paddle):[];
+         var read=new UpgradePreviewTalentEntries(at,frame.Width,frame.Height,focused,overview,prompt,revive,character,
+-            TalentUpgradePreviewReader.Scale(TalentEntryObservationEvidence.ReferenceRegion,frame.Width),rows,TalentEntryObservationEvidence.Candidates(rows));
++            TalentUpgradePreviewReader.Scale(TalentEntryObservationEvidence.ReferenceRegion,frame.Width),rows,TalentEntryObservationEvidence.Candidates(rows)){
++                MenuRegion=TalentUpgradePreviewReader.Scale(TalentGlobalHeaderEvidence.TalentMenuReference,frame.Width),
++                MenuRows=overview&&!prompt&&!revive?TalentUpgradePreviewReader.Rows(frame,TalentGlobalHeaderEvidence.TalentMenuReference,OcrFactory.Paddle):[]};
+         read=read with{FailureReason=TalentEntryObservationEvidence.FrameFailure(read,official)};
+-        if(TalentEntryObservationEvidence.KnownPage(read,official))read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};
++        if(TalentEntryObservationEvidence.KnownPage(read,official)||TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(read))
++            read=read with{PrivateCapture=RetainDiagnosticCapture(frame,at)};
+         frames.Add(read);return read;
+     }
+     private async Task OpenTalent()
+@@ -286,7 +293,7 @@
+             reason=primaryReason!="verified_read_only_preview"?primaryReason:restored?primaryReason:cleanupReason,
+             observedAt=verified&&previewReceipt is not null?DateTimeOffset.FromUnixTimeMilliseconds(previewReceipt.ObservedAt).ToString("O"):null,
+             evidence=new{characterIdentityMethod="bounded_rolling_exact_triple",characterIdentityObservationLimitMs=12000,characterIdentityPollMs=300,
+-                characterIdentityTrials=nameList,characterIdentity=names,twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
++                characterIdentityTrials=nameList,characterIdentity=names,talentEntryIdentitySource="talent_global_header",twoPickedEntryFrames,entryClickFrame,detailIdentityCarryover=detailReceipt,preview=previewReceipt,materialTooltips=tooltips,rawFrames=frames,
+                 characterSelectionAfterIdentity=false,tooltipRequirementUsedAsUpgradeCost=false}
+         },new JsonSerializerSettings{ContractResolver=new CamelCasePropertyNamesContractResolver()});
+         try{System.IO.Directory.CreateDirectory(reportFolder);System.IO.File.WriteAllText(reportPath,payload);}
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentUpgradePreviewEvidence.cs
+@@ -56,6 +56,8 @@
+ {
+     public int Width{get;init;}public int Height{get;init;}public Rect NameRegion{get;init;}public UpgradePreviewRow[] NameRows{get;init;}=[];
+     public string Phase{get;init;}="character_identity_observation";public InspectionPrivateCapture? PrivateCapture{get;init;}
++    public string NameSource{get;init;}="attribute_right_full_name";public string NameBoxMethod{get;init;}="actual_name_ocr_box";
++    public string HeaderRaw{get;init;}="";public string HeaderElement{get;init;}="";
+ }
+ 
+ /// <summary>Complete UI values only. No budgets, confirmation input, or guessed inventory defaults.</summary>
+@@ -92,7 +94,7 @@
+         now>=second && now-second<=1500;
+     public static bool CharacterFrame(UpgradePreviewCharacter frame,string official)
+     {
+-        if(!frame.Overview||frame.Width<800||frame.Width*9!=frame.Height*16||Normalize(frame.Name)!=Normalize(official)||frame.NameRows.Length!=1)return false;
++        if(frame.NameSource!="attribute_right_full_name"||!frame.Overview||frame.Width<800||frame.Width*9!=frame.Height*16||Normalize(frame.Name)!=Normalize(official)||frame.NameRows.Length!=1)return false;
+         var reference=InspectionNameReference;double scale=frame.Width/1920d;
+         var expected=new Rect((int)Math.Round(reference.X*scale),(int)Math.Round(reference.Y*scale),
+             (int)Math.Round(reference.Width*scale),(int)Math.Round(reference.Height*scale));
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentEntryObservationEvidence.cs
+@@ -14,6 +14,7 @@
+     public string Phase{get;init;}="talent_entry_observation";
+     public string FailureReason{get;init;}="unverified";
+     public InspectionPrivateCapture? PrivateCapture{get;init;}
++    public Rect MenuRegion{get;init;}public UpgradePreviewRow[] MenuRows{get;init;}=[];
+ }
+ 
+ /// <summary>Read-only observations after one navigation. Never retries an input or relaxes identity.</summary>
+@@ -28,8 +29,17 @@
+     public static bool KnownPage(UpgradePreviewTalentEntries frame,string official)=>
+         frame.Focused&&frame.Overview&&!frame.PromptVisible&&!frame.ReviveVisible&&
+         frame.Character.ObservedAt==frame.ObservedAt&&frame.Character.Width==frame.Width&&frame.Character.Height==frame.Height&&
+-        TalentUpgradePreviewEvidence.CharacterFrame(frame.Character,official)&&
++        (frame.Character.NameSource=="talent_global_header"?
++            TalentGlobalHeaderEvidence.Menu(frame)&&TalentGlobalHeaderEvidence.CharacterFrame(frame.Character,official):
++            TalentUpgradePreviewEvidence.CharacterFrame(frame.Character,official))&&
+         frame.Region==TalentUpgradePreviewReader.Scale(ReferenceRegion,frame.Width);
++    public static bool CanRetainFailedHeaderDiagnostic(UpgradePreviewTalentEntries frame)=>frame.Focused&&frame.Overview&&!frame.PromptVisible&&!frame.ReviveVisible&&
++        frame.Character.NameSource=="talent_global_header"&&frame.Width>=800&&frame.Width*9==frame.Height*16&&TalentGlobalHeaderEvidence.Menu(frame)&&
++        frame.Region==TalentUpgradePreviewReader.Scale(ReferenceRegion,frame.Width)&&frame.Candidates.Length==3&&
++        frame.Candidates.SequenceEqual(Candidates(frame.Rows))&&frame.Candidates.All(r=>r.Bounds.Width>0&&r.Bounds.Height>0&&
++            r.Bounds.Left-frame.Region.Left>=2*frame.Width/1920d&&frame.Region.Right-r.Bounds.Right>=2*frame.Width/1920d&&
++            r.Bounds.Top-frame.Region.Top>=2*frame.Width/1920d&&frame.Region.Bottom-r.Bounds.Bottom>=2*frame.Width/1920d)&&
++        !frame.Candidates.Zip(frame.Candidates.Skip(1)).Any(p=>p.First.Bounds.Bottom>=p.Second.Bounds.Top);
+     public static string FrameFailure(UpgradePreviewTalentEntries frame,string official)
+     {
+         if(!KnownPage(frame,official))return "talent_list_page_unverified";
+@@ -52,6 +62,9 @@
+         var b=FrameFailure(second,official);if(b!="verified_entries")return b;
+         if(first.Width!=second.Width||first.Height!=second.Height||!TalentUpgradePreviewEvidence.Fresh(first.ObservedAt,second.ObservedAt,now))
+             return "entry_pair_freshness_unverified";
++        if(first.Character.NameSource!=second.Character.NameSource||first.Character.NameSource=="talent_global_header"&&
++            TalentUpgradePreviewEvidence.Normalize(first.Character.HeaderRaw)!=TalentUpgradePreviewEvidence.Normalize(second.Character.HeaderRaw))
++            return "talent_global_header_pair_unstable";
+         if(first.Candidates.Zip(second.Candidates).Any(p=>
+             Math.Abs((p.First.Bounds.Y+p.First.Bounds.Height/2)-(p.Second.Bounds.Y+p.Second.Bounds.Height/2))>6||
+             TalentUpgradePreviewEvidence.Normalize(p.First.Text)!=TalentUpgradePreviewEvidence.Normalize(p.Second.Text)))
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentGlobalHeaderEvidence.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentGlobalHeaderEvidence.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/TalentGlobalHeaderEvidence.cs
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Copyright (C) 2026 bianwuqiong. BetterGI upstream authors retain their copyrights.
++// Modified 2026-10-12: independent current character identity from the global talent header.
++using System;
++using System.Linq;
++using System.Text.RegularExpressions;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.GameTask.CharacterDevelopment;
++
++public static class TalentGlobalHeaderEvidence
++{
++    public static readonly Rect ReferenceRegion=new(130,20,320,85);
++    public static readonly Rect TalentMenuReference=new(40,390,320,100);
++    public static (string Element,string Name) Parse(string raw)
++    {
++        var match=Regex.Match(TalentUpgradePreviewEvidence.Normalize(raw),@"\A(火|水|风|雷|草|冰|岩)元素/([^/]+)\z");
++        return match.Success?(match.Groups[1].Value,match.Groups[2].Value):("","");
++    }
++    private static bool Complete(UpgradePreviewRow row,Rect region,int width)
++    {
++        var box=row.Bounds;double margin=2*width/1920d;
++        return box.Width>0&&box.Height>0&&box.Left-region.Left>=margin&&region.Right-box.Right>=margin&&
++            box.Top-region.Top>=margin&&region.Bottom-box.Bottom>=margin;
++    }
++    public static bool CharacterFrame(UpgradePreviewCharacter frame,string official)
++    {
++        if(frame.NameSource!="talent_global_header"||frame.NameBoxMethod!="whole_header_ocr_box_contains_name"||
++            !frame.Overview||frame.Width<800||frame.Width*9!=frame.Height*16||frame.NameRows.Length!=1||
++            frame.NameRegion!=TalentUpgradePreviewReader.Scale(ReferenceRegion,frame.Width)||
++            frame.HeaderRaw!=string.Concat(frame.NameRows.Select(r=>r.Text))||!Complete(frame.NameRows[0],frame.NameRegion,frame.Width))return false;
++        var parsed=Parse(frame.HeaderRaw);
++        return parsed.Name.Length>0&&parsed.Name==TalentUpgradePreviewEvidence.Normalize(official)&&frame.Name==parsed.Name&&frame.HeaderElement==parsed.Element;
++    }
++    public static bool Menu(UpgradePreviewTalentEntries frame)=>frame.MenuRegion==TalentUpgradePreviewReader.Scale(TalentMenuReference,frame.Width)&&
++        frame.MenuRows.Length==1&&TalentUpgradePreviewEvidence.Normalize(frame.MenuRows[0].Text)=="天赋"&&
++        Complete(frame.MenuRows[0],frame.MenuRegion,frame.Width);
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderEvidenceTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderEvidenceTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderEvidenceTests.cs
+@@ -0,0 +1,51 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentGlobalHeaderEvidenceTests
++{
++    private static UpgradePreviewCharacter Header(string text="风元素 / 目标角色",long at=100)=>new(at,true,TalentGlobalHeaderEvidence.Parse(text).Name){
++        Width=1920,Height=1080,NameRegion=TalentGlobalHeaderEvidence.ReferenceRegion,
++        NameRows=[new(text,new(145,42,250,28))],NameSource="talent_global_header",NameBoxMethod="whole_header_ocr_box_contains_name",
++        HeaderRaw=text,HeaderElement=TalentGlobalHeaderEvidence.Parse(text).Element};
++    [Fact] public void CurrentNameComesOnlyFromWholeActualElementHeader()
++    {
++        var frame=Header();Assert.True(TalentGlobalHeaderEvidence.CharacterFrame(frame,"目标角色"));
++        Assert.False(TalentUpgradePreviewEvidence.CharacterFrame(frame,"目标角色"));
++        Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(frame with{Name="不同角色"},"不同角色"));
++    }
++    [Theory] [InlineData("风元素/目标角色。")] [InlineData("风元素1目标角色")] [InlineData("风/目标角色")]
++    [InlineData("风元素/目标角色/另一角色")] [InlineData("风元素/其他角色")] [InlineData("梦我梦心")]
++    public void MissingSeparatorOtherCharacterOrPunctuationNeverGetsRepaired(string raw)=>
++        Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(Header(raw),"目标角色"));
++    [Fact] public void CompleteActualHeaderBoxIsRequiredWithoutInventingSubstringBox()
++    {
++        var frame=Header();Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(frame with{NameRows=[new(frame.HeaderRaw,new(131,42,250,28))]},"目标角色"));
++        Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(frame with{NameRows=[frame.NameRows[0],frame.NameRows[0]]},"目标角色"));
++        Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(frame with{HeaderRaw="风元素/目标角色。"},"目标角色"));
++    }
++    private static UpgradePreviewTalentEntries Entry(string name="其他角色")
++    {
++        var rows=Enumerable.Range(0,3).Select(i=>new UpgradePreviewRow("Lv.1",new(1640,170+i*90,60,28))).ToArray();
++        return new(100,1920,1080,true,true,false,false,Header("风元素/"+name),TalentEntryObservationEvidence.ReferenceRegion,rows,rows){
++            MenuRegion=TalentGlobalHeaderEvidence.TalentMenuReference,MenuRows=[new("天赋",new(155,415,80,30))]};
++    }
++    [Fact] public void KnownTalentSceneMayRetainMismatchOnlyAsPrivateDiagnostics()
++    {
++        var entry=Entry();Assert.True(TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(entry));
++        Assert.False(TalentEntryObservationEvidence.KnownPage(entry,"目标角色"));
++        Assert.False(TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(entry with{PromptVisible=true}));
++        Assert.False(TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(entry with{MenuRows=[]}));
++        Assert.False(TalentEntryObservationEvidence.CanRetainFailedHeaderDiagnostic(entry with{Candidates=entry.Candidates.Take(2).ToArray()}));
++    }
++    [Fact] public void EntryKeepsOriginalDoubleFreshAndNewClickBinding()
++    {
++        var a=Entry("目标角色");var b=a with{ObservedAt=400,Character=Header(at:400)};
++        var click=b with{ObservedAt=700,Character=Header(at:700)};
++        Assert.Equal("verified_entry_pair",TalentEntryObservationEvidence.PairFailure(a,b,"目标角色",450));
++        Assert.True(TalentEntryObservationEvidence.ClickBound(b,click,"目标角色",750));
++        Assert.False(TalentEntryObservationEvidence.ClickBound(b,click with{Character=Header("风元素/其他角色",700)},"目标角色",750));
++        Assert.False(TalentEntryObservationEvidence.ClickBound(b,click with{Character=Header("冰元素/目标角色",700)},"目标角色",750));
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderPrivateTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderPrivateTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/TalentGlobalHeaderPrivateTests.cs
+@@ -0,0 +1,29 @@
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class TalentGlobalHeaderPrivateTests
++{
++    [Fact] [Trait("Fixture","PrivateTalentGlobalHeader")]
++    public void ActualOtherCharacterHeaderIsReadByCurrentV6WithoutAssumingTargetIdentity()
++    {
++        var path=Environment.GetEnvironmentVariable("BGI_PRIVATE_TALENT_GLOBAL_HEADER_MANIFEST");Assert.False(string.IsNullOrWhiteSpace(path));
++        var fixture=Newtonsoft.Json.JsonConvert.DeserializeObject<Fixture>(File.ReadAllText(path!))!;
++        using var image=Cv2.ImRead(fixture.Image);var r=fixture.ClientRect;using var client=new Mat(image,new Rect(r[0],r[1],r[2],r[3]));
++        using var resized=new Mat();Cv2.Resize(client,resized,new Size(1920,1080));using var frame=new ImageRegion(resized.Clone(),0,0);
++        using var ocr=new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),PaddleOcrService.PaddleOcrModelType.V6);
++        var rows=TalentUpgradePreviewReader.Rows(frame,TalentGlobalHeaderEvidence.ReferenceRegion,ocr);var raw=string.Concat(rows.Select(t=>t.Text));
++        var parsed=TalentGlobalHeaderEvidence.Parse(raw);var header=new UpgradePreviewCharacter(0,true,parsed.Name){Width=1920,Height=1080,
++            NameRegion=TalentGlobalHeaderEvidence.ReferenceRegion,NameRows=rows,NameSource="talent_global_header",NameBoxMethod="whole_header_ocr_box_contains_name",HeaderRaw=raw,HeaderElement=parsed.Element};
++        var menuRows=TalentUpgradePreviewReader.Rows(frame,TalentGlobalHeaderEvidence.TalentMenuReference,ocr);
++        File.WriteAllText(fixture.DiagnosticPath,Newtonsoft.Json.JsonConvert.SerializeObject(new{source="private_sky_jpeg_static_not_native_fresh",header,menuRows}));
++        Assert.True(TalentGlobalHeaderEvidence.CharacterFrame(header,fixture.ExpectedName));
++        Assert.False(TalentGlobalHeaderEvidence.CharacterFrame(header,"目标角色"));
++        Assert.Single(menuRows);Assert.Equal("天赋",TalentUpgradePreviewEvidence.Normalize(menuRows[0].Text));
++    }
++    private sealed class Fixture{public string Image{get;set;}="";public int[] ClientRect{get;set;}=[];public string ExpectedName{get;set;}="";public string DiagnosticPath{get;set;}="";}
++}

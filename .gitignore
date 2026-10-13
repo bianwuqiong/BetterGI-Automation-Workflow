@@ -6,6 +6,19 @@ config/book-progress.json
 config/last-plan.json
 config/next-task.txt
 config/hoyolab.json
+config/.hoyolab-*.tmp
+config/.hoyolab-credential-quarantine/
+config/cultivation.json
+config/local-named-scope.json
+config/material-route.json
+config/material-route-session.json
+config/material-route-validation.json
+config/material-recovery.json
+config/party-preparation.json
+config/cultivation-full.json
+config/artifact*.json
+!config/artifact*.example.json
+config/artifact-stages/
 logs/
 state/
 manual-graphics.json
@@ -23,6 +36,7 @@ better-genshin-impact/
 **/__pycache__/
 **/*.pyc
 tests/.artifacts/
+bgi-scripts/**/record/
 .pytest_cache/
 
 # Credentials, local environments, and captures
@@ -41,6 +55,8 @@ tests/.artifacts/
 *.mkv
 *.mp4
 .codex-remote-attachments/
+backups/
+src/
 
 # Explicitly reviewed public sponsorship assets (hash-checked by the audit script)
 !docs/assets/support/alipay.jpg

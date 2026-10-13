@@ -1,0 +1,637 @@
+diff --git a/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterDevelopmentTask.cs b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterDevelopmentTask.cs
+--- a/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterDevelopmentTask.cs
++++ b/BetterGenshinImpact/GameTask/CharacterDevelopment/CharacterDevelopmentTask.cs
+@@ -16,6 +16,7 @@
+ using System.Collections;
+ using System.Collections.Generic;
+ using System.Linq;
++using System.Text;
+ using System.Text.RegularExpressions;
+ using System.Threading;
+ using System.Threading.Tasks;
+@@ -240,7 +241,11 @@
+     private const int OcrRetryDelayMilliseconds = 200;
+ 
+     private static readonly Regex NumberRegex = new(@"\d+", RegexOptions.Compiled);
+-    private static readonly Regex TalentBonusRegex = new(@"天赋\s*等级\s*[+＋]\s*3", RegexOptions.Compiled);
++    private static readonly Regex TalentBonusRegex = new(@"^天赋\s*等级\s*[+＋]\s*3$", RegexOptions.Compiled);
++    private static readonly Regex TalentLevelRegex = new(@"^(?:Lv\.?|等级)?([0-9]{1,2})$",
++        RegexOptions.Compiled | RegexOptions.IgnoreCase);
++
++    internal enum TalentLevelGlyphColor { Unknown, Neutral, Cyan }
+ 
+     private readonly ILogger<CharacterDevelopmentStateMachineTask> _logger = App.GetLogger<CharacterDevelopmentStateMachineTask>();
+     private readonly ReturnMainUiTask _returnMainUiTask = new();
+@@ -943,9 +948,11 @@
+     private bool IsTalentDetail(ImageRegion capture)
+     {
+         var text = OcrText(capture, Rect1080(100, 219, 125, 33));
+-        var matched = text.Contains("天赋介绍", StringComparison.Ordinal);
+-        return matched;
+-    }
++        return IsTalentDetailText(text);
++    }
++
++    internal static bool IsTalentDetailText(string text) =>
++        NormalizeTalentOcrText(text).Contains("天赋介绍", StringComparison.Ordinal);
+ 
+     private async Task ReadAttribute()
+     {
+@@ -1097,24 +1104,145 @@
+     /// 从一帧天赋详情页解析天赋类型、显示等级和命座加成标记。
+     /// </summary>
+     /// <remarks>三项组成一个不可拆分的稳定性比较单元，不能依赖天赋点击顺序。</remarks>
+-    private bool TryReadTalentDetail(ImageRegion capture, out string type, out int level, out bool hasBonus)
+-    {
+-        type = NormalizeTalentType(OcrText(capture, Rect1080(242, 13, 98, 36)));
++    private bool TryReadTalentDetail(ImageRegion capture, out string type, out int level, out bool hasBonus,
++        out string diagnostics) =>
++        TryReadTalentDetailFrame(capture, _assetScale, OcrFactory.Paddle, out type, out level, out hasBonus,
++            out diagnostics);
++
++    // 实机与私人离线帧共用这一入口；离线回放不能另写一份宽松解析器。
++    internal static bool TryReadTalentDetailFrame(ImageRegion capture, double assetScale, IOcrService ocr,
++        out string type, out int level, out bool hasBonus, out string diagnostics)
++    {
++        type = string.Empty;
+         level = 0;
+         hasBonus = false;
+-        if (string.IsNullOrEmpty(type))
++        diagnostics = "详情页标记未核验，本帧未读取或记录其他文字";
++        // 每帧重新核验上下文，诊断不能跨越到登录或其他未知界面。
++        Rect Scale(Rect reference) => new((int)Math.Round(reference.X * assetScale),
++            (int)Math.Round(reference.Y * assetScale), (int)Math.Round(reference.Width * assetScale),
++            (int)Math.Round(reference.Height * assetScale));
++        if (!IsTalentDetailText(OcrText(capture, Scale(new Rect(100, 219, 125, 33)), ocr)))
+         {
+             return false;
+         }
+ 
+-        var levelText = OcrText(capture, Rect1080(256, 168, 66, 25));
+-        if (!TryParseTalentLevel(levelText, out level))
+-        {
++        var typeRoi = Scale(new Rect(242, 13, 98, 36)).ClampTo(capture.Width, capture.Height);
++        var levelRoi = Scale(new Rect(256, 168, 66, 25)).ClampTo(capture.Width, capture.Height);
++        var bonusRoi = Scale(new Rect(35, 285, 146, 30)).ClampTo(capture.Width, capture.Height);
++        var typeText = OcrText(capture, typeRoi, ocr);
++        using var levelRegion = capture.DeriveCrop(levelRoi);
++        var levelOcr = ocr.OcrResult(levelRegion.SrcMat);
++        var levelText = levelOcr.Text.Trim();
++        var bonusText = OcrText(capture, bonusRoi, ocr);
++        type = NormalizeTalentType(typeText);
++        var levelParsed = TryParseTalentLevel(levelText, out level);
++        // OCR 仍读原等级 ROI；额外 padding 只供框外背景估计，避免紧裁剪无背景样本。
++        var padding = Math.Max(4, (int)Math.Round(10 * assetScale));
++        var colorRoi = new Rect(levelRoi.X - padding, levelRoi.Y - padding,
++            levelRoi.Width + padding * 2, levelRoi.Height + padding * 2).ClampTo(capture.Width, capture.Height);
++        using var colorRegion = capture.DeriveCrop(colorRoi);
++        var shiftX = levelRoi.X - colorRoi.X;
++        var shiftY = levelRoi.Y - colorRoi.Y;
++        var shiftedLevelOcr = new OcrResult(levelOcr.Regions.Select(region => new OcrResultRegion(
++            new RotatedRect(new Point2f(region.Rect.Center.X + shiftX, region.Rect.Center.Y + shiftY),
++                region.Rect.Size, region.Rect.Angle), region.Text, region.Score)).ToArray());
++        var color = ReadTalentLevelGlyphColor(colorRegion.SrcMat, shiftedLevelOcr, out var glyphRoi,
++            out var brightPixels, out var neutralPixels, out var cyanPixels, out var darkConflicts);
++        var bonusParsed = levelParsed && TryResolveTalentBonus(level, color, bonusText, out hasBonus);
++        diagnostics = $"尺寸={capture.Width}x{capture.Height}，类型ROI={typeRoi}，类型原文={TalentDiagnosticText(typeText)}，" +
++                      $"等级ROI={levelRoi}，等级原文={TalentDiagnosticText(levelText)}，" +
++                      $"加成ROI={bonusRoi}，加成原文={TalentDiagnosticText(bonusText)}，" +
++                      $"颜色采样ROI={colorRoi}，等级字形ROI={glyphRoi}，亮点={brightPixels}，白点={neutralPixels}，青点={cyanPixels}，暗色冲突={darkConflicts}，字形颜色={color}，" +
++                      $"类型已解析={!string.IsNullOrEmpty(type)}，等级已解析={levelParsed}，加成已解析={bonusParsed}";
++        return !string.IsNullOrEmpty(type) && levelParsed && bonusParsed;
++    }
++
++    internal static TalentLevelGlyphColor ReadTalentLevelGlyphColor(Mat levelCrop, OcrResult result,
++        out Rect glyphRoi, out int brightPixels, out int neutralPixels, out int cyanPixels, out int darkConflicts)
++    {
++        glyphRoi = default;
++        brightPixels = neutralPixels = cyanPixels = darkConflicts = 0;
++        // 只在唯一完整等级检测框内取色；框外采样局部背景，低信号/混色保持未知。
++        if (result.Regions.Length != 1 || !TryParseTalentLevel(result.Regions[0].Text, out _))
++        {
++            return TalentLevelGlyphColor.Unknown;
++        }
++        glyphRoi = result.Regions[0].Rect.BoundingRect().ClampTo(levelCrop.Width, levelCrop.Height);
++        if (glyphRoi.Width <= 0 || glyphRoi.Height <= 0 || levelCrop.Depth() != MatType.CV_8U ||
++            levelCrop.Channels() is not (3 or 4))
++        {
++            return TalentLevelGlyphColor.Unknown;
++        }
++        using var bgr = levelCrop.Channels() == 4 ? levelCrop.CvtColor(ColorConversionCodes.BGRA2BGR) : null;
++        var source = bgr ?? levelCrop;
++        List<int> backgroundBlue = [], backgroundGreen = [], backgroundRed = [];
++        for (var y = 0; y < source.Height; y++)
++        {
++            for (var x = 0; x < source.Width; x++)
++            {
++                if (glyphRoi.Contains(new Point(x, y))) continue;
++                var background = source.At<Vec3b>(y, x);
++                backgroundBlue.Add(background.Item0);
++                backgroundGreen.Add(background.Item1);
++                backgroundRed.Add(background.Item2);
++            }
++        }
++        if (backgroundBlue.Count < 8) return TalentLevelGlyphColor.Unknown;
++        backgroundBlue.Sort(); backgroundGreen.Sort(); backgroundRed.Sort();
++        var middle = backgroundBlue.Count / 2;
++        var localBackground = new Vec3b((byte)backgroundBlue[middle], (byte)backgroundGreen[middle], (byte)backgroundRed[middle]);
++        var backgroundMaximum = Math.Max(localBackground.Item0, Math.Max(localBackground.Item1, localBackground.Item2));
++        using var pixels = new Mat(source, glyphRoi);
++        for (var y = 0; y < pixels.Height; y++)
++        {
++            for (var x = 0; x < pixels.Width; x++)
++            {
++                var pixel = pixels.At<Vec3b>(y, x);
++                var maximum = Math.Max(pixel.Item0, Math.Max(pixel.Item1, pixel.Item2));
++                // 用局部对比度取信号，禁止用绝对亮度丢掉暗青字后只剩白噪点。
++                var contrast = Math.Max(pixel.Item0 - localBackground.Item0,
++                    Math.Max(pixel.Item1 - localBackground.Item1, pixel.Item2 - localBackground.Item2));
++                if (contrast < (backgroundMaximum < 8 ? 1 : 15)) continue;
++                var cyan = maximum > 0 && Math.Min(pixel.Item0, pixel.Item1) - pixel.Item2 >= Math.Max(1, maximum * .3);
++                var minimum = Math.Min(pixel.Item0, Math.Min(pixel.Item1, pixel.Item2));
++                if (maximum < 180)
++                {
++                    if (cyan || maximum - minimum > maximum * .15)
++                        darkConflicts++;
++                    continue;
++                }
++                brightPixels++;
++                if (maximum - minimum <= 40 && maximum - minimum <= maximum * .2) neutralPixels++;
++                if (cyan) cyanPixels++;
++            }
++        }
++        var minimumSignal = Math.Max(20, (int)Math.Ceiling(glyphRoi.Width * glyphRoi.Height * .08));
++        if (brightPixels < minimumSignal) return TalentLevelGlyphColor.Unknown;
++        if (neutralPixels / (double)brightPixels >= .95 && cyanPixels == 0 && darkConflicts < minimumSignal)
++            return TalentLevelGlyphColor.Neutral;
++        if (cyanPixels / (double)brightPixels >= .95 && neutralPixels / (double)brightPixels <= .01)
++            return TalentLevelGlyphColor.Cyan;
++        return TalentLevelGlyphColor.Unknown;
++    }
++
++    internal static bool TryResolveTalentBonus(int displayLevel, TalentLevelGlyphColor color,
++        string bonusText, out bool hasBonus)
++    {
++        hasBonus = false;
++        var normalized = NormalizeTalentOcrText(bonusText);
++        var explicitBonus = HasTalentBonus(normalized);
++        if (color == TalentLevelGlyphColor.Cyan)
++        {
++            if (!explicitBonus || displayLevel is < 4 or > 13) return false;
++            hasBonus = true;
++            return true;
++        }
++        if (color != TalentLevelGlyphColor.Neutral || displayLevel is < 1 or > 10)
+             return false;
+-        }
+-
+-        var bonusText = OcrText(capture, Rect1080(35, 285, 146, 30));
+-        hasBonus = HasTalentBonus(bonusText);
++        // 白色等级字形是独立的无加成证据；正文/空白不是。标签冲突或残缺仍未知。
++        if (explicitBonus || normalized.Contains('+') || normalized.Contains("天赋", StringComparison.Ordinal) ||
++            normalized.Contains("等级", StringComparison.Ordinal))
++            return false;
+         return true;
+     }
+ 
+@@ -1128,7 +1256,7 @@
+         for (var attempt = 1; attempt <= MaxOcrAttempts; attempt++)
+         {
+             using var capture = CaptureToRectArea();
+-            if (TryReadTalentDetail(capture, out var type, out var level, out var hasBonus))
++            if (TryReadTalentDetail(capture, out var type, out var level, out var hasBonus, out var diagnostics))
+             {
+                 var value = (type, level, hasBonus);
+                 lastResult = $"{type}, Lv.{level}, HasBonus={hasBonus}";
+@@ -1142,8 +1270,8 @@
+             {
+                 stableValues.Reset();
+                 lastResult = "<解析失败>";
+-                _logger.LogDebug("角色养成识别：天赋详情 OCR 第 {Attempt}/{MaxAttempts} 次解析失败",
+-                    attempt, MaxOcrAttempts);
++                _logger.LogDebug("角色养成识别：天赋详情 OCR 第 {Attempt}/{MaxAttempts} 次解析失败，{Diagnostics}",
++                    attempt, MaxOcrAttempts, diagnostics);
+             }
+ 
+             if (attempt < MaxOcrAttempts)
+@@ -1159,36 +1287,46 @@
+ 
+     internal static string NormalizeTalentType(string text)
+     {
+-        if (text.Contains(AttackTalentType, StringComparison.Ordinal))
+-        {
+-            return AttackTalentType;
+-        }
+-
+-        if (text.Contains(SkillTalentType, StringComparison.Ordinal))
+-        {
+-            return SkillTalentType;
+-        }
+-
+-        if (text.Contains(BurstTalentType, StringComparison.Ordinal))
+-        {
+-            return BurstTalentType;
+-        }
+-
+-        return string.Empty;
++        var normalized = NormalizeTalentOcrText(text);
++        var matches = new[] { AttackTalentType, SkillTalentType, BurstTalentType }
++            .Where(type => normalized.Contains(type, StringComparison.Ordinal)).ToArray();
++        return matches.Length == 1 ? matches[0] : string.Empty;
+     }
+ 
+     internal static bool TryParseTalentLevel(string text, out int level)
+     {
+         level = 0;
+-        var match = NumberRegex.Match(text);
++        // 空白可分隔标签，但不可把两个数字片段拼成另一个合法等级。
++        if (Regex.IsMatch(text.Normalize(NormalizationForm.FormKC), @"[0-9]\s+[0-9]"))
++        {
++            return false;
++        }
++        var match = TalentLevelRegex.Match(NormalizeTalentOcrText(text));
+         return match.Success
+-               && int.TryParse(match.Value, out level)
+-               && level > 0;
++               && int.TryParse(match.Groups[1].Value, out level)
++               && level is >= 1 and <= 15;
+     }
+ 
+     internal static bool HasTalentBonus(string text)
+     {
+-        return TalentBonusRegex.IsMatch(text);
++        return TalentBonusRegex.IsMatch(NormalizeTalentOcrText(text));
++    }
++
++    internal static bool TryParseTalentBonus(string text, out bool hasBonus)
++    {
++        var normalized = NormalizeTalentOcrText(text);
++        hasBonus = HasTalentBonus(normalized);
++        // 空白表示该已核验 ROI 没有加成标记；任何非空、非完整 +3 文字都保留未知。
++        return normalized.Length == 0 || hasBonus;
++    }
++
++    internal static string NormalizeTalentOcrText(string text) =>
++        string.Concat(text.Normalize(NormalizationForm.FormKC).Where(character => !char.IsWhiteSpace(character)));
++
++    private static string TalentDiagnosticText(string text)
++    {
++        var bounded = string.Concat(text.Select(character => char.IsControl(character) ? ' ' : character));
++        return bounded.Length <= 120 ? bounded : bounded[..120] + "…";
+     }
+ 
+     internal static void ApplyTalentResult(CharacterDevelopmentResult result, string type, int level, bool hasBonus)
+@@ -1236,6 +1374,9 @@
+     }
+ 
+     private static string OcrText(ImageRegion capture, Rect roi)
++        => OcrText(capture, roi, OcrFactory.Paddle);
++
++    private static string OcrText(ImageRegion capture, Rect roi, IOcrService ocr)
+     {
+         var safeRoi = roi.ClampTo(capture.Width, capture.Height);
+         if (safeRoi.Width <= 0 || safeRoi.Height <= 0)
+@@ -1244,7 +1385,7 @@
+         }
+ 
+         using var region = capture.DeriveCrop(safeRoi);
+-        return OcrFactory.Paddle.OcrResult(region.SrcMat).Text.Trim();
++        return ocr.OcrResult(region.SrcMat).Text.Trim();
+     }
+ 
+     private Rect Rect1080(int x, int y, int width, int height)
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -14,6 +14,14 @@
+ - 新增 16 项纯离线回归，验证 GPU 设置保留/幂等、期限、迟到匹配、取消及任务放行边界。离线通过不等于实机验收。
+ 
+ The local overlay prepares BitBlt compatibility before creating the game process, preserves other GPU settings, bounds startup readiness with a monotonic deadline, and prevents task nodes after unverified startup. Existing visual criteria and upstream licensing remain unchanged. Diagnostics contain scalar values only; no authentication screenshots are stored automatically.
++
++## 2026-10-11 天赋 OCR 诊断与严格解析 / Talent OCR diagnosis and strict parsing
++
++`local-character-talent-fix-2026-10-11.patch` 是在完整迁移补丁和启动修复之后单次应用的独立修改，保留前两份补丁。每帧重新核验天赋详情标签后才允许有界 OCR 文本/坐标诊断；不保存图像。类型要求唯一标签，等级要求完整的 1–15 单值并拒绝数字片段拼接。加成区域属于条件布局：正文或空白不证明无加成；只有已核验白色等级字形、合法基础范围且无冲突时返回无加成，青字则必须同时有完整唯一 `天赋等级+3` 和合法显示等级。颜色模糊、暗色冲突或标签矛盾为未知。
++
++原类型/等级/加成 OCR ROI 保持不变，独立颜色采样 padding 用于可靠背景估计。连续三次三元组一致、三个天赋完整核实及档案未知边界保持不变。72 项纯逻辑与 7 项私人页面的双尺寸同 Core 回放通过；静态夹具重复不等于独立实机帧，也未把离线修复称为实机验收通过。
++
++The additional overlay verifies the talent-detail context before bounded text diagnostics and rejects ambiguous talent types, levels and bonus markers. It combines verified level-glyph evidence with the conditional bonus-label layout, preserves three consecutive samples and unknown outcomes, and shares one frame parser between production and private deterministic replay. OCR coordinates remain unchanged; extra color-sampling padding estimates the background. Offline and compressed-frame tests do not establish live BitBlt recognition success.
+ 
+ ## 2026-10-08 当前源码基线 / Current source baseline
+ 
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentParsingTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentParsingTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentParsingTests.cs
+@@ -0,0 +1,240 @@
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.Core.Recognition.OCR;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.View.Drawable;
++using OpenCvSharp;
++using GlyphColor = BetterGenshinImpact.GameTask.CharacterDevelopment.CharacterDevelopmentStateMachineTask.TalentLevelGlyphColor;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CharacterTalentParsingTests
++{
++    [Theory]
++    [InlineData("普通攻击·纯心纯梦", "普通攻击")]
++    [InlineData("元素 战技", "元素战技")]
++    [InlineData("元素\n爆发", "元素爆发")]
++    [InlineData("普通攻击 元素战技", "")]
++    [InlineData("固有天赋", "")]
++    [InlineData("", "")]
++    public void TalentTypeRequiresOneUnambiguousLabel(string text, string expected)
++    {
++        Assert.Equal(expected, CharacterDevelopmentStateMachineTask.NormalizeTalentType(text));
++    }
++
++    [Theory]
++    [InlineData("Lv.9", 9)]
++    [InlineData("L v . 10", 10)]
++    [InlineData("Ｌｖ．１３", 13)]
++    [InlineData("等级 1", 1)]
++    [InlineData("15", 15)]
++    public void ACompleteLevelLabelOrIsolatedNumberParses(string text, int expected)
++    {
++        Assert.True(CharacterDevelopmentStateMachineTask.TryParseTalentLevel(text, out var level));
++        Assert.Equal(expected, level);
++    }
++
++    [Theory]
++    [InlineData("天赋等级+3")]
++    [InlineData("9/10")]
++    [InlineData("Lv.9\n10")]
++    [InlineData("Lv.1\n0")]
++    [InlineData("1\n2")]
++    [InlineData("Lv. 1 0")]
++    [InlineData("Lv.0")]
++    [InlineData("Lv.16")]
++    [InlineData("Lv.90")]
++    [InlineData("9次")]
++    [InlineData("Lv.O")]
++    [InlineData("")]
++    public void NumbersFromOtherLabelsAmbiguityOrInvalidLevelsRemainUnknown(string text)
++    {
++        Assert.False(CharacterDevelopmentStateMachineTask.TryParseTalentLevel(text, out _));
++    }
++
++    [Theory]
++    [InlineData("天赋等级＋3", true, true)]
++    [InlineData("天赋 等级 + 3", true, true)]
++    [InlineData("天赋等级+", false, false)]
++    [InlineData("天赋等级+2", false, false)]
++    [InlineData("天赋等级+30", false, false)]
++    [InlineData("天赋等+3", false, false)]
++    [InlineData("+3", false, false)]
++    [InlineData("未知文字", false, false)]
++    [InlineData("天赋等级+3\n天赋等级+2", false, false)]
++    [InlineData("", true, false)]
++    public void BonusLabelWithoutItsConfirmedValueCannotBecomeNoBonus(string text, bool parsed, bool bonus)
++    {
++        Assert.Equal(parsed, CharacterDevelopmentStateMachineTask.TryParseTalentBonus(text, out var actual));
++        Assert.Equal(bonus, actual);
++    }
++
++    [Theory]
++    [InlineData("天赋介绍", true)]
++    [InlineData("天赋 介绍", true)]
++    [InlineData("天赋升级", false)]
++    [InlineData("登录", false)]
++    [InlineData("", false)]
++    public void DiagnosticContextStillRequiresTheTalentDetailLabel(string text, bool expected)
++    {
++        Assert.Equal(expected, CharacterDevelopmentStateMachineTask.IsTalentDetailText(text));
++    }
++
++    [Theory]
++    [InlineData(1, (int)GlyphColor.Neutral, "", true, false)]
++    [InlineData(3, (int)GlyphColor.Neutral, "普通攻击", true, false)]
++    [InlineData(9, (int)GlyphColor.Neutral, "普通攻击", true, false)]
++    [InlineData(10, (int)GlyphColor.Neutral, "正文", true, false)]
++    [InlineData(11, (int)GlyphColor.Neutral, "", false, false)]
++    [InlineData(13, (int)GlyphColor.Neutral, "天赋等级+3", false, false)]
++    [InlineData(9, (int)GlyphColor.Neutral, "天赋等+3", false, false)]
++    [InlineData(9, (int)GlyphColor.Neutral, "+", false, false)]
++    [InlineData(9, (int)GlyphColor.Neutral, "天赋等级+", false, false)]
++    [InlineData(13, (int)GlyphColor.Cyan, "天赋等级+3", true, true)]
++    [InlineData(4, (int)GlyphColor.Cyan, "天赋等级＋3", true, true)]
++    [InlineData(3, (int)GlyphColor.Cyan, "天赋等级+3", false, false)]
++    [InlineData(9, (int)GlyphColor.Cyan, "正文", false, false)]
++    [InlineData(9, (int)GlyphColor.Cyan, "", false, false)]
++    [InlineData(9, (int)GlyphColor.Cyan, "天赋等+3", false, false)]
++    [InlineData(9, (int)GlyphColor.Unknown, "天赋等级+3", false, false)]
++    [InlineData(1, (int)GlyphColor.Unknown, "普通攻击", false, false)]
++    [InlineData(0, (int)GlyphColor.Neutral, "正文", false, false)]
++    [InlineData(14, (int)GlyphColor.Cyan, "天赋等级+3", false, false)]
++    public void BonusNeedsIndependentGlyphEvidenceAndMustRespectBaseLevelBounds(
++        int level, int color, string text, bool expectedParsed, bool expectedBonus)
++    {
++        Assert.Equal(expectedParsed, CharacterDevelopmentStateMachineTask.TryResolveTalentBonus(level, (GlyphColor)color, text, out var bonus));
++        Assert.Equal(expectedBonus, bonus);
++    }
++
++    [Fact]
++    public void ColoredBackgroundOutsideTheDetectedLevelBoxDoesNotChangeNeutralGlyphEvidence()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, new Scalar(230, 230, 20));
++        using (var glyph = new Mat(image, new Rect(10, 10, 40, 20))) glyph.SetTo(new Scalar(230, 230, 230));
++        Assert.Equal(GlyphColor.Neutral, ReadColor(image, LevelResult()));
++    }
++
++    [Theory]
++    [InlineData(120, 110, 15)]
++    [InlineData(80, 80, 0)]
++    [InlineData(3, 3, 0)]
++    [InlineData(150, 150, 110)]
++    public void DarkCyanGlyphsCannotBeDiscardedLeavingOnlyWhiteNoise(int blue, int green, int red)
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.Black);
++        using (var glyph = new Mat(image, new Rect(10, 10, 40, 20))) glyph.SetTo(new Scalar(blue, green, red));
++        for (var y = 10; y < 15; y++)
++            for (var x = 10; x < 30; x++) image.Set(y, x, new Vec3b(240, 240, 240));
++        Assert.NotEqual(GlyphColor.Neutral, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void ATooSmallGroupOfWhiteParticlesDoesNotEstablishAWhiteLevel()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.Black);
++        for (var x = 10; x < 30; x++) image.Set(10, x, new Vec3b(240, 240, 240));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void MixedNeutralAndCyanGlyphsAreUnknown()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.Black);
++        using (var half = new Mat(image, new Rect(10, 10, 20, 20))) half.SetTo(new Scalar(230, 230, 230));
++        using (var half = new Mat(image, new Rect(30, 10, 20, 20))) half.SetTo(new Scalar(230, 230, 30));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void TooDarkNeutralPixelsDoNotEstablishAWhiteLevel()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, new Scalar(70, 70, 70));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void DarkGrayTextOnABrightBackgroundCannotBeClassifiedAsWhite()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, new Scalar(150, 150, 150));
++        using (var glyph = new Mat(image, new Rect(10, 10, 40, 20))) glyph.SetTo(new Scalar(70, 70, 70));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void LowBrightnessTintedTextCannotBeClassifiedAsWhite()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.Black);
++        using (var glyph = new Mat(image, new Rect(10, 10, 40, 20))) glyph.SetTo(new Scalar(80, 80, 60));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult()));
++    }
++
++    [Fact]
++    public void MultipleDetectedLevelRegionsDoNotEstablishGlyphEvidence()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.White);
++        var first = LevelResult().Regions[0];
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, new OcrResult([first, first])));
++    }
++
++    [Fact]
++    public void MissingOrNonLevelTextDoesNotEstablishGlyphEvidence()
++    {
++        using var image = new Mat(50, 100, MatType.CV_8UC3, Scalar.White);
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, new OcrResult([])));
++        Assert.Equal(GlyphColor.Unknown, ReadColor(image, LevelResult("天赋等级+3")));
++    }
++
++    [Fact]
++    public void UnknownPageCannotReadOrExposeOtherOcrFields()
++    {
++        using var pixels = new Mat(1080, 1920, MatType.CV_8UC3, Scalar.Black);
++        using var capture = new ImageRegion(pixels.Clone(), 0, 0, drawContent: new DrawContent());
++        var ocr = new UnknownPageOcr();
++        Assert.False(CharacterDevelopmentStateMachineTask.TryReadTalentDetailFrame(capture, 1, ocr,
++            out _, out _, out _, out var diagnostics));
++        Assert.Equal(1, ocr.ReadCount);
++        Assert.DoesNotContain("untrusted-field", diagnostics);
++    }
++
++    [Fact]
++    public void ChangedBonusBreaksTheThreeConsecutiveSampleSequence()
++    {
++        var stable = new StableValueAccumulator<(string Type, int Level, bool Bonus)>(3);
++        Assert.False(stable.Add(("元素战技", 9, false)));
++        Assert.False(stable.Add(("元素战技", 9, false)));
++        Assert.False(stable.Add(("元素战技", 9, true)));
++        Assert.False(stable.Add(("元素战技", 9, true)));
++        Assert.True(stable.Add(("元素战技", 9, true)));
++    }
++
++    [Fact]
++    public void InvalidFrameBreaksTheThreeConsecutiveSampleSequence()
++    {
++        var stable = new StableValueAccumulator<(string Type, int Level, bool Bonus)>(3);
++        Assert.False(stable.Add(("普通攻击", 9, false)));
++        Assert.False(stable.Add(("普通攻击", 9, false)));
++        stable.Reset();
++        Assert.False(stable.Add(("普通攻击", 9, false)));
++        Assert.False(stable.Add(("普通攻击", 9, false)));
++        Assert.True(stable.Add(("普通攻击", 9, false)));
++    }
++
++    private static OcrResult LevelResult(string text = "Lv.9") => new([
++        new OcrResultRegion(new RotatedRect(new Point2f(30, 20), new Size2f(40, 20), 0), text, .99f)
++    ]);
++
++    private static GlyphColor ReadColor(Mat image, OcrResult result) =>
++        CharacterDevelopmentStateMachineTask.ReadTalentLevelGlyphColor(image, result, out _, out _, out _, out _, out _);
++
++    private sealed class UnknownPageOcr : IOcrService
++    {
++        public int ReadCount { get; private set; }
++        public string Ocr(Mat mat) => throw new InvalidOperationException("不允许绕过上下文核验");
++        public string OcrWithoutDetector(Mat mat) => throw new InvalidOperationException("不允许绕过上下文核验");
++        public OcrResult OcrResult(Mat mat)
++        {
++            if (++ReadCount > 1) throw new InvalidOperationException("untrusted-field");
++            return new OcrResult([new OcrResultRegion(new RotatedRect(), "未知页面", 1)]);
++        }
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentPrivateImageTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentPrivateImageTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/CharacterTalentPrivateImageTests.cs
+@@ -0,0 +1,67 @@
++using BetterGenshinImpact.Core.Recognition.OCR.Paddle;
++using BetterGenshinImpact.Core.Recognition.ONNX;
++using BetterGenshinImpact.GameTask.CharacterDevelopment;
++using BetterGenshinImpact.GameTask.Model.Area;
++using BetterGenshinImpact.View.Drawable;
++using Newtonsoft.Json;
++using OpenCvSharp;
++using Xunit.Abstractions;
++
++namespace BetterGenshinImpact.UnitTest.GameTaskTests;
++
++public class CharacterTalentPrivateImageTests(ITestOutputHelper output)
++{
++    [Theory]
++    [Trait("Fixture", "PrivateCharacterTalent")]
++    [InlineData("low-normal")]
++    [InlineData("low-skill")]
++    [InlineData("low-burst")]
++    [InlineData("high-neutral-normal")]
++    [InlineData("high-neutral-skill")]
++    [InlineData("bonus-skill")]
++    [InlineData("bonus-burst")]
++    public void ConfirmedLocalTalentFramesUseTheProductionCoreAndThreeSampleRequirement(string caseId)
++    {
++        var fixtureDirectory = Environment.GetEnvironmentVariable("BETTERGI_PRIVATE_TALENT_FIXTURE_DIR");
++        Assert.False(string.IsNullOrWhiteSpace(fixtureDirectory), "必须显式提供私人游戏帧目录；缺少夹具不能记为通过");
++        var manifest = JsonConvert.DeserializeObject<Dictionary<string, PrivateFixture>>(
++            File.ReadAllText(Path.Combine(fixtureDirectory!, "character-talent-fixtures.json")))!;
++        Assert.True(manifest.TryGetValue(caseId, out var expected), "私人夹具缺失时必须明确失败");
++        using var screenshot = Cv2.ImRead(Path.Combine(fixtureDirectory!, expected!.Filename));
++        Assert.Equal(new Size(1538, 895), screenshot.Size());
++        // 此处是确认详情页后的 Sky 压缩帧；只在内存移除标题/边框，不保存图像。
++        Assert.Equal(4, expected.ClientRect.Length);
++        using var client = new Mat(screenshot, new Rect(expected.ClientRect[0], expected.ClientRect[1],
++            expected.ClientRect[2], expected.ClientRect[3]));
++        using var ocr = new PaddleOcrService(new BgiOnnxFactory(new FakeLogger<BgiOnnxFactory>()),
++            PaddleOcrService.PaddleOcrModelType.V6);
++        foreach (var width in new[] { 1536, 1920 })
++        {
++            using var frame = new Mat();
++            Cv2.Resize(client, frame, new Size(width, width * 9 / 16));
++            var scale = width / 1920d;
++            using var capture = new ImageRegion(frame.Clone(), 0, 0, drawContent: new DrawContent());
++            var stable = new StableValueAccumulator<(string Type, int Level, bool Bonus)>(3);
++            for (var attempt = 1; attempt <= 3; attempt++)
++            {
++                var parsed = CharacterDevelopmentStateMachineTask.TryReadTalentDetailFrame(capture, scale, ocr,
++                    out var type, out var level, out var bonus, out var diagnostics);
++                output.WriteLine("case={0}; width={1}; attempt={2}; {3}", caseId, width, attempt, diagnostics);
++                Assert.True(parsed, diagnostics);
++                Assert.Equal(expected.Type, type);
++                Assert.Equal(expected.DisplayLevel, level);
++                Assert.Equal(expected.HasBonus, bonus);
++                Assert.Equal(attempt == 3, stable.Add((type, level, bonus)));
++            }
++        }
++    }
++
++    private sealed class PrivateFixture
++    {
++        public string Filename { get; set; } = "";
++        public string Type { get; set; } = "";
++        public int DisplayLevel { get; set; }
++        public bool HasBonus { get; set; }
++        public int[] ClientRect { get; set; } = [];
++    }
++}

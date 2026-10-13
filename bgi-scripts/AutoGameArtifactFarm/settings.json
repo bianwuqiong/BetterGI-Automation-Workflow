@@ -1,0 +1,7 @@
+[
+  {"name":"runId","type":"input-text","label":"工作流运行编号","default":""},
+  {"name":"gameDate","type":"input-text","label":"UTC8-04游戏日","default":""},
+  {"name":"configJson","type":"input-text","label":"已授权目标与预算","default":"{}"},
+  {"name":"configSha256","type":"input-text","label":"目标与预算摘要","default":""},
+  {"name":"singleAttemptVerified","type":"checkbox","label":"宿主单次尝试已核实","default":false}
+]

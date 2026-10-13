@@ -1,0 +1,312 @@
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/KnownBackpackNavigation.cs
+@@ -5,16 +5,40 @@
+ using BetterGenshinImpact.GameTask.Common.BgiVision;
+ using BetterGenshinImpact.GameTask.Common.Element.Assets;
+ using BetterGenshinImpact.GameTask.Model.Area;
++using Newtonsoft.Json;
++using Newtonsoft.Json.Serialization;
+ 
+ namespace BetterGenshinImpact.GameTask.Common.Job.NamedInventory;
+ 
+ public sealed record InventoryBackpackTabMatch(string ObjectName, double Threshold, BackpackRect Match);
+ public sealed record InventoryKnownBackpackProof(long ObservedAt, int Width, int Height, string TabObjectName,
+     BackpackRect HeaderRegion, BackpackOcrRow[] HeaderRows, InventoryBackpackTabMatch[] SelectedTabMatches,
+-    bool Focused, bool PromptVisible, bool NegativeSceneAnchorsAbsent);
++    bool Focused, bool PromptVisible, bool RevivePromptVisible, string ScenePolicy, InventoryWorldProof WorldProof,
++    BackpackRect SharedConfirmRoleRegion, BackpackRect SharedCloseRoleRegion);
++public sealed record InventoryBackpackGateAnchor(string Task, string ObjectName, double Threshold, BackpackRect Match);
++public sealed record InventoryBackpackGateDiagnostic(string ReasonCode, long ObservedAt, int Width, int Height,
++    bool Focused, bool PromptVisible, bool RevivePromptVisible, int SelectedTabCount, int HeaderRowCount,
++    int ExpectedHeaderCount, int KnownHeaderCount, InventoryBackpackTabMatch[] SelectedTabMatches,
++    InventoryBackpackGateAnchor[] WorldAnchorMatches, string ScenePolicy, BackpackRect SharedConfirmRoleRegion,
++    BackpackRect SharedCloseRoleRegion, string EvidenceClass = "diagnostic_only_no_page_acceptance_no_png");
++internal sealed class InventoryBackpackPageGateException : InvalidOperationException
++{
++    private static readonly JsonSerializerSettings Settings = new() { ContractResolver = new CamelCasePropertyNamesContractResolver() };
++    internal InventoryBackpackPageGateException(InventoryBackpackGateDiagnostic diagnostic)
++        : base("bound_inventory_capture_unreviewed_page_no_private_png;known_backpack_gate=" + JsonConvert.SerializeObject(diagnostic, Settings))
++    {
++        Data["capturePageGateDiagnostic"] = JsonConvert.SerializeObject(diagnostic, Settings);
++        Data["nativeSource"] = "KnownBackpackNavigation";
++        Data["nativePhase"] = "page_gate_before_private_png";
++    }
++}
+ 
+ internal static class KnownBackpackNavigation
+ {
++    internal const string ScenePolicy = "complete_header_unique_checked_canonical_bag_shared_icon_roles_v1";
++    internal static readonly BackpackRect SharedConfirmRoleRegion = new(1560,980,100,80);
++    // Exact original QuickTeleport/MapCloseButton search ROI; its X icon is shared by the bag.
++    internal static readonly BackpackRect SharedCloseRoleRegion = new(1813,19,58,58);
+     // Exact upstream GridScreenName descriptions and existing Recognition.json Checked objects.
+     // The development page retains the two already reviewed complete-title variants.
+     private static readonly (string Tab, string[] Headers)[] Pages = [
+@@ -36,7 +60,7 @@
+         var exact = rows.Where(r => page.Headers.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text), StringComparer.Ordinal)).ToArray();
+         int allKnownHeaders = rows.Count(r => Pages.Any(p => p.Headers.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text), StringComparer.Ordinal)));
+         double margin = 2 * region.Width / 350d;
+-        return rows.All(r => BackpackInventoryEvidenceSafety.Inside(new(r.X, r.Y, r.Width, r.Height), region))
++        return rows.All(r => Inside(new(r.X, r.Y, r.Width, r.Height), region))
+             && exact.Length == 1 && allKnownHeaders == 1 && exact[0].Width > 0 && exact[0].Height > 0
+             && exact[0].X - region.X >= margin && exact[0].Y - region.Y >= margin
+             && region.X + region.Width - exact[0].X - exact[0].Width >= margin
+@@ -45,15 +69,22 @@
+     internal static bool Verified(InventoryKnownBackpackProof? proof)
+     {
+         if (proof is null || proof.ObservedAt < 0 || proof.Width != 1920 || proof.Height != 1080
+-            || !proof.Focused || proof.PromptVisible || !proof.NegativeSceneAnchorsAbsent
++            || !proof.Focused || proof.PromptVisible || proof.RevivePromptVisible || proof.ScenePolicy != ScenePolicy
++            || proof.SharedConfirmRoleRegion != SharedConfirmRoleRegion || proof.SharedCloseRoleRegion != SharedCloseRoleRegion
++            || !WorldDescriptorsVerified(proof.WorldProof,proof.ObservedAt)
+             || proof.HeaderRegion != WeeklyConversionInventoryEvidence.HeaderRect(proof.Width)
+             || proof.SelectedTabMatches.Length != Pages.Length) return false;
++        // Paimon/domain/prompt star/black-confirm remain hard negatives. Generic F and X
++        // may coexist only in their reviewed bag roles after complete independent page identity.
++        if (proof.WorldProof.Anchors.Take(4).Any(a=>a.Match!=new BackpackRect(0,0,0,0))
++            || !EmptyOrInside(proof.WorldProof.Anchors[4].Match,SharedConfirmRoleRegion)
++            || !EmptyOrInside(proof.WorldProof.Anchors[5].Match,SharedCloseRoleRegion)) return false;
+         for (int i = 0; i < Pages.Length; i++)
+         {
+             var match = proof.SelectedTabMatches[i];
+             if (match.ObjectName != Pages[i].Tab || match.Threshold != .8
+                 || (match.Match != new BackpackRect(0, 0, 0, 0) && (match.Match.Width <= 0 || match.Match.Height <= 0
+-                    || !BackpackInventoryEvidenceSafety.Inside(match.Match, new(0, 0, proof.Width, proof.Height))))) return false;
++                    || !Inside(match.Match, new(0, 0, proof.Width, proof.Height))))) return false;
+         }
+         var selected = proof.SelectedTabMatches.Where(m => m.Match.Width > 0 && m.Match.Height > 0).ToArray();
+         return selected.Length == 1 && selected[0].ObjectName == proof.TabObjectName
+@@ -63,26 +94,75 @@
+         !ReferenceEquals(first, second) && Verified(first) && Verified(second)
+         && first!.TabObjectName == second!.TabObjectName && second.ObservedAt > first.ObservedAt
+         && second.ObservedAt - first.ObservedAt <= 5000;
+-    internal static InventoryKnownBackpackProof? Read(ImageRegion image, long observedAt, InventoryWorldProof world)
++    private static bool Inside(BackpackRect match,BackpackRect region)=>match.Width>0&&match.Height>0&&region.Width>0&&region.Height>0
++        &&match.X>=region.X&&match.Y>=region.Y&&(long)match.X+match.Width<=(long)region.X+region.Width
++        &&(long)match.Y+match.Height<=(long)region.Y+region.Height;
++    private static bool EmptyOrInside(BackpackRect match,BackpackRect region)=>match==new BackpackRect(0,0,0,0)||Inside(match,region);
++    private static readonly (string Task,string Name,string File,BackpackRect Region,bool Color)[] WorldDefinitions=[
++        ("Common/Element","PaimonMenu","paimon_menu.png",new(0,0,480,270),false),
++        ("Common/Element","InDomain","in_domain.png",new(0,0,480,270),false),
++        ("Common/Element","PromptDialogLeftBottomStar","prompt_dialog_left_bottom_star.png",new(0,540,960,540),false),
++        ("Common/Element","BtnBlackConfirm","btn_black_confirm.png",new(0,0,0,0),true),
++        ("AutoFight","Confirm","confirm.png",new(960,540,960,540),false),
++        ("QuickTeleport","MapCloseButton","MapCloseButton.png",new(1813,19,58,58),false)
++    ];
++    internal static bool WorldDescriptorsVerified(InventoryWorldProof? world,long observedAt)
+     {
+-        bool active = SystemControl.IsGenshinImpactActiveByProcess(), prompt = Prompt(image);
+-        bool negativeAbsent = world.Width == image.Width && world.Height == image.Height && world.ObservedAt == observedAt
+-            && world.Anchors.Length == 6 && world.Anchors.Skip(1).All(a => a.Match == new BackpackRect(0, 0, 0, 0));
+-        if (!active || prompt || !negativeAbsent || image.Width != 1920 || image.Height != 1080) return null;
++        if(world is null||world.ObservedAt!=observedAt||observedAt<0||world.Width!=1920||world.Height!=1080||world.Anchors.Length!=6)return false;
++        for(int i=0;i<WorldDefinitions.Length;i++)
++        {
++            var a=world.Anchors[i];var d=WorldDefinitions[i];
++            if(a.Task!=d.Task||a.ObjectName!=d.Name||a.RelativeTemplatePath!=$"GameTask/{d.Task}/Assets/1920x1080/{d.File}"
++                || a.RelativeDefinitionPath!=$"GameTask/{d.Task}/Assets/Recognition.json"||a.SearchRegion!=d.Region
++                || a.Threshold!=.8||a.UseThreeChannels!=d.Color||a.UseMask||a.MatchMode!="CCoeffNormed"
++                || string.IsNullOrWhiteSpace(a.TemplatePngBase64)
++                || new[]{a.FileSha256,a.DefinitionSha256,a.TemplatePngSha256,a.TemplatePixelsSha256}.Any(s=>s.Length!=64||!s.All(Uri.IsHexDigit))
++                || !EmptyOrInside(a.Match,d.Region==new BackpackRect(0,0,0,0)?new(0,0,1920,1080):d.Region))return false;
++        }
++        return true;
++    }
++    internal static InventoryKnownBackpackProof? Read(ImageRegion image, long observedAt, InventoryWorldProof world,
++        out InventoryBackpackGateDiagnostic diagnostic)
++    {
++        bool active=SystemControl.IsGenshinImpactActiveByProcess();
++        bool prompt=Bv.IsInPromptDialog(image);bool revive=Bv.IsInRevivePrompt(image);
++        using(var confirm=image.Find(ElementRecognition.Get("BtnBlackConfirm",image)))prompt|=confirm.IsExist();
++        var anchorMatches=world.Anchors.Where(a=>WorldDefinitions.Any(d=>d.Task==a.Task&&d.Name==a.ObjectName))
++            .Select(a=>new InventoryBackpackGateAnchor(a.Task,a.ObjectName,a.Threshold,a.Match)).ToArray();
++        var gate=new InventoryBackpackGateDiagnostic("known_bag_probe_started",observedAt,image.Width,image.Height,active,prompt,revive,
++            0,0,0,0,[],anchorMatches,ScenePolicy,SharedConfirmRoleRegion,SharedCloseRoleRegion);
++        if(image.Width!=1920||image.Height!=1080){diagnostic=gate with{ReasonCode="known_bag_geometry_unverified"};return null;}
++        if(!active){diagnostic=gate with{ReasonCode="known_bag_focus_unverified"};return null;}
++        if(!WorldDescriptorsVerified(world,observedAt)){diagnostic=gate with{ReasonCode="known_bag_world_descriptors_unverified"};return null;}
++        if(prompt){diagnostic=gate with{ReasonCode="known_bag_prompt_verified"};return null;}
++        if(revive){diagnostic=gate with{ReasonCode="known_bag_revival_verified"};return null;}
++        if(world.Anchors.Take(4).Any(a=>a.Match!=new BackpackRect(0,0,0,0)))
++        {diagnostic=gate with{ReasonCode="known_bag_critical_scene_anchor_present"};return null;}
+         var matches = Pages.Select(page => {
+             var ro = ElementRecognition.Get(page.Tab, image); using var selected = image.Find(ro);
+             return new InventoryBackpackTabMatch(page.Tab, ro.Threshold,
+                 selected.IsExist() ? new(selected.X, selected.Y, selected.Width, selected.Height) : new(0, 0, 0, 0));
+         }).ToArray();
+         var picked = matches.Where(m => m.Match.Width > 0 && m.Match.Height > 0).ToArray();
+-        if (picked.Length != 1) return null;
++        gate=gate with{SelectedTabCount=picked.Length,SelectedTabMatches=matches};
++        if(picked.Length!=1){diagnostic=gate with{ReasonCode=picked.Length==0?"known_bag_selected_tab_missing":"known_bag_selected_tab_ambiguous"};return null;}
+         var box = WeeklyConversionInventoryEvidence.HeaderRect(image.Width); using var crop = image.DeriveCrop(box.ToRect());
+         var rows = StrictInventoryOcrSession.Current.OcrResult(crop.SrcMat).Regions.Select(r => {
+             var b = r.Rect.BoundingRect(); return new BackpackOcrRow(r.Text, b.X + box.X, b.Y + box.Y, b.Width, b.Height);
+         }).ToArray();
++        var expectedHeaders=Pages.Single(p=>p.Tab==picked[0].ObjectName).Headers;
++        int exact=rows.Count(r=>expectedHeaders.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text),StringComparer.Ordinal));
++        int allKnown=rows.Count(r=>Pages.Any(p=>p.Headers.Contains(BackpackInventoryEvidenceSafety.Normalize(r.Text),StringComparer.Ordinal)));
++        gate=gate with{HeaderRowCount=rows.Length,ExpectedHeaderCount=exact,KnownHeaderCount=allKnown};
++        if(exact!=1||allKnown!=1){diagnostic=gate with{ReasonCode=exact==0?"known_bag_exact_header_missing":"known_bag_exact_header_ambiguous"};return null;}
++        if(!HeaderVerified(rows,box,picked[0].ObjectName)){diagnostic=gate with{ReasonCode="known_bag_header_edges_unverified"};return null;}
++        if(!EmptyOrInside(world.Anchors[4].Match,SharedConfirmRoleRegion)){diagnostic=gate with{ReasonCode="known_bag_shared_confirm_outside_role"};return null;}
++        if(!EmptyOrInside(world.Anchors[5].Match,SharedCloseRoleRegion)){diagnostic=gate with{ReasonCode="known_bag_shared_close_outside_role"};return null;}
+         var proof = new InventoryKnownBackpackProof(observedAt, image.Width, image.Height, picked[0].ObjectName,
+-            box, rows, matches, active, prompt, negativeAbsent);
+-        return Verified(proof) ? proof : null;
++            box,rows,matches,active,prompt,revive,ScenePolicy,world,SharedConfirmRoleRegion,SharedCloseRoleRegion);
++        bool verified=Verified(proof);
++        diagnostic=gate with{ReasonCode=verified?"known_bag_page_verified":"known_bag_template_policy_unverified"};
++        return verified?proof:null;
+     }
+     internal static InventoryKnownBackpackProof? For(InventoryCapturedImage shot) => shot.KnownBackpack;
+ }
+diff --git a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+--- a/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
++++ b/BetterGenshinImpact/GameTask/Common/Job/NamedInventory/InventoryCaptureFactory.cs
+@@ -29,10 +29,12 @@
+                 AssertOwner();
+                 var world=InventoryWorldEvidence.Read(shot.Image,shot.Proof.CallReturnedAt);
+                 bool known=InventoryWorldEvidence.Verified(world);
+-                var knownBag=known?null:KnownBackpackNavigation.Read(shot.Image,shot.Proof.CallReturnedAt,world);
++                InventoryBackpackGateDiagnostic? pageDiagnostic=null;
++                var knownBag=known?null:KnownBackpackNavigation.Read(shot.Image,shot.Proof.CallReturnedAt,world,out pageDiagnostic);
+                 known|=KnownBackpackNavigation.Verified(knownBag);
+                 // Unknown layers, authentication and external menus are never retained or used for input.
+-                if(!known)throw new InvalidOperationException("bound_inventory_capture_unreviewed_page_no_private_png");
++                if(!known)throw new InventoryBackpackPageGateException(pageDiagnostic
++                    ??throw new InvalidOperationException("actual_page_gate_diagnostic_missing"));
+                 var encoded=InspectionNativeFrameEncoding.Encode(shot.Image.SrcMat);Directory.CreateDirectory(directory);
+                 var path=Path.Combine(directory,Guid.NewGuid().ToString("N")+".png");
+                 using(var stream=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.WriteThrough))
+diff --git a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs
+--- a/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs
++++ b/Test/BetterGenshinImpact.UnitTest/GameTaskTests/KnownBackpackNavigationTests.cs
+@@ -11,9 +11,18 @@
+ {
+     private static readonly string[] Tabs=["BagWeaponChecked","BagArtifactChecked","BagCharacterDevelopmentItemChecked",
+         "BagFoodChecked","BagMaterialChecked","BagGadgetChecked","BagQuestChecked","BagPreciousItemChecked","BagFurnishingChecked"];
++    private static InventoryWorldProof World(long at)
++    {
++        var original=NamedCultivationInventoryPureTests.WorldProof(at);
++        BackpackRect[] regions=[new(0,0,480,270),new(0,0,480,270),new(0,540,960,540),new(0,0,0,0),new(960,540,960,540),new(1813,19,58,58)];
++        return original with{Anchors=original.Anchors.Select((a,i)=>a with{SearchRegion=regions[i],UseThreeChannels=i==3,Match=new(0,0,0,0)}).ToArray()};
++    }
++    private static InventoryKnownBackpackProof Alias(InventoryKnownBackpackProof proof,int index,BackpackRect match)
++    {var anchors=proof.WorldProof.Anchors.ToArray();anchors[index]=anchors[index] with{Match=match};return proof with{WorldProof=proof.WorldProof with{Anchors=anchors}};}
+     private static InventoryKnownBackpackProof Proof(string tab="BagWeaponChecked",string title="武器",long at=1000)=>new(at,1920,1080,tab,
+         WeeklyConversionInventoryEvidence.HeaderRect(1920),[new(title,120,30,160,25)],
+-        Tabs.Select(t=>new InventoryBackpackTabMatch(t,.8,t==tab?new(600,20,40,40):new(0,0,0,0))).ToArray(),true,false,true);
++        Tabs.Select(t=>new InventoryBackpackTabMatch(t,.8,t==tab?new(600,20,40,40):new(0,0,0,0))).ToArray(),true,false,false,
++        KnownBackpackNavigation.ScenePolicy,World(at),KnownBackpackNavigation.SharedConfirmRoleRegion,KnownBackpackNavigation.SharedCloseRoleRegion);
+     [Theory]
+     [InlineData("BagWeaponChecked","武器")]
+     [InlineData("BagArtifactChecked","圣遗物")]
+@@ -44,7 +53,7 @@
+         var p=Proof();
+         Assert.False(KnownBackpackNavigation.Verified(p with{Focused=false}));
+         Assert.False(KnownBackpackNavigation.Verified(p with{PromptVisible=true}));
+-        Assert.False(KnownBackpackNavigation.Verified(p with{NegativeSceneAnchorsAbsent=false}));
++        Assert.False(KnownBackpackNavigation.Verified(Alias(p,1,new(10,10,20,20))));
+         Assert.False(KnownBackpackNavigation.Verified(p with{Width=1280,Height=720}));
+         Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=p.SelectedTabMatches[..8]}));
+         var two=p.SelectedTabMatches.ToArray();two[1]=two[1] with{Match=new(650,20,40,40)};
+@@ -53,6 +62,85 @@
+         Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=none}));
+         var threshold=p.SelectedTabMatches.ToArray();threshold[0]=threshold[0] with{Threshold=.79};
+         Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=threshold}));
++    }
++    [Theory]
++    [InlineData(1560,980,true)]
++    [InlineData(1618,1018,true)]
++    [InlineData(1559,980,false)]
++    [InlineData(1619,1018,false)]
++    [InlineData(1560,979,false)]
++    [InlineData(1618,1019,false)]
++    public void EntireSharedFMatchMustRemainInsideFixedBagActionRole(int x,int y,bool expected)
++        =>Assert.Equal(expected,KnownBackpackNavigation.Verified(Alias(Proof(),4,new(x,y,42,42))));
++    [Theory]
++    [InlineData(1813,19,true)]
++    [InlineData(1833,40,true)]
++    [InlineData(1812,19,false)]
++    [InlineData(1834,40,false)]
++    [InlineData(1813,18,false)]
++    [InlineData(1833,41,false)]
++    public void EntireSharedXMatchMustRemainInsideOriginalCloseRole(int x,int y,bool expected)
++        =>Assert.Equal(expected,KnownBackpackNavigation.Verified(Alias(Proof(),5,new(x,y,38,37))));
++    [Fact] public void CanonicalAliasesAreExplicitAndCannotChangeWorldSuccessRules()
++    {
++        var p=Alias(Alias(Proof(),4,new(1578,997,42,42)),5,new(1824,30,38,37));
++        Assert.True(KnownBackpackNavigation.Verified(p));
++        Assert.False(InventoryWorldEvidence.Verified(p.WorldProof));
++        var paimon=Alias(p,0,new(30,30,38,40));
++        Assert.False(KnownBackpackNavigation.Verified(paimon));
++        Assert.False(InventoryWorldEvidence.Verified(paimon.WorldProof));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[new("武",120,30,160,25)]}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{ScenePolicy="all_negative_anchors_absent"}));
++    }
++    [Fact] public void WorldDescriptorIdentityGeometryChannelsAndActualTimestampAreMandatory()
++    {
++        var p=Proof();
++        Assert.False(KnownBackpackNavigation.Verified(p with{WorldProof=p.WorldProof with{ObservedAt=999}}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{WorldProof=p.WorldProof with{Anchors=p.WorldProof.Anchors[..5]}}));
++        foreach(var corrupt in new Func<InventoryWorldAnchor,InventoryWorldAnchor>[] {
++            a=>a with{Task="unreviewed"},a=>a with{ObjectName="unknown"},a=>a with{RelativeTemplatePath="wrong.png"},
++            a=>a with{FileSha256=""},a=>a with{DefinitionSha256=""},a=>a with{TemplatePngSha256=""},
++            a=>a with{TemplatePixelsSha256=""},a=>a with{TemplatePngBase64=""},a=>a with{Threshold=.79},
++            a=>a with{UseMask=true},a=>a with{UseThreeChannels=true},a=>a with{MatchMode="SqDiff"},a=>a with{SearchRegion=new(0,0,1920,1080)}})
++        {
++            var anchors=p.WorldProof.Anchors.ToArray();anchors[4]=corrupt(anchors[4]);
++            Assert.False(KnownBackpackNavigation.Verified(p with{WorldProof=p.WorldProof with{Anchors=anchors}}));
++        }
++        Assert.False(KnownBackpackNavigation.Verified(p with{SharedConfirmRoleRegion=new(0,0,1920,1080)}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{SharedCloseRoleRegion=new(0,0,1920,1080)}));
++    }
++    [Fact] public void CriticalPopupAndActualRevivalAlwaysRejectEvenWithCompletePageAndCanonicalAliases()
++    {
++        var p=Alias(Alias(Proof(),4,new(1578,997,42,42)),5,new(1824,30,38,37));
++        Assert.False(KnownBackpackNavigation.Verified(p with{PromptVisible=true}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{RevivePromptVisible=true}));
++        for(int i=0;i<4;i++)
++        {
++            var region=p.WorldProof.Anchors[i].SearchRegion;var match=region.Width==0?new BackpackRect(100,100,20,20):new(region.X+10,region.Y+10,20,20);
++            Assert.False(KnownBackpackNavigation.Verified(Alias(p,i,match)));
++        }
++        Assert.False(KnownBackpackNavigation.Verified(Alias(p,4,new(1200,600,42,42))));
++    }
++    [Fact] public void UnknownPageFailureKeepsOnlyFixedScalarDiagnosticsAndNeverRetainsUnknownTextOrImage()
++    {
++        var diagnostic=new InventoryBackpackGateDiagnostic("known_bag_exact_header_missing",1000,1920,1080,true,false,false,
++            1,2,0,0,[],[],KnownBackpackNavigation.ScenePolicy,KnownBackpackNavigation.SharedConfirmRoleRegion,KnownBackpackNavigation.SharedCloseRoleRegion);
++        var error=new InventoryBackpackPageGateException(diagnostic);
++        Assert.Contains("known_bag_exact_header_missing",error.Message);
++        Assert.Contains("diagnostic_only_no_page_acceptance_no_png",error.Message);
++        Assert.DoesNotContain("headerRows",error.Message);
++        Assert.DoesNotContain("templatePngBase64",error.Message);
++        Assert.DoesNotContain("privateCapture",error.Message);
++        Assert.Equal("page_gate_before_private_png",error.Data["nativePhase"]);
++    }
++    [Fact] public void OverflowSizedSyntheticMatchesNeverPassNativeViewportOrSharedRoleBounds()
++    {
++        var p=Proof();var huge=new BackpackRect(int.MaxValue,int.MaxValue,int.MaxValue,int.MaxValue);
++        Assert.False(KnownBackpackNavigation.Verified(Alias(p,4,huge)));
++        Assert.False(KnownBackpackNavigation.Verified(Alias(p,5,huge)));
++        var tabs=p.SelectedTabMatches.ToArray();tabs[0]=tabs[0] with{Match=huge};
++        Assert.False(KnownBackpackNavigation.Verified(p with{SelectedTabMatches=tabs}));
++        Assert.False(KnownBackpackNavigation.Verified(p with{HeaderRows=[new("武器",int.MaxValue,int.MaxValue,int.MaxValue,int.MaxValue)]}));
+     }
+     [Fact] public void CleanupRequiresIndependentFreshSamePagePairAndOriginalOnceEscapeGate()
+     {
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -122,6 +122,9 @@
+ 
+ - 第二十五层仅为只读库存的导航与恢复识别默认背包页：复用上游九个完整页名及原Checked模板/0.8阈值、唯一选中tab、同张原OCR完整header与四边2px、focus/noPrompt/noRevive和原负场景锚点，才允许本机私有原图留存。武器等非目标页只允许导航到原两类目标tab或在同页独立双帧后一次Esc恢复世界；通用培养库存CSV类别、材料数量、模型、新鲜度与Mora标准不扩不改。未知页仍不留图、不盲Esc、不恢复焦点；原header/selected匹配证据随私有rawFrame保留。没有消费者注册、升级/转换确认或资源操作，旧未知结果不重写。
+ 
++- 第二十六层为实际只读天赋预览增加opt-in的固定V4整数检测器，复用本次新CPU/uncached V6与V4原资产六项读锁及配置回读8。材料数量强制唯一真实斜杠分割，两个完整整数保持V6 raw与V4 detector同字、原4倍cubic/源ROI/四边2px；记录完整现代模型来源与pinned方法，不能以legacy标记降级。旧reader默认、Mora whole、名字、身份/详情/双帧和所有消费边界不改。
++- 第二十七层仅修正完整背包页中通用F圆环与X图形的归属：原世界六锚点成功/否决逻辑不改；完整header/唯一原Checked/0.8/同帧原WorldProof/四边2px先证明已知背包，Paimon/domain/star/blackConfirm及真实Prompt/复苏仍拒绝，再仅允许原F匹配完整位于固定下角role和原X匹配完整位于原关闭ROI。准确scenePolicy、真实锚点和role矩形全部保留，不谎称全负锚点不存在；越界/未知页只留固定无文字无图像的拒绝诊断、不输入。导航和双帧一次Esc清理仍是原两类库存读取的辅助，不接消费Session或实际升级/转换确认。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.

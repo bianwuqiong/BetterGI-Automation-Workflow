@@ -1,8 +1,17 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('core', 'extras', 'configured')][string]$Profile = 'core',
+    [ValidateSet('core', 'extras', 'configured', 'cultivation', 'combat-rehearsal','material-route','material-route-session','material-recovery','party-preparation')][string]$Profile = 'core',
+    [ValidateSet('scan', 'execute')][string]$CultivationMode = 'scan',
+    [ValidateSet('培养材料')][string]$Task,
+    [string]$RouteSessionConfig,
+    [string]$RecoveryConfig,
+    [string]$PreparationConfig,
+    [string]$RouteConfig,
     [int]$TimeoutMinutes = 0,
     [switch]$DryRun,
+    [switch]$DebugRecording,
+    [switch]$CultivationTalentPreview,
+    [ValidateSet('normal-attack','elemental-skill','elemental-burst')][string]$TalentType = 'elemental-skill',
     [switch]$CheckOnly
 )
 
@@ -83,9 +92,21 @@ $ffprobe = Find-Executable ([string]$config.recordingFfprobeExe) 'ffprobe'
 $frameRate = [Math]::Max(1, [Math]::Min(30, [int]($config.recordingFrameRate | ForEach-Object { if ($_){$_}else{15} })))
 $outputWidth = [Math]::Max(640, [Math]::Min(1920, [int]($config.recordingWidth | ForEach-Object { if ($_){$_}else{1280} })))
 $quality = [Math]::Max(18, [Math]::Min(40, [int]($config.recordingQuality | ForEach-Object { if ($_){$_}else{30} })))
+$averageKbps = 0
+$maximumKbps = 0
+if ($DebugRecording) {
+    $frameRate = 8
+    $outputWidth = 960
+    $quality = 32
+    $averageKbps = 400
+    $maximumKbps = 500
+}
 $windowTimeoutSec = [Math]::Max(30, [Math]::Min(300, [int]($config.recordingWindowTimeoutSec | ForEach-Object { if ($_){$_}else{120} })))
 $minimumFrameCoverage = [Math]::Max(0.1, [Math]::Min(1.0,
     [double]($config.recordingMinimumFrameCoverage | ForEach-Object { if ($_){$_}else{0.7} })))
+if ($CultivationTalentPreview -and ($Profile -ne 'cultivation' -or $CultivationMode -ne 'scan')) {
+    throw '天赋录屏预览仅允许cultivation scan零预算。'
+}
 
 if ($CheckOnly) {
     [pscustomobject]@{
@@ -97,6 +118,9 @@ if ($CheckOnly) {
         FrameRate = $frameRate
         OutputWidth = $outputWidth
         Quality = $quality
+        AverageKbps = $averageKbps
+        MaximumKbps = $maximumKbps
+        StartupRecordingSkipped = [bool]$DebugRecording
         MinimumFrameCoverage = $minimumFrameCoverage
         WindowTimeoutSec = $windowTimeoutSec
         Codec = 'h264_nvenc'
@@ -126,11 +150,58 @@ $recorderPriorityApplied = $false
 $stopRequested = $false
 
 $workflowInfo = New-Object System.Diagnostics.ProcessStartInfo
-$workflowInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$workflowArguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -NoDelay -Profile {1} -ExecutionMode foreground' -f `
-    (Join-Path $PSScriptRoot 'run_daily.ps1'), $Profile
-if ($TimeoutMinutes -gt 0) { $workflowArguments += ' -TimeoutMinutes ' + $TimeoutMinutes }
-if ($DryRun) { $workflowArguments += ' -DryRun' }
+$workflowInfo.FileName = if ($config.pythonExe) { [string]$config.pythonExe } else { (Get-Command python -ErrorAction Stop).Source }
+$workflowArguments = '-B "{0}" --root "{1}" run --no-delay --profile {2} --execution-mode foreground' -f `
+    (Join-Path $PSScriptRoot 'workflow.py'), $Root, $Profile
+if ($Profile -eq 'cultivation') { $workflowArguments += ' --cultivation-mode ' + $CultivationMode }
+if ($CultivationTalentPreview) {
+    if ($Profile -ne 'cultivation' -or $CultivationMode -ne 'scan') { throw '天赋录屏预览仅允许cultivation scan零预算。' }
+    $workflowArguments += ' --cultivation-talent-preview --talent-type ' + $TalentType
+}
+if ($Task) {
+    if ($Profile -ne 'cultivation') { throw '录屏单节点只允许 cultivation 档的培养材料。' }
+    $workflowArguments += ' --task "培养材料"'
+}
+if ($RouteConfig) {
+    if ($RouteConfig.IndexOf('"') -ge 0 -or $RouteConfig.Contains("`r") -or $RouteConfig.Contains("`n")) {
+        throw '单段路线配置路径包含无效字符。'
+    }
+    $routeConfigPath = if ([IO.Path]::IsPathRooted($RouteConfig)) { $RouteConfig } else { Join-Path $Root $RouteConfig }
+    if (-not (Test-Path -LiteralPath $routeConfigPath -PathType Leaf)) { throw '单段路线配置文件不存在。' }
+    $routeConfigPath = (Resolve-Path -LiteralPath $routeConfigPath).Path
+    $workflowArguments += ' --route-config "' + $routeConfigPath + '"'
+}
+if ($RouteSessionConfig) {
+    if ($RouteSessionConfig.IndexOf('"') -ge 0 -or $RouteSessionConfig.Contains("`r") -or $RouteSessionConfig.Contains("`n")) {
+        throw '路线会话配置路径包含无效字符。'
+    }
+    $sessionConfigPath = if ([IO.Path]::IsPathRooted($RouteSessionConfig)) { $RouteSessionConfig } else { Join-Path $Root $RouteSessionConfig }
+    if (-not (Test-Path -LiteralPath $sessionConfigPath -PathType Leaf)) { throw '路线会话配置文件不存在。' }
+    $sessionConfigPath = (Resolve-Path -LiteralPath $sessionConfigPath).Path
+    $workflowArguments += ' --route-session-config "' + $sessionConfigPath + '"'
+}
+if ($RecoveryConfig) {
+    if ($RecoveryConfig.IndexOf('"') -ge 0 -or $RecoveryConfig.Contains("`r") -or $RecoveryConfig.Contains("`n")) {
+        throw '安全恢复配置路径包含无效字符。'
+    }
+    $recoveryConfigPath = if ([IO.Path]::IsPathRooted($RecoveryConfig)) { $RecoveryConfig } else { Join-Path $Root $RecoveryConfig }
+    if (-not (Test-Path -LiteralPath $recoveryConfigPath -PathType Leaf)) { throw '安全恢复配置文件不存在。' }
+    $recoveryConfigPath = (Resolve-Path -LiteralPath $recoveryConfigPath).Path
+    $workflowArguments += ' --recovery-config "' + $recoveryConfigPath + '"'
+}
+if ($PreparationConfig) {
+    if ($PreparationConfig.IndexOf('"') -ge 0 -or $PreparationConfig.Contains("`r") -or $PreparationConfig.Contains("`n")) {
+        throw '队伍恢复配置路径包含无效字符。'
+    }
+    $preparationConfigPath = if ([IO.Path]::IsPathRooted($PreparationConfig)) { $PreparationConfig } else { Join-Path $Root $PreparationConfig }
+    if (-not (Test-Path -LiteralPath $preparationConfigPath -PathType Leaf)) { throw '队伍恢复配置文件不存在。' }
+    $preparationConfigPath = (Resolve-Path -LiteralPath $preparationConfigPath).Path
+    $workflowArguments += ' --preparation-config "' + $preparationConfigPath + '"'
+}
+if ($Profile -eq 'party-preparation' -and $TimeoutMinutes -le 0) { $TimeoutMinutes = 5 }
+if ($Profile -eq 'party-preparation' -and $TimeoutMinutes -gt 5) { throw '队伍恢复整轮预算不能超过5分钟。' }
+if ($TimeoutMinutes -gt 0) { $workflowArguments += ' --timeout-minutes ' + $TimeoutMinutes }
+if ($DryRun) { $workflowArguments += ' --dry-run' }
 $workflowInfo.Arguments = $workflowArguments
 $workflowInfo.WorkingDirectory = $Root
 $workflowInfo.UseShellExecute = $false
@@ -164,6 +235,11 @@ try {
                 Sort-Object StartTime | Select-Object -First 1
 
             if ($gameProcess) {
+                if ($DebugRecording) {
+                    $python = if ($config.pythonExe) { [string]$config.pythonExe } else { 'python' }
+                    & $python -B (Join-Path $PSScriptRoot 'recording_readiness.py') --root $Root --run-id $runId
+                    if ($LASTEXITCODE -ne 0) { Start-Sleep -Milliseconds 500; continue }
+                }
                 New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
                 $recordingPath = Join-Path $runDirectory 'genshin-window.mkv'
                 $windowHandle = '0x{0:X}' -f $gameProcess.MainWindowHandle.ToInt64()
@@ -174,6 +250,9 @@ try {
                     '-draw_mouse 0 -i hwnd={1} -vf scale={2}:-2:flags=fast_bilinear ' +
                     '-c:v h264_nvenc -preset p4 -rc vbr -cq {3} -b:v 0 -pix_fmt yuv420p ' +
                     '-an -f matroska "{4}"') -f $frameRate, $windowHandle, $outputWidth, $quality, $recordingPath
+                if ($DebugRecording) {
+                    $recorderInfo.Arguments = $recorderInfo.Arguments.Replace('-b:v 0', ('-b:v {0}k -maxrate {1}k -bufsize {2}k' -f $averageKbps, $maximumKbps, ($maximumKbps * 2)))
+                }
                 $recorderInfo.WorkingDirectory = $Root
                 $recorderInfo.UseShellExecute = $false
                 $recorderInfo.CreateNoWindow = $true
@@ -300,7 +379,7 @@ $recording = [ordered]@{
     ffmpegPid = if ($recorder) { $recorder.Id } else { $null }
     startedAt = if ($recordingStartedAt) { $recordingStartedAt.ToString('o') } else { $null }
     stoppedAt = if ($recordingStoppedAt) { $recordingStoppedAt.ToString('o') } else { $null }
-    settings = [ordered]@{ frameRate = $frameRate; outputWidth = $outputWidth; quality = $quality; codec = 'h264_nvenc'; audio = $false; priority = 'AboveNormal'; priorityApplied = $recorderPriorityApplied; inputQueueFrames = 4; statsDisabled = $true }
+    settings = [ordered]@{ frameRate = $frameRate; outputWidth = $outputWidth; quality = $quality; codec = 'h264_nvenc'; audio = $false; priority = 'AboveNormal'; priorityApplied = $recorderPriorityApplied; inputQueueFrames = 4; statsDisabled = $true; debugRecording = [bool]$DebugRecording; startupRecordingSkipped = [bool]$DebugRecording; averageKbps = $averageKbps; maximumKbps = $maximumKbps }
     probe = $probe
     expectedFrames = $expectedFrames
     frameCoverage = [Math]::Round($frameCoverage, 4)
