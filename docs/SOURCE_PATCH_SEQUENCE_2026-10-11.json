@@ -161,6 +161,16 @@
       "order": 31,
       "path": "patches/local-talent-footer-marker-2026-10-13.patch",
       "sha256": "5af9aca903ab09930aa473954c95c1903dc79c2f7cf7e1418fe52e3b9838bad0"
+    },
+    {
+      "order": 32,
+      "path": "patches/local-startup-readonly-scene-2026-10-13.patch",
+      "sha256": "9eafca1cc407ecdc35ab108f0464b38bb5b030b12c6e503ab8d452d2f9ff9269"
+    },
+    {
+      "order": 33,
+      "path": "patches/local-known-enter-game-2026-10-13.patch",
+      "sha256": "39fd08efcb870596ba006d5cb45de41b424b7218846b314ef0b639b2ff9e9225"
     }
   ],
   "offlineValidation": {
@@ -495,5 +505,17 @@
     "selectedPureTests": 249,
     "privatePreviewSourcesRead": 4,
     "privateTooltipSourcesRead": 2
+  },
+  "startupReadinessExtension": {
+    "validationDocument": "docs/LOCAL_STARTUP_REFUSAL_2026-10-13.md",
+    "triggerOwnershipAndDrainNativeCases": 39,
+    "startupKnownEntryNativeSuite": 61,
+    "hostPythonRegression": 748,
+    "upstreamNormalEnterGameReused": true,
+    "normalEntryMaximumAttempts": 1,
+    "unknownPageInputAllowed": false,
+    "authenticationAutomated": false,
+    "consumerEnabled": false,
+    "completeStartupLiveAccepted": false
   }
 }

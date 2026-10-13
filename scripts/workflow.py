@@ -1376,67 +1376,6 @@ class WindowsHost:
                     if process_alive(process.pid):
                         raise WorkflowError(f'本次 BetterGI 进程 {process.pid} 未能在停止请求后退出。')
 
-    def hot_switch_game_input(self, game_pids):
-        if os.name != 'nt' or not game_pids:
-            return False
-        from ctypes import wintypes
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        try:
-            hwinsta = user32.OpenWindowStationW('WinSta0', False, 0x10000000)
-            if hwinsta:
-                user32.SetProcessWindowStation(hwinsta)
-                hdesk = user32.OpenDesktopW('Default', 0, False, 0x10000000)
-                if hdesk:
-                    user32.SetThreadDesktop(hdesk)
-
-            target_pids = {int(p) for p in game_pids}
-            hwnds = []
-
-            def enum_cb(h, _):
-                if user32.IsWindowVisible(h):
-                    pid = wintypes.DWORD()
-                    user32.GetWindowThreadProcessId(h, ctypes.byref(pid))
-                    if pid.value in target_pids:
-                        hwnds.append(h)
-                return True
-
-            WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-            user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
-            if not hwnds:
-                return False
-
-            h = hwnds[0]
-            class RECT(ctypes.Structure):
-                _fields_ = [('left', ctypes.c_long), ('top', ctypes.c_long),
-                            ('right', ctypes.c_long), ('bottom', ctypes.c_long)]
-            rect = RECT()
-            user32.GetWindowRect(h, ctypes.byref(rect))
-            w = rect.right - rect.left
-            h_height = rect.bottom - rect.top
-            if w <= 0 or h_height <= 0:
-                return False
-
-            user32.ShowWindow(h, 9)
-            user32.SetForegroundWindow(h)
-            time.sleep(0.2)
-            cx = rect.left + w // 2
-            cy = rect.top + h_height // 2
-
-            class POINT(ctypes.Structure):
-                _fields_ = [('x', ctypes.c_long), ('y', ctypes.c_long)]
-            orig = POINT()
-            user32.GetCursorPos(ctypes.byref(orig))
-
-            user32.SetCursorPos(cx, cy)
-            time.sleep(0.05)
-            user32.mouse_event(0x0002, 0, 0, 0, 0)
-            time.sleep(0.05)
-            user32.mouse_event(0x0004, 0, 0, 0, 0)
-            time.sleep(0.1)
-            user32.SetCursorPos(orig.x, orig.y)
-            return True
-        except Exception:
-            return False
 
 
 def task_selection(template, task=None, profile='configured'):
@@ -1550,6 +1489,8 @@ def startup_failure_evidence(text, config_name, pid):
     failure_re = re.compile(
         r'(?:一条龙启动核验失败|配置组 .+ 启动核验失败)，未执行任务节点$')
     active_config, config_line = None, None
+    scene_diagnostic = None
+    scene_diagnostic_seen = False
     line_offset = 0
     for record in re.split(r'(?=^\[\d{2}:\d{2}:\d{2}\.\d+\])', text, flags=re.M):
         lines = record.splitlines(keepends=True)
@@ -1563,14 +1504,38 @@ def startup_failure_evidence(text, config_name, pid):
                 if reference:
                     active_config = reference.group(1)
                     config_line = line_offset + message_index + 1
+                    scene_diagnostic = None
+                    scene_diagnostic_seen = False
+                elif (active_config == config_name and header.group(1) == 'WRN'
+                      and source.endswith('.ScriptService') and message.startswith('[AUTOGAME_STARTUP_BLOCK]')):
+                    # A scalar refusal can only annotate the later genuine startup ERR;
+                    # it cannot independently end a run, establish task success or replay.
+                    if scene_diagnostic_seen:
+                        scene_diagnostic = None
+                    else:
+                        scene_diagnostic_seen = True
+                        try:
+                            try:from .startup_scene_diagnostic import parse_startup_scene_diagnostic
+                            except ImportError:from startup_scene_diagnostic import parse_startup_scene_diagnostic
+                            scene_diagnostic = parse_startup_scene_diagnostic(message)
+                            scene_diagnostic['line'] = line_offset + message_index + 1
+                        except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+                            scene_diagnostic = None
                 elif (active_config == config_name and header.group(1) == 'ERR'
                       and source.endswith(('.OneDragonFlowViewModel', '.ScriptService'))
                       and failure_re.fullmatch(message)):
-                    return {
+                    evidence = {
                         'configName': config_name, 'bettergiPid': pid,
                         'configLine': config_line, 'line': line_offset + message_index + 1,
                         'text': message, 'evidenceScope': 'startup-block-only',
                     }
+                    if scene_diagnostic is not None:evidence['sceneDiagnostic'] = scene_diagnostic
+                    elif len(nonempty)>2:
+                        try:from .startup_scene_diagnostic import parse_startup_exception_diagnostic
+                        except ImportError:from startup_scene_diagnostic import parse_startup_exception_diagnostic
+                        exception_diagnostic=parse_startup_exception_diagnostic(nonempty[2][1])
+                        if exception_diagnostic is not None:evidence['guardDiagnostic']=exception_diagnostic
+                    return evidence
         line_offset += len(lines)
     return None
 
@@ -2668,8 +2633,6 @@ def execute(args, host=None):
                     owned_game_pids.update(observed_game_pids())
                     game_first_seen_elapsed = 0.0 if game_seen else None
                     graphics_last_check_elapsed = None
-                    hot_switch_attempt_count = 0
-                    hot_switch_last_elapsed = None
                     termination = 'exited'
                     termination_error = None
                     while True:
@@ -2871,21 +2834,6 @@ def execute(args, host=None):
                             atomic_json(directory / 'combat-rehearsal-report.json', analysis['combatRehearsalReport'])
                         result['warnings'] = list(dict.fromkeys(
                             persistent_warnings + log_warnings + analysis.get('warnings', [])))
-
-                        if (game_seen and current_game_pids
-                                and game_first_seen_elapsed is not None
-                                and elapsed - game_first_seen_elapsed >= 45
-                                and '当前不在游戏主界面' in text
-                                and not any(task.get('elapsedSec') is not None
-                                            for task in performance.get('tasks', []))
-                                and hot_switch_attempt_count < 2
-                                and (hot_switch_last_elapsed is None
-                                     or elapsed - hot_switch_last_elapsed >= 30)):
-                            hot_switch_attempt_count += 1
-                            hot_switch_last_elapsed = elapsed
-                            if hasattr(host, 'hot_switch_game_input') and host.hot_switch_game_input(current_game_pids):
-                                result['notes'].append(
-                                    f'已在前台执行一次性鼠标点击，触发游戏从手柄热切换回键鼠模式（第 {hot_switch_attempt_count} 次）。')
 
                         if (graphics_check_only
                                 and any(task.get('elapsedSec') is not None
@@ -3194,6 +3142,14 @@ def execute(args, host=None):
                                     result.get('bettergiPidsClosed', []) + closed))
                     except Exception as bgi_error:
                         result['warnings'].append('按配置关闭 BetterGI 失败：' + str(bgi_error))
+                # Process shutdown can finish during the graphics-restoration wait.
+                # Publish a final observation, not the earlier pre-cleanup sample.
+                if cfg is not None and owned_process is not None:
+                    try:
+                        result['gameStillRunning'] = bool(observed_game_pids())
+                    except Exception:
+                        result['gameStillRunning'] = None
+                        result['warnings'].append('收尾后无法核实游戏进程是否仍在运行。')
                 result.update(finishedAt=utc_now(), exitCode=code)
                 publish(root, directory, result, current=not args.dry_run)
     except WorkflowError as exc:

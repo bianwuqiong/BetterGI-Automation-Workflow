@@ -1,0 +1,1050 @@
+diff --git a/BetterGenshinImpact/Service/ScriptService.cs b/BetterGenshinImpact/Service/ScriptService.cs
+--- a/BetterGenshinImpact/Service/ScriptService.cs
++++ b/BetterGenshinImpact/Service/ScriptService.cs
+@@ -621,14 +621,20 @@
+         var clock = TimeProvider.System;
+         var startTimestamp = clock.GetTimestamp();
+         var cancellationToken = CancellationContext.Instance.Cts.Token;
++        using var startupOwner=waitForMainUi?await StartupReadinessOwner.AcquireAsync(cancellationToken):null;
++        using var startupTriggerSuppression=startupOwner is null?null:
++            await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(startupOwner,
++                StartupReadinessGate.DefaultTimeout-clock.GetElapsedTime(startTimestamp),cancellationToken);
+         // 没启动时候，启动截图器
+         var homePageViewModel = App.GetService<HomePageViewModel>();
+         if (!homePageViewModel!.TaskDispatcherEnabled)
+         {
++            cancellationToken.ThrowIfCancellationRequested();startupOwner?.AssertOwnership();
+             await homePageViewModel.OnStartTriggerAsync();
+         }
+ 
+         cancellationToken.ThrowIfCancellationRequested();
++        startupOwner?.AssertOwnership();
+         if (!homePageViewModel.TaskDispatcherEnabled)
+         {
+             throw new InvalidOperationException("原神窗口或截图器未启动，禁止执行任务节点");
+@@ -639,9 +645,7 @@
+             await Task.Run(async () =>
+             {
+                 var first = true;
+-                var lastHotSwitchClick = TimeSpan.MinValue;
+                 var nextProgress = TimeSpan.Zero;
+-                var hotSwitchAttempts = 0;
+                 var capturedFrames = 0;
+                 var width = 0;
+                 var height = 0;
+@@ -650,29 +654,57 @@
+                 var mainUi = false;
+                 var closableUi = false;
+                 var domain = false;
+-                const int maxHotSwitchAttempts = 20;
+-                var hotSwitchInitialDelay = TimeSpan.FromSeconds(20);
+-                var hotSwitchRetryInterval = TimeSpan.FromSeconds(15);
++                StartupSceneObservation? lastScene=null;
++                void RecordBlock(StartupSceneDecision decision)
++                {
++                    var receipt=new{schemaVersion=1,method="startup_readonly_scene_block_v1",reason=decision.Reason,scene=decision.Scene,
++                        elapsedMilliseconds=(long)clock.GetElapsedTime(startTimestamp).TotalMilliseconds,
++                        automaticTriggersSuppressed=TaskTriggerDispatcher.StartupTriggersSuppressed,startupOwnerSource=startupOwner?.Source,
++                        wakeInputAttempts=0,nodeExecutionAllowed=false,nativeObservation=lastScene};
++                    TaskControl.Logger.LogWarning("[AUTOGAME_STARTUP_BLOCK] {Payload}",Newtonsoft.Json.JsonConvert.SerializeObject(receipt,
++                        new Newtonsoft.Json.JsonSerializerSettings{ContractResolver=new Newtonsoft.Json.Serialization.CamelCasePropertyNamesContractResolver()}));
++                }
++                BetterGenshinImpact.GameTask.Model.Area.ImageRegion CaptureStartupFrame()
++                {
++                    try{return TaskControl.CaptureToRectArea();}
++                    catch(Exception ex) when(ex is not OperationCanceledException)
++                    {
++                        var failed=StartupSceneReadinessPolicy.Decide(width,height,false,false,false,false,false,false);
++                        RecordBlock(failed);throw new StartupLocalUserRequiredException(failed.Reason,ex);
++                    }
++                }
+                 try
+                 {
+-                    await StartupReadinessGate.WaitAsync(async (elapsed, token) =>
++                    await StartupReadinessGate.WaitAsync((elapsed, token) =>
+                     {
++                        startupOwner!.AssertOwnership();
++                        lastScene=null;width=0;height=0;mainUi=false;closableUi=false;domain=false;
+                         if (!homePageViewModel.TaskDispatcherEnabled || !TaskContext.Instance().IsInitialized)
+                         {
+-                            return false;
+-                        }
+-
+-                        using var content = TaskControl.CaptureToRectArea();
++                            return Task.FromResult(false);
++                        }
++
++                        using var content = CaptureStartupFrame();
++                        token.ThrowIfCancellationRequested();startupOwner!.AssertOwnership();
+                         capturedFrames++;
+                         width = content.SrcMat.Width;
+                         height = content.SrcMat.Height;
+-                        mainUi = Bv.IsInMainUi(content);
+-                        closableUi = Bv.IsInAnyClosableUi(content);
+-                        domain = Bv.IsInDomain(content);
+-                        if (mainUi || closableUi || domain)
+-                        {
+-                            return true;
+-                        }
++                        var observedAt=clock.GetUtcNow().ToUnixTimeMilliseconds();
++                        try{lastScene=StartupSceneReadOnlyObserver.Read(content,observedAt);}
++                        catch(Exception ex) when(ex is not OperationCanceledException)
++                        {
++                            var failed=StartupSceneReadinessPolicy.Decide(width,height,false,false,false,false,false,false);
++                            RecordBlock(failed);throw new StartupLocalUserRequiredException(failed.Reason,ex);
++                        }
++                        token.ThrowIfCancellationRequested();startupOwner.AssertOwnership();
++                        mainUi=lastScene.MainUi;closableUi=lastScene.ClosableUi;domain=lastScene.Domain;
++                        var sceneDecision=StartupSceneReadinessPolicy.Decide(width,height,true,mainUi,closableUi,domain,
++                            lastScene.DialogueVisible,lastScene.ChoiceVisible);
++                        if(sceneDecision.RequiresLocalUser)
++                        {
++                            RecordBlock(sceneDecision);throw new StartupLocalUserRequiredException(sceneDecision.Reason);
++                        }
++                        if(sceneDecision.Ready){startupOwner.AssertOwnership();return Task.FromResult(true);}
+ 
+                         if (first)
+                         {
+@@ -697,54 +729,23 @@
+                             nextProgress = elapsed + TimeSpan.FromSeconds(15);
+                         }
+ 
+-                        // 若游戏处于手柄操作模式，主界面 UI 为手柄按键提示，导致视觉识别无法命中主界面。
+-                        // 在等待超过 20 秒且仍未进入主界面时，自动激活游戏前台并在窗口中心执行鼠标点击与微移，
+-                        // 触发原神内置的键鼠操控模式热切换。总期限优先于点击重试次数。
+-                        if (elapsed >= hotSwitchInitialDelay &&
+-                            (lastHotSwitchClick == TimeSpan.MinValue || elapsed - lastHotSwitchClick >= hotSwitchRetryInterval) &&
+-                            hotSwitchAttempts < maxHotSwitchAttempts)
+-                        {
+-                            var gameHandle = TaskContext.Instance().GameHandle;
+-                            if (gameHandle != IntPtr.Zero)
+-                            {
+-                                hotSwitchAttempts++;
+-                                lastHotSwitchClick = elapsed;
+-                                TaskControl.Logger.LogInformation(
+-                                    "启动等待中尝试前台鼠标点击（第 {Attempt}/{MaxAttempts} 次，等待已进行 {Elapsed:F0}s），以触发原神键鼠模式热切换与唤醒焦点",
+-                                    hotSwitchAttempts, maxHotSwitchAttempts, elapsed.TotalSeconds);
+-
+-                                try
+-                                {
+-                                    if (SystemControl.ActivateWindow(gameHandle))
+-                                    {
+-                                        await Task.Delay(200, token);
+-                                        token.ThrowIfCancellationRequested();
+-                                        if (clock.GetElapsedTime(startTimestamp) >= StartupReadinessGate.DefaultTimeout)
+-                                        {
+-                                            return false;
+-                                        }
+-                                        SystemControl.ClickWindowCenterWithoutMovingCursor(gameHandle);
+-                                    }
+-                                }
+-                                catch (Exception ex) when (ex is not OperationCanceledException)
+-                                {
+-                                    TaskControl.Logger.LogWarning("尝试键鼠热切换点击时异常: {Message}", ex.Message);
+-                                }
+-                            }
+-                        }
+-
+-                        return false;
++                        // No unproven unknown page permits a center click, focus wake or dialogue action.
++                        return Task.FromResult(false);
+                     }, clock, startTimestamp, StartupReadinessGate.DefaultTimeout, cancellationToken);
++                    cancellationToken.ThrowIfCancellationRequested();startupOwner!.AssertOwnership();
+                     TaskControl.Logger.LogInformation("检测到已进入主界面或可交互UI，结束启动等待");
+                 }
+-                catch (TimeoutException)
+-                {
++                catch (TimeoutException ex)
++                {
++                    var blocked=StartupSceneReadinessPolicy.Decide(width,height,true,mainUi,closableUi,domain,
++                        lastScene?.DialogueVisible??false,lastScene?.ChoiceVisible??false,deadlineExpired:true);
++                    RecordBlock(blocked);
+                     TaskControl.Logger.LogError(
+                         "启动等待超时，禁止执行任务节点：总耗时={Elapsed:F1}s，模式={Mode}，截图器={Dispatcher}，上下文={Initialized}，尺寸={Width}x{Height}，帧数={Frames}，像素均值={Mean}，标准差={Deviation}，主UI={MainUi}，可关闭UI={ClosableUi}，秘境={Domain}，点击次数={Attempts}。请检查启动前 BitBlt 兼容设置、捕获帧和 UI 模板；本日志不保存图像。",
+                         clock.GetElapsedTime(startTimestamp).TotalSeconds, homePageViewModel.Config.CaptureMode,
+                         homePageViewModel.TaskDispatcherEnabled, TaskContext.Instance().IsInitialized,
+-                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, hotSwitchAttempts);
+-                    throw;
++                        width, height, capturedFrames, pixelMean, pixelDeviation, mainUi, closableUi, domain, 0);
++                    throw new StartupLocalUserRequiredException(blocked.Reason,ex);
+                 }
+             }, cancellationToken);
+         }
+@@ -763,6 +764,7 @@
+                 try
+                 {
+                     await pendingUpdate.WaitAsync(remaining, cancellationToken);
++                    cancellationToken.ThrowIfCancellationRequested();startupOwner!.AssertOwnership();
+                 }
+                 catch (TimeoutException)
+                 {
+@@ -776,5 +778,8 @@
+             }
+             ScriptRepoUpdater.Instance.CommandLineAutoUpdateTask = null;
+         }
++        cancellationToken.ThrowIfCancellationRequested();startupOwner?.AssertOwnership();
++        if(waitForMainUi&&clock.GetElapsedTime(startTimestamp)>=StartupReadinessGate.DefaultTimeout)
++            throw new StartupLocalUserRequiredException("startup_requires_local_user_unknown_scene");
+     }
+ }
+diff --git a/BetterGenshinImpact/GameTask/TaskTriggerDispatcher.cs b/BetterGenshinImpact/GameTask/TaskTriggerDispatcher.cs
+--- a/BetterGenshinImpact/GameTask/TaskTriggerDispatcher.cs
++++ b/BetterGenshinImpact/GameTask/TaskTriggerDispatcher.cs
+@@ -11,6 +11,7 @@
+ using System.IO;
+ using System.Linq;
+ using System.Threading;
++using System.Threading.Tasks;
+ using System.Windows;
+ using BetterGenshinImpact.GameTask.Common.BgiVision;
+ using BetterGenshinImpact.GameTask.GameLoading;
+@@ -45,6 +46,92 @@
+         private DateTime _prevManualGc = DateTime.MinValue;
+ 
+         private static readonly object _triggerListLocker = new();
++        private static int _startupTriggerSuppressions;
++        private static long _startupTriggerEpoch;
++
++        internal static long StartupTriggerEpoch=>Interlocked.Read(ref _startupTriggerEpoch);
++        internal static bool StartupTriggersSuppressed=>Volatile.Read(ref _startupTriggerSuppressions)>0;
++        internal static bool StartupTickAllowed(long epoch)=>!StartupTriggersSuppressed&&epoch==StartupTriggerEpoch;
++
++        internal static async Task<IDisposable> SuspendAutomaticTriggersForStartupAsync(StartupReadinessOwner owner,TimeSpan remaining,CancellationToken token)
++        {
++            owner.AssertOwnership();token.ThrowIfCancellationRequested();
++            if(remaining<=TimeSpan.Zero)throw new StartupLocalUserRequiredException("startup_requires_local_user_automatic_trigger_drain_timeout");
++            var nativeHold=owner.RetainUntilActualDrain();
++            Interlocked.Increment(ref _startupTriggerSuppressions);
++            Interlocked.Increment(ref _startupTriggerEpoch);
++            var lease=new StartupTriggerSuppression();
++            Task<bool> barrier;
++            try
++            {
++                // Never attach the caller's cancellation token to creation of the actual drain barrier.
++                barrier=Task.Run(()=>{lock(_locker){return true;}});
++            }
++            catch(Exception ex)
++            {
++                TaskControl.Logger.LogError(ex,"[AUTOGAME_STARTUP_DRAIN_GUARD] barrier_creation_failed_guard_retained");
++                throw new StartupLocalUserRequiredException("startup_requires_local_user_automatic_trigger_drain_failed",ex);
++            }
++            try
++            {
++                // Drain the whole synchronous Tick/OnCapture call without blocking the UI thread.
++                // _locker is static, so newly created dispatchers share this same suppression and drain.
++                if(!await barrier.WaitAsync(remaining,token))throw new InvalidOperationException("actual_startup_tick_drain_barrier_not_proved");
++                token.ThrowIfCancellationRequested();owner.AssertOwnership();
++                return new StartupSuppressionLifetime(barrier,lease,owner,nativeHold);
++            }
++            catch(TimeoutException ex)
++            {
++                _=CompleteStartupDrainAfterAbort(barrier,lease,owner,nativeHold);
++                throw new StartupLocalUserRequiredException("startup_requires_local_user_automatic_trigger_drain_timeout",ex);
++            }
++            catch(OperationCanceledException)
++            {
++                _=CompleteStartupDrainAfterAbort(barrier,lease,owner,nativeHold);throw;
++            }
++            catch(Exception ex)
++            {
++                _=CompleteStartupDrainAfterAbort(barrier,lease,owner,nativeHold);
++                if(ex is StartupLocalUserRequiredException)throw;
++                throw new StartupLocalUserRequiredException("startup_requires_local_user_automatic_trigger_drain_failed",ex);
++            }
++        }
++        private static async Task CompleteStartupDrainAfterAbort(Task<bool> barrier,IDisposable suppression,StartupReadinessOwner owner,IDisposable nativeHold)
++        {
++            try
++            {
++                // Faulted/canceled/completed status is insufficient: only the true result after acquiring the static Tick lock proves drain.
++                if(!await barrier.ConfigureAwait(false))throw new InvalidOperationException("actual_startup_tick_drain_barrier_not_proved");
++                owner.MarkStartupOperationQuiescent();
++                await owner.RestoreAfterInheritedRunnerCleanupAsync(suppression.Dispose).ConfigureAwait(false);
++                nativeHold.Dispose();
++                TaskControl.Logger.LogInformation("[AUTOGAME_STARTUP_DRAIN_GUARD] actual_drain_completed_guard_restored");
++            }
++            catch(Exception ex)
++            {
++                // Retain the real semaphore and suppression rather than admit another task over an unproved old input call.
++                TaskControl.Logger.LogError(ex,"[AUTOGAME_STARTUP_DRAIN_GUARD] actual_drain_failed_guard_retained");
++            }
++        }
++        private sealed class StartupSuppressionLifetime(Task<bool> barrier,IDisposable suppression,StartupReadinessOwner owner,IDisposable nativeHold):IDisposable
++        {
++            private int active=1;
++            public void Dispose()
++            {
++                if(Interlocked.Exchange(ref active,0)==1)_=CompleteStartupDrainAfterAbort(barrier,suppression,owner,nativeHold);
++            }
++        }
++        private sealed class StartupTriggerSuppression : IDisposable
++        {
++            private int active=1;
++            public void Dispose()
++            {
++                if(Interlocked.Exchange(ref active,0)!=1)return;
++                // Epoch invalidates every Tick that began before/during suppression, even after restoration.
++                Interlocked.Increment(ref _startupTriggerEpoch);
++                Interlocked.Decrement(ref _startupTriggerSuppressions);
++            }
++        }
+ 
+         private User32.HWINEVENTHOOK _winEventHookMoveSize;
+         private User32.HWINEVENTHOOK _winEventHookLocation;
+@@ -216,6 +303,7 @@
+ 
+         public void Tick(object? sender, EventArgs e)
+         {
++            var startupEpoch=StartupTriggerEpoch;
+             var hasLock = false;
+             var tickMetrics = new DispatcherTickMetrics();
+             try
+@@ -228,6 +316,7 @@
+                     // 正在执行时跳过
+                     return;
+                 }
++                if(!StartupTickAllowed(startupEpoch))return;
+ 
+                 // 检查截图器是否初始化
+                 var maskWindow = MaskWindow.Instance();
+@@ -397,6 +486,7 @@
+ 
+                 lock (_triggerListLocker)
+                 {
++                    if(!StartupTickAllowed(startupEpoch))return;
+                     var needRunTriggers = new List<ITaskTrigger>(); // 最终要执行的触发器列表
+                     var exclusiveTrigger = _triggers!.FirstOrDefault(t => t is { IsEnabled: true, IsExclusive: true });
+                     if (exclusiveTrigger != null)
+@@ -426,6 +516,7 @@
+ 
+                         foreach (var trigger in needRunTriggers)
+                         {
++                            if(!StartupTickAllowed(startupEpoch))return;
+                             if ((PrevGameUiCategory != content.CurrentGameUiCategory || (DateTime.Now - PrevGameUiChangeTime).TotalSeconds <= 30) // UI变化了后的30s内则所有触发器执行一遍
+                                 || trigger.SupportedGameUiCategory == content.CurrentGameUiCategory)
+                             {
+diff --git a/BetterGenshinImpact/GameTask/TaskRunner.cs b/BetterGenshinImpact/GameTask/TaskRunner.cs
+--- a/BetterGenshinImpact/GameTask/TaskRunner.cs
++++ b/BetterGenshinImpact/GameTask/TaskRunner.cs
+@@ -12,6 +12,7 @@
+ using Wpf.Ui.Violeta.Controls;
+ using static BetterGenshinImpact.GameTask.Common.TaskControl;
+ using BetterGenshinImpact.Service;
++using BetterGenshinImpact.GameTask.Common;
+ using BetterGenshinImpact.Service.Notification;
+ using BetterGenshinImpact.Service.Notification.Model.Enum;
+ using BetterGenshinImpact.ViewModel;
+@@ -26,10 +27,128 @@
+     internal sealed class OwnedScope
+     {
+         private int active=1;internal bool IsActive=>Volatile.Read(ref active)==1;
+-        internal void Invalidate()=>Interlocked.Exchange(ref active,0);
++        private readonly object releaseGate=new();
++        private SemaphoreSlim? nativeSemaphore;
++        private int retained;
++        private int blockingRetained;
++        private bool releaseRequested;
++        private Action? cleanup;
++        private bool cleanupStarted;
++        private bool cleanupFinished;
++        private readonly TaskCompletionSource cleanupCompletion=new(TaskCreationOptions.RunContinuationsAsynchronously);
++        // Retained for the pre-existing anonymous lifetime tests; this inert scope owns no native semaphore.
++        internal OwnedScope(){}
++        private OwnedScope(SemaphoreSlim semaphore)=>nativeSemaphore=semaphore;
++        internal bool HasNativeSemaphore=>Volatile.Read(ref nativeSemaphore) is not null;
++        internal Task CleanupCompletion=>cleanupCompletion.Task;
++        internal static async Task<OwnedScope?> AcquireAsync()=>await TaskSemaphore.WaitAsync(0)?new(TaskSemaphore):null;
++        internal void Invalidate(){lock(releaseGate){Interlocked.Exchange(ref active,0);}}
++        internal SemaphoreRetention RetainSemaphore()
++        {
++            lock(releaseGate)
++            {
++                if(!IsActive||releaseRequested||nativeSemaphore is null||nativeSemaphore.CurrentCount!=0)
++                    throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
++                retained++;blockingRetained++;
++                return new SemaphoreRetention(this);
++            }
++        }
++        internal void RequestSemaphoreRelease()=>CloseWithCleanup(()=>{});
++        internal void CloseWithCleanup(Action actualCleanup)
++        {
++            Action? run;
++            lock(releaseGate)
++            {
++                if(releaseRequested)return;
++                Interlocked.Exchange(ref active,0);releaseRequested=true;cleanup=actualCleanup;
++                run=TakeCleanupIfQuiescent();
++            }
++            // Preserve ordinary synchronous cleanup when no startup operation remains.
++            if(run is not null)RunCleanup(run);
++        }
++        private Action? TakeCleanupIfQuiescent()
++        {
++            if(!releaseRequested||blockingRetained!=0||cleanupStarted)return null;
++            cleanupStarted=true;return cleanup;
++        }
++        private void RunCleanup(Action actualCleanup)
++        {
++            try
++            {
++                actualCleanup();
++                lock(releaseGate){cleanupFinished=true;cleanupCompletion.TrySetResult();ReleaseIfUnretained();}
++            }
++            catch(Exception ex)
++            {
++                lock(releaseGate)
++                {
++                    // Ordinary cleanup failure must not leak the task semaphore. A retained startup guard remains fail-closed.
++                    if(retained==0){cleanupFinished=true;ReleaseIfUnretained();}
++                    cleanupCompletion.TrySetException(ex);
++                }
++                TaskControl.Logger.LogError(ex,"[AUTOGAME_STARTUP_DRAIN_GUARD] runner_cleanup_failed_retained_only_for_startup_guard");
++                throw;
++            }
++        }
++        private void MarkOperationQuiescent()
++        {
++            Action? run;
++            lock(releaseGate)
++            {
++                if(blockingRetained<=0)throw new InvalidOperationException("native_task_operation_retention_underflow");
++                blockingRetained--;run=TakeCleanupIfQuiescent();
++            }
++            if(run is not null)_=Task.Run(()=>{try{RunCleanup(run);}catch{/* The completion task retains the failure and real semaphore. */}});
++        }
++        internal async Task RestoreStartupAfterCleanupAsync(Action restore)
++        {
++            while(true)
++            {
++                Task wait;
++                lock(releaseGate)
++                {
++                    // Serialize restoration against close/invalidation. A later close uses the ordinary path.
++                    if(IsActive||cleanupFinished){restore();return;}
++                    wait=cleanupCompletion.Task;
++                }
++                await wait.ConfigureAwait(false);
++            }
++        }
++        private void ReleaseIfUnretained()
++        {
++            if(!releaseRequested||!cleanupFinished||retained!=0||nativeSemaphore is null)return;
++            var actual=nativeSemaphore;nativeSemaphore=null;actual.Release();
++        }
++        private void EndRetention()
++        {
++            lock(releaseGate)
++            {
++                if(retained<=0)throw new InvalidOperationException("native_task_semaphore_retention_underflow");
++                retained--;ReleaseIfUnretained();
++            }
++        }
++        internal sealed class SemaphoreRetention : IDisposable
++        {
++            private int active=1;
++            private int operationActive=1;
++            internal OwnedScope Scope{get;}
++            internal SemaphoreRetention(OwnedScope scope)=>Scope=scope;
++            internal void MarkOperationQuiescent(){if(Interlocked.Exchange(ref operationActive,0)==1)Scope.MarkOperationQuiescent();}
++            public void Dispose()
++            {
++                if(Interlocked.Exchange(ref active,0)!=1)return;
++                MarkOperationQuiescent();Scope.EndRetention();
++            }
++        }
+     }
+     private static readonly AsyncLocal<OwnedScope?> OwnedSemaphoreScope=new();
+-    internal static bool HasOwnedSemaphore=>OwnedSemaphoreScope.Value is {IsActive:true}&&TaskSemaphore.CurrentCount==0;
++    internal static bool HasInheritedSemaphoreScope=>OwnedSemaphoreScope.Value is not null;
++    internal static bool HasOwnedSemaphore=>OwnedSemaphoreScope.Value is {IsActive:true,HasNativeSemaphore:true}&&TaskSemaphore.CurrentCount==0;
++    internal static OwnedScope.SemaphoreRetention RetainCurrentOwnedSemaphore()
++    {
++        if(!HasOwnedSemaphore)throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
++        return OwnedSemaphoreScope.Value!.RetainSemaphore();
++    }
+     private readonly ILogger<TaskRunner> _logger = App.GetLogger<TaskRunner>();
+ 
+     // private readonly DispatcherTimerOperationEnum _timerOperation = DispatcherTimerOperationEnum.None;
+@@ -55,7 +174,8 @@
+     public async Task RunCurrentAsync(Func<Task> action, bool resetCancellationContext = true, bool clearCancellationContextOnLockFailure = false)
+     {
+         // 加锁
+-        var hasLock = await TaskSemaphore.WaitAsync(0);
++        var ownedScope=await OwnedScope.AcquireAsync();
++        var hasLock=ownedScope is not null;
+         if (!hasLock)
+         {
+             _logger.LogError("任务启动失败：当前存在正在运行中的独立任务，请不要重复执行任务！");
+@@ -67,7 +187,7 @@
+         }
+         try
+         {
+-            OwnedSemaphoreScope.Value=new OwnedScope();
++            OwnedSemaphoreScope.Value=ownedScope;
+             _logger.LogInformation("→ {Text}", _name + "任务启动！");
+ 
+             // 初始化
+@@ -108,18 +228,13 @@
+         }
+         finally
+         {
+-            OwnedSemaphoreScope.Value?.Invalidate();OwnedSemaphoreScope.Value=null;
+-            End();
+-            _logger.LogInformation("→ {Text}", _name + "任务结束");
+-
+-            CancellationContext.Instance.Clear();
+-            RunnerContext.Instance.Clear();
+-
+-            // 释放锁
+-            if (hasLock)
+-            {
+-                TaskSemaphore.Release();
+-            }
++            ownedScope!.Invalidate();OwnedSemaphoreScope.Value=null;
++            ownedScope.CloseWithCleanup(()=>{
++                End();
++                _logger.LogInformation("→ {Text}", _name + "任务结束");
++                CancellationContext.Instance.Clear();
++                RunnerContext.Instance.Clear();
++            });
+         }
+     }
+ 
+diff --git a/BetterGenshinImpact/Service/StartupReadinessOwner.cs b/BetterGenshinImpact/Service/StartupReadinessOwner.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/Service/StartupReadinessOwner.cs
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: actual startup ownership from the existing native task semaphore.
++using System;
++using System.Threading;
++using System.Threading.Tasks;
++using BetterGenshinImpact.GameTask;
++using BetterGenshinImpact.GameTask.Common;
++
++namespace BetterGenshinImpact.Service;
++
++internal sealed class StartupReadinessOwner : IDisposable
++{
++    private SemaphoreSlim? acquiredSemaphore;
++    private TaskRunner.OwnedScope.SemaphoreRetention? inheritedRetention;
++    private readonly object closeGate=new();
++    private int deferredDrains;
++    private int active=1;
++    private readonly string source;
++    private StartupReadinessOwner(SemaphoreSlim semaphore){acquiredSemaphore=semaphore;source="actual_startup_TaskSemaphore_lease";}
++    private StartupReadinessOwner(TaskRunner.OwnedScope.SemaphoreRetention retention){inheritedRetention=retention;source="existing_TaskRunner_owned_TaskSemaphore";}
++    internal string Source=>source;
++    internal bool HasOwnership=>Volatile.Read(ref active)==1&&TaskControl.TaskSemaphore.CurrentCount==0&&
++        (acquiredSemaphore is not null||inheritedRetention?.Scope is {IsActive:true,HasNativeSemaphore:true});
++    internal static async Task<StartupReadinessOwner> AcquireAsync(CancellationToken token)
++    {
++        token.ThrowIfCancellationRequested();
++        if(TaskRunner.HasInheritedSemaphoreScope)return new(TaskRunner.RetainCurrentOwnedSemaphore());
++        if(!await TaskControl.TaskSemaphore.WaitAsync(0,token))
++            throw new StartupLocalUserRequiredException("startup_requires_local_user_concurrent_task");
++        return new(TaskControl.TaskSemaphore);
++    }
++    internal void AssertOwnership()
++    {
++        if(!HasOwnership)throw new StartupLocalUserRequiredException("startup_requires_local_user_startup_owner_lost");
++    }
++    public void Dispose()
++    {
++        Interlocked.Exchange(ref active,0);
++        lock(closeGate){ReleaseNativeIfClosed();}
++    }
++    internal IDisposable RetainUntilActualDrain()
++    {
++        lock(closeGate)
++        {
++            AssertOwnership();deferredDrains++;
++            return new DeferredDrainHold(this);
++        }
++    }
++    internal void MarkStartupOperationQuiescent()=>inheritedRetention?.MarkOperationQuiescent();
++    internal Task RestoreAfterInheritedRunnerCleanupAsync(Action restore)
++    {
++        var inherited=inheritedRetention;
++        if(inherited is not null)return inherited.Scope.RestoreStartupAfterCleanupAsync(restore);
++        restore();return Task.CompletedTask;
++    }
++    private void ReleaseNativeIfClosed()
++    {
++        if(Volatile.Read(ref active)!=0||deferredDrains!=0)return;
++        if(acquiredSemaphore is {} actual){acquiredSemaphore=null;actual.Release();}
++        inheritedRetention?.Dispose();inheritedRetention=null;
++    }
++    private void EndDeferredDrain()
++    {
++        lock(closeGate)
++        {
++            if(deferredDrains<=0)throw new InvalidOperationException("native_startup_drain_retention_underflow");
++            deferredDrains--;ReleaseNativeIfClosed();
++        }
++    }
++    private sealed class DeferredDrainHold(StartupReadinessOwner owner):IDisposable
++    {
++        private int active=1;
++        public void Dispose(){if(Interlocked.Exchange(ref active,0)==1)owner.EndDeferredDrain();}
++    }
++}
++
++public sealed class StartupLocalUserRequiredException : InvalidOperationException
++{
++    public string Reason{get;}
++    public StartupLocalUserRequiredException(string reason,Exception? inner=null)
++        :base(reason+": 启动页面未核验；请在本机手动返回可交互世界后再运行。未发送唤醒点击或执行任务节点。",inner)=>Reason=reason;
++}
+diff --git a/BetterGenshinImpact/Service/StartupSceneReadOnlyObserver.cs b/BetterGenshinImpact/Service/StartupSceneReadOnlyObserver.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/Service/StartupSceneReadOnlyObserver.cs
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: observe existing upstream dialogue templates without AutoSkip actions.
++using BetterGenshinImpact.Core.Recognition;
++using BetterGenshinImpact.GameTask.Common.BgiVision;
++using BetterGenshinImpact.GameTask.Model.Area;
++using OpenCvSharp;
++
++namespace BetterGenshinImpact.Service;
++
++public sealed record StartupTemplateObservation(string Task,string Object,Rect Region,double Threshold,
++    bool Matched,double? MatchScore,Rect? MatchBounds);
++public sealed record StartupSceneObservation(long ObservedAt,int Width,int Height,bool MainUi,bool ClosableUi,bool Domain,
++    bool DialogueVisible,bool ChoiceVisible,StartupTemplateObservation[] Templates)
++{
++    public string Method=>"existing_upstream_dialogue_and_choice_templates_readonly_v1";
++    public bool InputSent=>false;
++    public bool NativePngRetained=>false;
++}
++
++internal static class StartupSceneReadOnlyObserver
++{
++    private static StartupTemplateObservation Match(ImageRegion frame,string name)
++    {
++        var definition=RecognitionAssets.Get("AutoSkip",name,frame.Width,frame.Height);
++        using var found=frame.Find(definition);
++        bool matched=found.IsExist();
++        return new("AutoSkip",name,definition.RegionOfInterest,definition.Threshold,matched,
++            matched?found.MatchScore:null,matched?new Rect(found.X,found.Y,found.Width,found.Height):null);
++    }
++    internal static StartupSceneObservation Read(ImageRegion frame,long at)
++    {
++        // Same DisabledUiButton predicate used by Bv.IsInTalkUi; same OptionIcon lookup as AutoSkip.HasDialogueOption.
++        // Deliberately never instantiate a trigger, choose an option, OCR story text or invoke AutoSkip.Start.
++        var dialogue=Match(frame,"DisabledUiButton");var choice=Match(frame,"OptionIcon");
++        return new(at,frame.Width,frame.Height,Bv.IsInMainUi(frame),Bv.IsInAnyClosableUi(frame),Bv.IsInDomain(frame),
++            dialogue.Matched,choice.Matched,[dialogue,choice]);
++    }
++}
+diff --git a/BetterGenshinImpact/Service/StartupSceneReadinessPolicy.cs b/BetterGenshinImpact/Service/StartupSceneReadinessPolicy.cs
+new file mode 100644
+--- /dev/null
++++ b/BetterGenshinImpact/Service/StartupSceneReadinessPolicy.cs
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: read-only startup scene policy; unknown pages never authorize wake input.
++namespace BetterGenshinImpact.Service;
++
++public sealed record StartupSceneDecision(string Scene,bool Ready,bool RequiresLocalUser,string Reason)
++{
++    public bool WakeInputAllowed => false;
++}
++
++public static class StartupSceneReadinessPolicy
++{
++    public static StartupSceneDecision Decide(int width,int height,bool observationComplete,
++        bool mainUi,bool closableUi,bool domain,bool dialogueVisible,bool choiceVisible,bool deadlineExpired=false)
++    {
++        if(!observationComplete||width<=0||height<=0)
++            return new("observation_failed",false,true,"startup_requires_local_user_scene_observation_failed");
++        // Dialogue/choice wins over a coincident generic X, domain or main-UI match.
++        if(choiceVisible)return new("dialogue_choice",false,true,"startup_requires_local_user_dialogue_choice");
++        if(dialogueVisible)return new("dialogue",false,true,"startup_requires_local_user_dialogue");
++        if(deadlineExpired)return new("unknown",false,true,"startup_requires_local_user_unknown_scene");
++        if(mainUi)return new("main_ui",true,false,"verified_existing_main_ui");
++        if(closableUi)return new("closable_ui",true,false,"verified_existing_closable_ui");
++        if(domain)return new("domain",true,false,"verified_existing_domain");
++        return new("unknown",false,false,"startup_unknown_scene_waiting_readonly");
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupSceneReadinessPolicyTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupSceneReadinessPolicyTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupSceneReadinessPolicyTests.cs
+@@ -0,0 +1,63 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: anonymous startup scenes; no game, story input or OCR model is invoked.
++using BetterGenshinImpact.Service;
++
++namespace BetterGenshinImpact.UnitTest.ServiceTests;
++
++public sealed class StartupSceneReadinessPolicyTests
++{
++    [Theory]
++    [InlineData(true,false,false,"main_ui")]
++    [InlineData(false,true,false,"closable_ui")]
++    [InlineData(false,false,true,"domain")]
++    public void ExistingVerifiedUiIsReadyWithoutWakeInput(bool main,bool close,bool domain,string scene)
++    {
++        var decision=StartupSceneReadinessPolicy.Decide(1920,1080,true,main,close,domain,false,false);
++        Assert.True(decision.Ready);Assert.False(decision.RequiresLocalUser);Assert.False(decision.WakeInputAllowed);
++        Assert.Equal(scene,decision.Scene);
++    }
++    [Theory]
++    [InlineData(false,false,false)]
++    [InlineData(true,false,false)]
++    [InlineData(false,true,false)]
++    [InlineData(false,false,true)]
++    [InlineData(true,true,true)]
++    public void DialogueOverridesEveryPositiveGenericReadyMatch(bool main,bool close,bool domain)
++    {
++        var decision=StartupSceneReadinessPolicy.Decide(1920,1080,true,main,close,domain,true,false);
++        Assert.False(decision.Ready);Assert.True(decision.RequiresLocalUser);Assert.False(decision.WakeInputAllowed);
++        Assert.Equal("startup_requires_local_user_dialogue",decision.Reason);
++    }
++    [Theory]
++    [InlineData(false)]
++    [InlineData(true)]
++    public void ChoiceBlocksWithoutRequiringTheOtherDialogueIcon(bool dialogue)
++    {
++        var decision=StartupSceneReadinessPolicy.Decide(1920,1080,true,true,true,true,dialogue,true);
++        Assert.False(decision.Ready);Assert.True(decision.RequiresLocalUser);Assert.False(decision.WakeInputAllowed);
++        Assert.Equal("startup_requires_local_user_dialogue_choice",decision.Reason);
++    }
++    [Fact] public void UnknownOnlyWaitsReadOnlyThenRequiresLocalUserAtDeadline()
++    {
++        var pending=StartupSceneReadinessPolicy.Decide(1920,1080,true,false,false,false,false,false);
++        Assert.False(pending.Ready);Assert.False(pending.RequiresLocalUser);Assert.False(pending.WakeInputAllowed);
++        var expired=StartupSceneReadinessPolicy.Decide(1920,1080,true,false,false,false,false,false,true);
++        Assert.False(expired.Ready);Assert.True(expired.RequiresLocalUser);Assert.False(expired.WakeInputAllowed);
++        Assert.Equal("startup_requires_local_user_unknown_scene",expired.Reason);
++    }
++    [Theory]
++    [InlineData(0,1080,true)]
++    [InlineData(1920,0,true)]
++    [InlineData(1920,1080,false)]
++    public void IncompleteObservationCannotUseAPositiveReadyClaim(int width,int height,bool complete)
++    {
++        var decision=StartupSceneReadinessPolicy.Decide(width,height,complete,true,true,true,false,false);
++        Assert.False(decision.Ready);Assert.True(decision.RequiresLocalUser);Assert.False(decision.WakeInputAllowed);
++        Assert.Equal("startup_requires_local_user_scene_observation_failed",decision.Reason);
++    }
++    [Fact] public void ExpiredEvaluationCannotAcceptALateReadyMatch()
++    {
++        var decision=StartupSceneReadinessPolicy.Decide(1920,1080,true,true,true,true,false,false,true);
++        Assert.False(decision.Ready);Assert.True(decision.RequiresLocalUser);Assert.False(decision.WakeInputAllowed);
++    }
++}
+diff --git a/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessLeaseTests.cs b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessLeaseTests.cs
+new file mode 100644
+--- /dev/null
++++ b/Test/BetterGenshinImpact.UnitTest/ServiceTests/StartupReadinessLeaseTests.cs
+@@ -0,0 +1,292 @@
++// SPDX-License-Identifier: GPL-3.0-only
++// Modified 2026-10-13: actual native semaphore/suppression lifecycle with fake trigger bodies; no game or UI.
++using System.Collections.Concurrent;
++using System.Reflection;
++using BetterGenshinImpact.GameTask;
++using BetterGenshinImpact.GameTask.Common;
++using BetterGenshinImpact.Service;
++
++namespace BetterGenshinImpact.UnitTest.ServiceTests;
++
++[CollectionDefinition("StartupReadiness32Lease",DisableParallelization=true)]
++public sealed class StartupReadiness32LeaseCollection{}
++
++[Collection("StartupReadiness32Lease")]
++public sealed class StartupReadinessLeaseTests
++{
++    private static object TickLocker=>typeof(TaskTriggerDispatcher).GetField("_locker",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
++    private static AsyncLocal<TaskRunner.OwnedScope?> RunnerAmbient=>
++        (AsyncLocal<TaskRunner.OwnedScope?>)typeof(TaskRunner).GetField("OwnedSemaphoreScope",BindingFlags.Static|BindingFlags.NonPublic)!.GetValue(null)!;
++    private static async Task WaitForRestoration()
++    {
++        var limit=System.Diagnostics.Stopwatch.StartNew();
++        while(TaskTriggerDispatcher.StartupTriggersSuppressed&&limit.Elapsed<TimeSpan.FromSeconds(2))await Task.Delay(5);
++        Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++        while(TaskControl.TaskSemaphore.CurrentCount!=1&&limit.Elapsed<TimeSpan.FromSeconds(2))await Task.Delay(5);
++        Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);
++    }
++    [Fact] public async Task ActualOwnerAndSuspensionPreservePriorTriggerIdentityAndEnabledState()
++    {
++        var prior=GameTaskManager.TriggerDictionary;
++        var trigger=new FakeTrigger();var dictionary=new ConcurrentDictionary<string,ITaskTrigger>();dictionary["anonymous"]=trigger;
++        GameTaskManager.TriggerDictionary=dictionary;
++        try
++        {
++            using(var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None))
++            {
++                Assert.True(owner.HasOwnership);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++                using(var suppression=await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),CancellationToken.None))
++                {
++                    Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++                    Assert.Same(dictionary,GameTaskManager.TriggerDictionary);Assert.Same(trigger,dictionary["anonymous"]);
++                    Assert.True(trigger.IsEnabled);Assert.Equal(0,trigger.Initializations);Assert.Equal(0,trigger.Calls);
++                }
++                Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++                Assert.Same(dictionary,GameTaskManager.TriggerDictionary);Assert.True(trigger.IsEnabled);
++            }
++            Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);
++        }
++        finally{GameTaskManager.TriggerDictionary=prior;}
++    }
++    [Fact] public async Task AForeignBusySemaphoreCannotBecomeStartupOwnership()
++    {
++        await TaskControl.TaskSemaphore.WaitAsync();var epoch=TaskTriggerDispatcher.StartupTriggerEpoch;
++        try
++        {
++            var failure=await Assert.ThrowsAsync<StartupLocalUserRequiredException>(()=>StartupReadinessOwner.AcquireAsync(CancellationToken.None));
++            Assert.Equal("startup_requires_local_user_concurrent_task",failure.Reason);
++            Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(epoch,TaskTriggerDispatcher.StartupTriggerEpoch);
++        }
++        finally{TaskControl.TaskSemaphore.Release();}
++    }
++    [Fact] public async Task CancellationBeforeAcquisitionDoesNotChangeOwnershipOrTriggerGate()
++    {
++        using var canceled=new CancellationTokenSource();canceled.Cancel();var epoch=TaskTriggerDispatcher.StartupTriggerEpoch;
++        await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>StartupReadinessOwner.AcquireAsync(canceled.Token));
++        Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++        Assert.Equal(epoch,TaskTriggerDispatcher.StartupTriggerEpoch);
++    }
++    [Fact] public async Task OldAndSuppressedTickEpochsNeverBecomeAllowedAfterRestoration()
++    {
++        var oldEpoch=TaskTriggerDispatcher.StartupTriggerEpoch;
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var suppression=await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),CancellationToken.None);
++        var suppressedEpoch=TaskTriggerDispatcher.StartupTriggerEpoch;
++        Assert.False(TaskTriggerDispatcher.StartupTickAllowed(oldEpoch));Assert.False(TaskTriggerDispatcher.StartupTickAllowed(suppressedEpoch));
++        suppression.Dispose();var restoredEpoch=TaskTriggerDispatcher.StartupTriggerEpoch;
++        Assert.False(TaskTriggerDispatcher.StartupTickAllowed(oldEpoch));Assert.False(TaskTriggerDispatcher.StartupTickAllowed(suppressedEpoch));
++        Assert.True(TaskTriggerDispatcher.StartupTickAllowed(restoredEpoch));
++        suppression.Dispose();Assert.Equal(restoredEpoch,TaskTriggerDispatcher.StartupTriggerEpoch);
++    }
++    [Fact] public async Task SuspensionDoesNotReturnUntilTheWholeExistingSynchronousTriggerCallFinishes()
++    {
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var finished=0;var trigger=new FakeTrigger(()=>{entered.SetResult();release.Wait();Interlocked.Exchange(ref finished,1);});
++        var tick=Task.Run(()=>{lock(TickLocker){trigger.OnCapture(null!);}});
++        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
++        IDisposable? suspension=null;
++        Task<IDisposable>? pending=null;
++        try
++        {
++            pending=TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),CancellationToken.None);
++            Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++            Assert.NotSame(pending,await Task.WhenAny(pending,Task.Delay(30)));
++            Assert.Equal(0,Volatile.Read(ref finished));
++            release.Set();suspension=await pending.WaitAsync(TimeSpan.FromSeconds(2));
++            Assert.Equal(1,Volatile.Read(ref finished));Assert.Equal(1,trigger.Calls);
++        }
++        finally
++        {
++            release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));
++            if(suspension is null&&pending is not null)suspension=await pending.WaitAsync(TimeSpan.FromSeconds(2));
++            suspension?.Dispose();
++        }
++        Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++    }
++    [Fact] public async Task ExpiredInFlightDrainKeepsSuppressionAndRealSemaphoreUntilTheActualCallFinishes()
++    {
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var tick=Task.Run(()=>{lock(TickLocker){entered.SetResult();release.Wait();}});
++        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));var oldEpoch=TaskTriggerDispatcher.StartupTriggerEpoch;var observations=0;
++        try
++        {
++            var failure=await Assert.ThrowsAsync<StartupLocalUserRequiredException>(async()=>{
++                using var suspension=await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromMilliseconds(10),CancellationToken.None);
++                observations++;
++            });
++            Assert.Equal("startup_requires_local_user_automatic_trigger_drain_timeout",failure.Reason);
++            Assert.Equal(0,observations);Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++            owner.Dispose();Assert.False(owner.HasOwnership);
++            Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++            Assert.False(await TaskControl.TaskSemaphore.WaitAsync(0));
++            Assert.False(TaskTriggerDispatcher.StartupTickAllowed(oldEpoch));
++        }
++        finally{release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));}
++        await WaitForRestoration();
++    }
++    [Fact] public async Task ClosingAReusedActualRunnerContextDoesNotReleaseItsSemaphoreOverAPendingDrain()
++    {
++        var ambient=RunnerAmbient;var prior=ambient.Value;
++        // Use the production real WaitAsync(0) factory, never an inert scope or caller-owned boolean.
++        var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);ambient.Value=runner;
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        Assert.Equal("existing_TaskRunner_owned_TaskSemaphore",owner.Source);
++        using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var tick=Task.Run(()=>{lock(TickLocker){entered.SetResult();release.Wait();}});
++        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
++        try
++        {
++            await Assert.ThrowsAsync<StartupLocalUserRequiredException>(()=>
++                TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromMilliseconds(10),CancellationToken.None));
++            runner!.Invalidate();ambient.Value=null;runner.RequestSemaphoreRelease();owner.Dispose();
++            Assert.False(runner.IsActive);Assert.False(TaskRunner.HasOwnedSemaphore);Assert.False(owner.HasOwnership);
++            Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++            Assert.False(await TaskControl.TaskSemaphore.WaitAsync(0));
++        }
++        finally
++        {
++            runner!.Invalidate();runner.RequestSemaphoreRelease();owner.Dispose();ambient.Value=prior;
++            release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));
++        }
++        await WaitForRestoration();
++    }
++    [Fact] public async Task CanceledAwaitStillRequiresTheUncanceledRealDrainBeforeRestoration()
++    {
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var tick=Task.Run(()=>{lock(TickLocker){entered.SetResult();release.Wait();}});
++        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));using var canceled=new CancellationTokenSource();
++        try
++        {
++            var pending=TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),canceled.Token);
++            canceled.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>pending);
++            owner.Dispose();Assert.False(owner.HasOwnership);Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++            Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);Assert.False(await TaskControl.TaskSemaphore.WaitAsync(0));
++        }
++        finally{release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));}
++        await WaitForRestoration();
++    }
++    [Fact] public async Task ClosedInheritedRealScopeCannotBeRevivedAsFreshStartupOwnership()
++    {
++        var ambient=RunnerAmbient;var prior=ambient.Value;var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);
++        ambient.Value=runner;
++        try
++        {
++            runner!.RequestSemaphoreRelease();Assert.False(TaskRunner.HasOwnedSemaphore);Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);
++            var failure=await Assert.ThrowsAsync<StartupLocalUserRequiredException>(()=>StartupReadinessOwner.AcquireAsync(CancellationToken.None));
++            Assert.Equal("startup_requires_local_user_startup_owner_lost",failure.Reason);
++            Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++        }
++        finally{runner!.RequestSemaphoreRelease();ambient.Value=prior;}
++    }
++    [Fact] public async Task NestedRealRetentionsAndRepeatedCloseReleaseExactlyOnceWithoutRevivingActiveContext()
++    {
++        var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);
++        var first=runner!.RetainSemaphore();var second=runner.RetainSemaphore();
++        try
++        {
++            runner.Invalidate();runner.RequestSemaphoreRelease();runner.RequestSemaphoreRelease();
++            Assert.False(runner.IsActive);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++            Assert.Throws<StartupLocalUserRequiredException>(()=>runner.RetainSemaphore());
++            first.Dispose();first.Dispose();Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++            second.Dispose();second.Dispose();await WaitForRestoration();
++            runner.RequestSemaphoreRelease();Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);
++        }
++        finally{first.Dispose();second.Dispose();runner.RequestSemaphoreRelease();}
++    }
++    [Theory]
++    [InlineData(0)]
++    [InlineData(1)]
++    [InlineData(2)]
++    public async Task FaultedCanceledOrFalseBarrierNeverProvesDrainOrRestoresTheGuard(int kind)
++    {
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var suppression=await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),CancellationToken.None);
++        using var hold=owner.RetainUntilActualDrain();
++        var barrier=kind==1?Task.FromCanceled<bool>(new CancellationToken(true)):kind==2?Task.FromResult(false):
++            Task.FromException<bool>(new InvalidOperationException("anonymous_barrier_failure"));
++        var complete=typeof(TaskTriggerDispatcher).GetMethod("CompleteStartupDrainAfterAbort",BindingFlags.Static|BindingFlags.NonPublic)!;
++        await (Task)complete.Invoke(null,[barrier,suppression,owner,hold])!;
++        owner.Dispose();Assert.False(owner.HasOwnership);
++        Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++        // Test cleanup only: no actual failed barrier is converted into a positive production drain proof.
++        suppression.Dispose();hold.Dispose();await WaitForRestoration();
++    }
++    [Fact] public async Task OrdinaryCleanupRunsSynchronouslyAndReleasesExactlyOnceEvenWhenItThrows()
++    {
++        var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);var calls=0;
++        var failure=Assert.Throws<InvalidOperationException>(()=>runner!.CloseWithCleanup(()=>{
++            calls++;Assert.False(runner.IsActive);Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++            throw new InvalidOperationException("anonymous_ordinary_cleanup_failure");
++        }));
++        Assert.Equal("anonymous_ordinary_cleanup_failure",failure.Message);Assert.Equal(1,calls);
++        Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);Assert.False(runner!.IsActive);
++        runner.RequestSemaphoreRelease();Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);Assert.Equal(1,calls);
++    }
++    [Fact] public async Task DeferredRunnerCleanupRunsAfterActualDrainWhileSuppressedBeforeSemaphoreRelease()
++    {
++        var ambient=RunnerAmbient;var prior=ambient.Value;var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);ambient.Value=runner;
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        using var release=new ManualResetEventSlim();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
++        var finished=0;var cleanupCalls=0;
++        var tick=Task.Run(()=>{lock(TickLocker){entered.SetResult();release.Wait();Interlocked.Exchange(ref finished,1);}});
++        await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
++        try
++        {
++            await Assert.ThrowsAsync<StartupLocalUserRequiredException>(()=>
++                TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromMilliseconds(10),CancellationToken.None));
++            runner!.Invalidate();ambient.Value=null;
++            runner.CloseWithCleanup(()=>{
++                Assert.Equal(1,Volatile.Read(ref finished));Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++                Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);Assert.False(runner.IsActive);Interlocked.Increment(ref cleanupCalls);
++            });
++            owner.Dispose();Assert.Equal(0,Volatile.Read(ref cleanupCalls));Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);
++            release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));await WaitForRestoration();
++            Assert.Equal(1,Volatile.Read(ref cleanupCalls));Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);
++        }
++        finally
++        {
++            release.Set();await tick.WaitAsync(TimeSpan.FromSeconds(2));owner.Dispose();runner!.RequestSemaphoreRelease();ambient.Value=prior;
++        }
++    }
++    [Fact] public async Task GuardedDeferredCleanupFailureRetainsBothSuppressionAndRealSemaphore()
++    {
++        var ambient=RunnerAmbient;var prior=ambient.Value;var runner=await TaskRunner.OwnedScope.AcquireAsync();Assert.NotNull(runner);ambient.Value=runner;
++        using var owner=await StartupReadinessOwner.AcquireAsync(CancellationToken.None);
++        var lifetime=await TaskTriggerDispatcher.SuspendAutomaticTriggersForStartupAsync(owner,TimeSpan.FromSeconds(2),CancellationToken.None);
++        try
++        {
++            runner!.Invalidate();ambient.Value=null;
++            runner.CloseWithCleanup(()=>{
++                Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++                throw new InvalidOperationException("anonymous_guarded_cleanup_failure");
++            });
++            owner.Dispose();lifetime.Dispose();
++            await Assert.ThrowsAsync<InvalidOperationException>(()=>runner.CleanupCompletion);
++            Assert.False(runner.IsActive);Assert.False(TaskRunner.HasOwnedSemaphore);
++            Assert.True(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(0,TaskControl.TaskSemaphore.CurrentCount);
++            Assert.False(await TaskControl.TaskSemaphore.WaitAsync(0));
++        }
++        finally
++        {
++            // Test-process quarantine reset only, after proving real fail-closed behavior. Production has no such recovery API.
++            // Dispose the actual captured guard objects; do not turn the failed cleanup into a positive drain/cleanup receipt.
++            foreach(var value in lifetime.GetType().GetFields(BindingFlags.Instance|BindingFlags.NonPublic).Select(f=>f.GetValue(lifetime)).OfType<IDisposable>())
++                if(!ReferenceEquals(value,owner))value.Dispose();
++            owner.Dispose();
++            typeof(TaskRunner.OwnedScope).GetField("nativeSemaphore",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(runner,null);
++            if(TaskControl.TaskSemaphore.CurrentCount==0)TaskControl.TaskSemaphore.Release();
++            ambient.Value=prior;
++        }
++        Assert.False(TaskTriggerDispatcher.StartupTriggersSuppressed);Assert.Equal(1,TaskControl.TaskSemaphore.CurrentCount);
++    }
++    private sealed class FakeTrigger(Action? body=null):ITaskTrigger
++    {
++        public string Name=>"anonymous_fake_trigger";public bool IsEnabled{get;set;}=true;
++        public int Priority=>1;public bool IsExclusive=>false;public int Initializations{get;private set;}public int Calls{get;private set;}
++        public void Init()=>Initializations++;
++        public void OnCapture(CaptureContent content){Calls++;body?.Invoke();}
++    }
++}
+diff --git a/MODIFICATIONS.md b/MODIFICATIONS.md
+--- a/MODIFICATIONS.md
++++ b/MODIFICATIONS.md
+@@ -130,6 +130,8 @@
+ - 第三十层仅为具名培养库存选中物品增加固定完整标题区域及显式初始失败证据：复用同张实际原图、既有数量reader、选中边框、CSV/Item模型和六项OCR资产读锁，不裁切或移动旧字框，不猜数量。现代标题要求完整原文/检测单行同名、四边2px及同一模型来源；原窄区域失败保留unknown/null，完整标题不是消费许可。
+ - 第三十一层仅为严格只读天赋预览增加固定四个必要标记角色的独立原图OCR及完整背景行诊断，原整页行、唯一性、材料/Mora数量和模型证据保持。具名tooltip在同张原图分别重读原窄footer和完整培养需求footer；单行完整前缀、独立raw/检测同字及四边2px才标完整，原失败原文/字框和null数量保留。完整footer分母是诊断聚合值，不替代弹窗下一等级成本。tooltip双图保持采集/解析/真实判定后才保存及双哈希回读的原5000/1500毫秒门禁；新增OCR耗时可能仍使结果unknown。未增加升级确认、转化、资源授权或未知重放；实际原图离线实验不等于实时验收。
+ 
++- 第三十二层仅修复启动阶段的输入门禁：在原主界面、可关闭页面和秘境判据之前，以既有 AutoSkip 的 DisabledUiButton 和 OptionIcon 模板只读识别剧情/选项，命中即明确要求本机用户处理；未知页面保持原180秒总期限只读等待，删除未核实页面上的键鼠唤醒中心点击及前台激活重试。启动核验前取得真实任务信号量所有权，跨截图器实例暂停自动触发器并等待整个既有同步 Tick/OnCapture 调用结束；取消或超时立即返回失败，但真实锁、暂停和必要的旧任务清理保持到实际不可取消的同步屏障完成。原任务上下文关闭立即失效，不能凭仍持有的物理锁恢复权限；旧任务界面/触发器清理须在屏障完成且暂停仍有效时执行，随后恢复原触发器状态并释放锁，失败清理保留闭锁。普通无启动保留的任务清理路径继续原行为并确保异常时释放锁。仅新增启动失败标量诊断，不保存未知/认证界面图像、不选择剧情、不领取资源、不把诊断或旧截图当作当前任务完成/消费证明。
++
+ 资源结果与视觉／参数证据分别记录。配方读数、实际合成、战斗、领奖和最终培养达标的验收范围互不替代。实际领奖及目标达标只依据本机新鲜证据，未知消费不能自动重放。账号、凭据、库存、授权和截图不在公开对应源码中。
+ 
+ The current corresponding source is the pinned baseline plus the complete ordered patch sequence maintained by BetterGI Automation Workflow. The dated overlays add bounded condensed crafting and claims, independent recipe-cost and inventory evidence, read-only network failure diagnostics, and an exact current condensed-reward label. They retain the upstream license and existing character/shield criteria. Unknown outcomes are never promoted to success or automatically replayed; read-only inspection, real crafting, combat, claims and target completion are independently verified.

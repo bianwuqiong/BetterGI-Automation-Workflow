@@ -660,6 +660,44 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(wf.read_json(
             self.root / 'state/graphics-profile-lease.json')['state'], 'restored')
 
+    def test_final_game_state_is_resampled_after_graphics_cleanup(self):
+        profile_path = self.root / 'config/genshin-compat-profile.json'
+        profile_path.write_bytes((ROOT / 'config/genshin-compat-profile.json').read_bytes())
+        self.cfg.update(gameGraphicsProfile='config/genshin-compat-profile.json',
+                        gameGraphicsQualityLevel=None, restoreManualGraphicsAfterRun=True)
+        wf.atomic_json(self.root / 'config/settings.json', self.cfg)
+        snapshot = wf.make_genshin_graphics_snapshot(
+            json.dumps({'graphicsData': '{}', 'globalPerfData': '{}'}).encode() + b'\0')
+
+        class DelayedExitHost(StartupFailureFakeHost):
+            pending_exit_observations = 0
+
+            def stop_pids(self, pids):
+                result = super().stop_pids(pids)
+                if 888 in pids:
+                    self.pending_exit_observations = 1
+                return result
+
+            def processes(self, names):
+                if 'GenshinImpact' in names and self.pending_exit_observations:
+                    self.pending_exit_observations -= 1
+                    return [888]
+                return super().processes(names)
+
+        host = DelayedExitHost(self.root)
+        with (patch.object(wf, 'snapshot_genshin_graphics_settings', return_value=snapshot),
+              patch.object(wf, 'ensure_genshin_graphics_profile', return_value={'changed': True}),
+              patch.object(wf, 'verify_genshin_automation_graphics', return_value={'allMatched': True}),
+              patch.object(wf, 'restore_genshin_graphics_settings',
+                           return_value={'restored': True, 'restoredAt': '2026-09-12T12:01:00+00:00'})):
+            code, result = self.run_flow(host=host)
+
+        self.assertEqual(code, 8)
+        self.assertEqual(result['outcome'], 'unknown')
+        self.assertTrue(result['graphicsIsolation']['restored'])
+        self.assertFalse(result['gameStillRunning'])
+        self.assertFalse(wf.read_json(Path(result['resultPath']))['gameStillRunning'])
+
     def test_native_startup_error_requires_exact_owned_record_and_current_configuration(self):
         name, pid = 'AutoGame_test', 987654
         current = native_startup_log(name, pid)
@@ -1171,7 +1209,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result['hoyolabCheckin']['totalSignDays'], 10)
 
 
-    def test_controller_hot_switch_trigger_on_main_ui_wait(self):
+    def test_unknown_main_ui_wait_cannot_trigger_controller_center_click(self):
         outer = self
 
         class HotSwitchHost(FakeHost):
@@ -1193,12 +1231,12 @@ class WorkflowTests(unittest.TestCase):
                 return True
 
         host = HotSwitchHost(self.root)
-        with contextlib.redirect_stdout(io.StringIO()), patch.object(wf, 'datetime', FixedClock), patch.object(wf.time, 'monotonic', side_effect=[0, 0, 50, 51, 52, 53]):
+        with contextlib.redirect_stdout(io.StringIO()), patch.object(wf, 'datetime', FixedClock), patch.object(wf.time, 'monotonic', side_effect=[0, 0, 50, 51, 90, 91, 92, 93]):
             code, result = self.run_flow(host=host)
 
-        self.assertEqual(len(host.hot_switch_calls), 1)
-        self.assertEqual(host.hot_switch_calls[0], [888])
-        self.assertTrue(any('手柄热切换回键鼠模式' in note for note in result.get('notes', [])))
+        self.assertEqual(host.hot_switch_calls, [])
+        self.assertFalse(any('手柄热切换回键鼠模式' in note for note in result.get('notes', [])))
+        self.assertNotEqual(result['outcome'], 'completed')
 
 
 if __name__ == '__main__':
