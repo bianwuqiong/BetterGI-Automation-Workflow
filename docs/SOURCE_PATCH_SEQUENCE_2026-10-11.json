@@ -186,6 +186,11 @@
       "order": 36,
       "path": "patches/local-talent-material-heading-2026-10-13.patch",
       "sha256": "1bac7886429726acb83ba9e042ca28960d3d229e7f08d3dc3623406a4596f0b9"
+    },
+    {
+      "order": 37,
+      "path": "patches/local-talent-readonly-2026-10-13.patch",
+      "sha256": "4aacf78c69f92da133034faf2bc33cac37701e8e3e2ac8bfb7be1a89e3d09065"
     }
   ],
   "offlineValidation": {
@@ -560,5 +565,41 @@
     "liveAccepted": false,
     "consumerEnabled": false,
     "validationDocument": "docs/TALENT_HEADING_ROI.md"
+  },
+  "talentReadonlyExtension": {
+    "tooltipMethod": "existing_full_footer_v2",
+    "fullFooterRegion": [
+      882,
+      875,
+      223,
+      80
+    ],
+    "originalWholeRegion": [
+      725,
+      890,
+      470,
+      65
+    ],
+    "originalNarrowRegion": [
+      885,
+      890,
+      295,
+      65
+    ],
+    "sourceLabelRegion": [
+      730,
+      675,
+      460,
+      80
+    ],
+    "alternateNamePreprocessing": "bgr_cubic_4x",
+    "sameFrameOriginalFooterAndIdentityRequired": true,
+    "requiredPixelMargin": 2,
+    "freshnessMilliseconds": 1500,
+    "worldObservationDeadlineMilliseconds": 10000,
+    "twoOriginalWorldPngRequired": true,
+    "liveAccepted": false,
+    "consumerEnabled": false,
+    "validationDocument": "docs/TALENT_FOOTER_ROI.md"
   }
 }

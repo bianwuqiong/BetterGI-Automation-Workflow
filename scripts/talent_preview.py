@@ -26,11 +26,36 @@ READ_TIMING_FIELDS={'captureCallStartedAt','captureReturnedAt','readerStartedAt'
     'pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'}
 PRIVATE_CAPTURE_FIELDS={'observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'}
 FOOTER_METHOD='existing_full_footer_v1'
+FOOTER_METHOD_V2='existing_full_footer_v2'
 MARKER_METHOD_V1='whole_marker_required_roles_v1'
 MARKER_METHOD_V2='whole_marker_required_roles_v2'
-SOURCE31_METHODS={'tooltipQuantityMethod':FOOTER_METHOD,'tooltipTimingMethod':PREVIEW_TIMING_METHOD}
-SOURCE31_FRAME_FIELDS=('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence')
+SOURCE31_METHODS={'tooltipTimingMethod':PREVIEW_TIMING_METHOD}
+SOURCE31_FRAME_FIELDS=('previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence','originalIdentityReading')
 FOOTER_FIELDS={'method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'}
+ORIGINAL_FOOTER_FIELDS={'originalWholeReading','originalWholeRawText','originalWholeDetectorText'}
+
+def footer_region(method):return (882,875,223,80) if method==FOOTER_METHOD_V2 else (725,890,470,65)
+def tooltip_source_region(method):return (730,675,460,80) if method==FOOTER_METHOD_V2 else (730,690,460,65)
+
+def original_tooltip_identity(tip,v2):
+    if not v2:
+        if 'originalIdentityReading' in tip:raise ValueError('v1 original identity diagnostic forbidden')
+        return
+    proof=tip.get('originalIdentityReading')
+    fields={'observedAt','nameRegion','alternateRawName','alternateNameRows','alternateNameScale','alternateNamePreprocessing','sourceRegion','sourceRows'}
+    if (not isinstance(proof,dict) or set(proof)!=fields or type(proof.get('observedAt')) is not int or proof['observedAt']!=tip['observedAt']
+            or not isinstance(proof['alternateRawName'],str) or len(proof['alternateRawName'])>256
+            or type(proof['alternateNameScale']) is not int or proof['alternateNameScale']!=4
+            or proof['alternateNamePreprocessing']!='gray_threshold_210_inverse_cubic_4x'):
+        raise ValueError('original identity diagnostic scope invalid')
+    source_rect(proof['nameRegion'],(730,168,440,67));source_rect(proof['sourceRegion'],(730,690,460,65))
+    for rows in (proof['alternateNameRows'],proof['sourceRows']):
+        if not isinstance(rows,list) or len(rows)>16:raise ValueError('original identity diagnostic rows unbounded')
+        for row in rows:
+            if not isinstance(row,dict) or set(row)!={'text','bounds'} or not isinstance(row['text'],str) or len(row['text'])>256:
+                raise ValueError('original identity diagnostic row invalid')
+            source_rect(row['bounds'])
+
 MARKER_ROLES=(('attribute_heading','属性变更',(870,295,180,70)),('material_heading','所需材料',(870,575,180,60)),
     ('cancel_label','取消',(620,875,170,70)),('confirm_label','确认',(1170,875,180,70)))
 
@@ -225,14 +250,15 @@ def marker_roles(p,*,trusted_runtime_root=None):
             raise ValueError('modern background containment/margins must preserve original clipped rows')
 
 def footer_quantity(tip,start,finish,*,trusted_runtime_root=None):
-    proof=tip.get('footerQuantityEvidence');q=tip.get('quantity')
-    if (tip.get('tooltipQuantityMethod')!=FOOTER_METHOD or not isinstance(proof,dict) or set(proof)!=FOOTER_FIELDS
-            or proof['method']!=FOOTER_METHOD or not isinstance(q,dict)):
+    proof=tip.get('footerQuantityEvidence');q=tip.get('quantity');method=tip.get('tooltipQuantityMethod');v2=method==FOOTER_METHOD_V2
+    if (method not in (FOOTER_METHOD,FOOTER_METHOD_V2) or not isinstance(proof,dict)
+            or set(proof)!=(FOOTER_FIELDS|ORIGINAL_FOOTER_FIELDS if v2 else FOOTER_FIELDS)
+            or proof['method']!=method or not isinstance(q,dict)):
         raise ValueError('modern tooltip fixed full footer proof incomplete')
     source_models(tip.get('sourceRegionModelEvidence'),trusted_runtime_root)
-    old=source_rect(proof['oldRegion'],(885,890,295,65));box=source_rect(proof['sourceRegion'],(725,890,470,65))
+    old=source_rect(proof['oldRegion'],(885,890,295,65));box=source_rect(proof['sourceRegion'],footer_region(method))
     source_rect(tip.get('footerLabelRegion'),box);source_rect(q.get('bounds'),box)
-    for value in (q,proof['initialReading']):
+    for value in (q,proof['initialReading'],*((proof['originalWholeReading'],) if v2 else ())):
         if (not isinstance(value,dict) or type(value.get('observedAt')) is not int or value['observedAt']!=tip['observedAt']
                 or type(value.get('width')) is not int or type(value.get('height')) is not int
                 or (value['width'],value['height'])!=(1920,1080) or value.get('prefix')!='培养需求'
@@ -244,7 +270,11 @@ def footer_quantity(tip,start,finish,*,trusted_runtime_root=None):
             raise ValueError('modern footer initial/final actual image/whole reading provenance invalid')
         frame(value,start,finish)
     initial=proof['initialReading'];source_rect(initial.get('bounds'),old)
-    for values,raw_key,det_key,accepted in ((initial,'initialWholeRawText','initialWholeDetectorText',False),(q,'wholeRawText','wholeDetectorText',True)):
+    diagnostics=[(initial,'initialWholeRawText','initialWholeDetectorText',old)]
+    if v2:
+        original=proof['originalWholeReading'];original_box=source_rect(original.get('bounds'),(725,890,470,65))
+        diagnostics.append((original,'originalWholeRawText','originalWholeDetectorText',original_box))
+    for values,raw_key,det_key,accepted in [*((v,r,d,False) for v,r,d,b in diagnostics),(q,'wholeRawText','wholeDetectorText',True)]:
         whole_raw=proof[raw_key];whole_detector=proof[det_key]
         if not isinstance(whole_raw,str) or not isinstance(whole_detector,str) or not isinstance(values.get('raw'),str) or not isinstance(values.get('detectorRaw'),str) or not isinstance(values.get('ocrRows'),list):
             raise ValueError('modern footer complete original raw strings and rows required')
@@ -260,24 +290,26 @@ def footer_quantity(tip,start,finish,*,trusted_runtime_root=None):
             source_rows(values['ocrRows'],box,clean(whole_raw))
     actual=quantity(q,start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)
     if actual[1]<1:raise ValueError('modern footer aggregate denominator must be positive')
-    if not initial['complete']:
-        if initial.get('owned') is not None or initial.get('required') is not None:
-            raise ValueError('modern footer failed initial reading must keep null quantities')
-    else:
-        initial_whole=clean(proof['initialWholeRawText'])
-        if initial_whole!=clean(proof['initialWholeDetectorText']) or not re.fullmatch(r'培养需求(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})',initial_whole):
-            raise ValueError('modern complete initial footer full prefix/raw detector disagreement')
-        source_rows(initial['ocrRows'],old,initial_whole)
-        if quantity(initial,start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)!=actual:
-            raise ValueError('modern footer high-confidence initial conflicts with final whole ratio')
-    for key,reference in (('nameRegion',(730,168,440,67)),('kindRegion',(730,230,440,65)),('sourceRegion',(730,690,460,65))):
+    for reading,raw_key,det_key,diagnostic_box in diagnostics:
+        if not reading['complete']:
+            if reading.get('owned') is not None or reading.get('required') is not None:
+                raise ValueError('modern footer failed initial reading must keep null quantities')
+        else:
+            initial_whole=clean(proof[raw_key])
+            if initial_whole!=clean(proof[det_key]) or not re.fullmatch(r'培养需求(0|[1-9][0-9]{0,9})/(0|[1-9][0-9]{0,9})',initial_whole):
+                raise ValueError('modern complete initial footer full prefix/raw detector disagreement')
+            source_rows(reading['ocrRows'],diagnostic_box,initial_whole)
+            if quantity(reading,start,finish,'培养需求',trusted_runtime_root=trusted_runtime_root)!=actual:
+                raise ValueError('modern footer high-confidence initial conflicts with final whole ratio')
+    original_tooltip_identity(tip,v2)
+    for key,reference in (('nameRegion',(730,168,440,67)),('kindRegion',(730,230,440,65)),('sourceRegion',tooltip_source_region(method))):
         source_rect(tip.get(key),reference)
     # Strong modern name/role margins supplement the original exact identity checks.
     for key,raw_key in (('nameRows','rawName'),('alternateNameRows','alternateRawName')):
         observed=source_rows(tip.get(key),source_rect(tip['nameRegion']))
         if observed!=clean(tip.get(raw_key)) or material_name(observed)!=material_name(tip.get('name')):
             raise ValueError('both modern full tooltip name readings must exactly match original raw and identity')
-    if type(tip.get('alternateNameScale')) is not int or tip['alternateNameScale']!=4 or tip.get('alternateNamePreprocessing')!='gray_threshold_210_inverse_cubic_4x':
+    if type(tip.get('alternateNameScale')) is not int or tip['alternateNameScale']!=4 or tip.get('alternateNamePreprocessing')!=('bgr_cubic_4x' if v2 else 'gray_threshold_210_inverse_cubic_4x'):
         raise ValueError('modern alternate tooltip name requires its actual reviewed preprocessing')
     source_rows(tip.get('kindRows'),source_rect(tip['kindRegion']),tip.get('kind'))
     source_rows(tip.get('sourceRows'),source_rect(tip['sourceRegion']),'来源')
@@ -290,6 +322,7 @@ def source31_protocol(raw,frames,previews,pinned_proof,start,finish,*,trusted_ru
     active=any(raw.get(k) is not None for k in (*SOURCE31_METHODS,*SOURCE31_FRAME_FIELDS)) or any(f.get(k) is not None for f in frames for k in SOURCE31_FRAME_FIELDS) or any(f.get('readTiming') is not None for f in tips)
     if not active:return False
     if (raw.get('previewMarkerMethod') not in (MARKER_METHOD_V1,MARKER_METHOD_V2)
+            or raw.get('tooltipQuantityMethod') not in (FOOTER_METHOD,FOOTER_METHOD_V2)
             or any(raw.get(k)!=value for k,value in SOURCE31_METHODS.items()) or raw.get('previewTimingMethod')!=PREVIEW_TIMING_METHOD
             or cost_method(raw)!=PINNED_SPLIT_METHOD or pinned_proof is None):
         raise ValueError('modern talent source31 complete payload methods and pinned costs required')
@@ -303,6 +336,8 @@ def source31_protocol(raw,frames,previews,pinned_proof,start,finish,*,trusted_ru
         source_models(f.get('sourceRegionModelEvidence'),trusted_runtime_root)
     if any(p.get('previewMarkerMethod')!=raw['previewMarkerMethod'] for p in previews):
         raise ValueError('modern popup marker methods cannot mix')
+    if any(tip.get('tooltipQuantityMethod')!=raw['tooltipQuantityMethod'] for tip in tips):
+        raise ValueError('modern tooltip footer methods cannot mix')
     for p in previews:marker_roles(p,trusted_runtime_root=trusted_runtime_root)
     for tip in tips:footer_quantity(tip,start,finish,trusted_runtime_root=trusted_runtime_root)
     all_pairs=[f for f in frames if f in previews or f in tips]
@@ -749,14 +784,14 @@ def verified_observation(raw,character,talent_type,started_at,finished_at,*,trus
                 try:
                     actual_name=rows_text(tip.get(rows_key),box,s,projected=projected)
                     if actual_name==clean(tip.get(raw_key)) and (not projected or tip.get('alternateNameScale')==4
-                            and tip.get('alternateNamePreprocessing')=='gray_threshold_210_inverse_cubic_4x'): candidates.append(material_name(actual_name))
+                            and tip.get('alternateNamePreprocessing')==('bgr_cubic_4x' if source31 and tip.get('tooltipQuantityMethod')==FOOTER_METHOD_V2 else 'gray_threshold_210_inverse_cubic_4x')): candidates.append(material_name(actual_name))
                 except ValueError: pass
             kind=rows_text(tip.get('kindRows'),region(tip,'kindRegion',(730,230,440,65)),s)
             sources=[clean(row.get('text')) for row in tip.get('sourceRows',[])]
-            rows_text(tip.get('sourceRows'),region(tip,'sourceRegion',(730,690,460,65)),s,full=False)
+            rows_text(tip.get('sourceRows'),region(tip,'sourceRegion',tooltip_source_region(tip.get('tooltipQuantityMethod')) if source31 else (730,690,460,65)),s,full=False)
             if item['name'] not in candidates or kind!=tip.get('kind') or kind not in ('角色天赋素材','角色与武器培养素材') or sources.count('来源')!=1:
                 raise ValueError('fullnamed actual material tooltip unverified')
-            footer=rows_text(tip.get('footerLabelRows'),region(tip,'footerLabelRegion',(725,890,470,65)),s,full=False)
+            footer=rows_text(tip.get('footerLabelRows'),region(tip,'footerLabelRegion',footer_region(tip.get('tooltipQuantityMethod')) if source31 else (725,890,470,65)),s,full=False)
             if not footer.startswith('培养需求'): raise ValueError('actual cultivation footer label missing')
             if source31:owned=footer_quantity(tip,start,finish,trusted_runtime_root=trusted_runtime_root)[0]
             else:

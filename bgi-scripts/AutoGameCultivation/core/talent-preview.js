@@ -48,10 +48,26 @@ const exactKeys=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(val
 const PREVIEW_TIMING_METHOD='capture_read_evaluate_then_private_png_v1';
 const READ_TIMING_FIELDS=['captureCallStartedAt','captureReturnedAt','readerStartedAt','readerCompletedAt','pairEvaluatedAt','diagnosticPngCompletedAt','pairAccepted'];
 const PRIVATE_CAPTURE_FIELDS=['observedAt','width','height','pixelType','path','pngSha256','nativePixelsSha256','source'];
-const FOOTER_METHOD='existing_full_footer_v1',MARKER_METHOD_V1='whole_marker_required_roles_v1',MARKER_METHOD_V2='whole_marker_required_roles_v2';
-const SOURCE31_METHODS={tooltipQuantityMethod:FOOTER_METHOD,tooltipTimingMethod:PREVIEW_TIMING_METHOD};
-const SOURCE31_FRAME_FIELDS=['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence'];
+const FOOTER_METHOD='existing_full_footer_v1',FOOTER_METHOD_V2='existing_full_footer_v2',MARKER_METHOD_V1='whole_marker_required_roles_v1',MARKER_METHOD_V2='whole_marker_required_roles_v2';
+const SOURCE31_METHODS={tooltipTimingMethod:PREVIEW_TIMING_METHOD};
+const SOURCE31_FRAME_FIELDS=['previewMarkerMethod','tooltipQuantityMethod','tooltipTimingMethod','sourceRegionModelEvidence','markerRoleEvidence','footerQuantityEvidence','originalIdentityReading'];
 const FOOTER_FIELDS=['method','oldRegion','sourceRegion','initialReading','initialWholeRawText','initialWholeDetectorText','wholeRawText','wholeDetectorText'];
+const ORIGINAL_FOOTER_FIELDS=['originalWholeReading','originalWholeRawText','originalWholeDetectorText'];
+const footerMethod=value=>[FOOTER_METHOD,FOOTER_METHOD_V2].includes(value);
+const footerRegion=value=>value===FOOTER_METHOD_V2?[882,875,223,80]:[725,890,470,65];
+const tooltipSourceRegion=value=>value===FOOTER_METHOD_V2?[730,675,460,80]:[730,690,460,65];
+function originalTooltipIdentity(tip,v2){
+  if(!v2){if(Object.hasOwn(tip,'originalIdentityReading'))fail('talent_v1_original_identity_diagnostic_forbidden');return;}
+  const proof=tip.originalIdentityReading;
+  if(!exactKeys(proof,['observedAt','nameRegion','alternateRawName','alternateNameRows','alternateNameScale','alternateNamePreprocessing','sourceRegion','sourceRows'])
+      ||!Number.isSafeInteger(proof.observedAt)||proof.observedAt!==tip.observedAt||typeof proof.alternateRawName!=='string'||proof.alternateRawName.length>256
+      ||proof.alternateNameScale!==4||proof.alternateNamePreprocessing!=='gray_threshold_210_inverse_cubic_4x')fail('talent_original_identity_diagnostic_scope_invalid');
+  sourceRect(proof.nameRegion,[730,168,440,67]);sourceRect(proof.sourceRegion,[730,690,460,65]);
+  for(const rows of [proof.alternateNameRows,proof.sourceRows]){
+    if(!Array.isArray(rows)||rows.length>16)fail('talent_original_identity_diagnostic_rows_unbounded');
+    for(const row of rows){if(!exactKeys(row,['text','bounds'])||typeof row.text!=='string'||row.text.length>256)fail('talent_original_identity_diagnostic_row_invalid');sourceRect(row.bounds);}
+  }
+}
 const MARKER_ROLES=[['attribute_heading','属性变更',[870,295,180,70]],['material_heading','所需材料',[870,575,180,60]],
   ['cancel_label','取消',[620,875,170,70]],['confirm_label','确认',[1170,875,180,70]]];
 const markerMethod=value=>[MARKER_METHOD_V1,MARKER_METHOD_V2].includes(value);
@@ -174,11 +190,11 @@ function markerRoles(p){
   }
 }
 function footerQuantity(tip,start,finish){
-  const proof=tip.footerQuantityEvidence,q=tip.quantity;
-  if(tip.tooltipQuantityMethod!==FOOTER_METHOD||!exactKeys(proof,FOOTER_FIELDS)||proof.method!==FOOTER_METHOD||!q||typeof q!=='object'||Array.isArray(q))fail('talent_modern_fixed_footer_proof_incomplete');
+  const proof=tip.footerQuantityEvidence,q=tip.quantity,v2=tip.tooltipQuantityMethod===FOOTER_METHOD_V2;
+  if(!footerMethod(tip.tooltipQuantityMethod)||!exactKeys(proof,v2?[...FOOTER_FIELDS,...ORIGINAL_FOOTER_FIELDS]:FOOTER_FIELDS)||proof.method!==tip.tooltipQuantityMethod||!q||typeof q!=='object'||Array.isArray(q))fail('talent_modern_fixed_footer_proof_incomplete');
   sourceModelShape(tip.sourceRegionModelEvidence);
-  const old=sourceRect(proof.oldRegion,[885,890,295,65]),box=sourceRect(proof.sourceRegion,[725,890,470,65]);sourceRect(tip.footerLabelRegion,[725,890,470,65]);sourceRect(q.bounds,[725,890,470,65]);
-  for(const value of [q,proof.initialReading]){
+  const old=sourceRect(proof.oldRegion,[885,890,295,65]),box=sourceRect(proof.sourceRegion,footerRegion(tip.tooltipQuantityMethod));sourceRect(tip.footerLabelRegion,footerRegion(tip.tooltipQuantityMethod));sourceRect(q.bounds,footerRegion(tip.tooltipQuantityMethod));
+  for(const value of [q,proof.initialReading,...(v2?[proof.originalWholeReading]:[])]){
     if(!value||typeof value!=='object'||Array.isArray(value)||!Number.isSafeInteger(value.observedAt)||value.observedAt!==tip.observedAt||value.width!==1920||value.height!==1080
         ||value.prefix!=='培养需求'||typeof value.complete!=='boolean'||value.initialReading!=null||(value.cropMethod??'fixed_or_initial')!=='fixed_or_initial'
         ||value.sourceCountRow!=null||quantityChainModern(value)||value.slashPixelVerified!==false
@@ -186,7 +202,9 @@ function footerQuantity(tip,start,finish){
     dimensions(value,start,finish);
   }
   const initial=proof.initialReading;sourceRect(initial.bounds,[old.x,old.y,old.width,old.height]);
-  for(const [values,rawKey,detKey,accepted] of [[initial,'initialWholeRawText','initialWholeDetectorText',false],[q,'wholeRawText','wholeDetectorText',true]]){
+  const diagnostics=[[initial,'initialWholeRawText','initialWholeDetectorText',old]];
+  if(v2){const original=proof.originalWholeReading,originalBox=sourceRect(original.bounds,[725,890,470,65]);diagnostics.push([original,'originalWholeRawText','originalWholeDetectorText',originalBox]);}
+  for(const [values,rawKey,detKey,accepted] of [...diagnostics.map(([value,raw,det])=>[value,raw,det,false]),[q,'wholeRawText','wholeDetectorText',true]]){
     const wholeRaw=proof[rawKey],wholeDetector=proof[detKey];
     if(typeof wholeRaw!=='string'||typeof wholeDetector!=='string'||typeof values.raw!=='string'||typeof values.detectorRaw!=='string'||!Array.isArray(values.ocrRows))fail('talent_footer_original_full_raw_strings_required');
     values.ocrRows.forEach(sourceRow);if(clean(wholeDetector)!==clean(values.ocrRows.map(row=>row.text).join('')))fail('talent_footer_detector_text_not_original_rows');
@@ -196,25 +214,28 @@ function footerQuantity(tip,start,finish){
   }
   const actual=quantity(q,start,finish,'培养需求');
   if(actual.required<1)fail('talent_modern_footer_aggregate_denominator_positive_required');
-  if(!initial.complete){if(initial.owned!=null||initial.required!=null)fail('talent_footer_failed_initial_quantities_not_null');}
-  else {
-    const whole=clean(proof.initialWholeRawText);
-    if(whole!==clean(proof.initialWholeDetectorText)||!/^培养需求(0|[1-9][0-9]{0,9})\/(0|[1-9][0-9]{0,9})$/.test(whole))fail('talent_footer_complete_initial_full_prefix_raw_detector_mismatch');
-    sourceRows(initial.ocrRows,old,whole);
-    if(!same(quantity(initial,start,finish,'培养需求'),actual))fail('talent_footer_initial_complete_conflict');
+  for(const [reading,rawKey,detKey,diagnosticBox] of diagnostics){
+    if(!reading.complete){if(reading.owned!=null||reading.required!=null)fail('talent_footer_failed_initial_quantities_not_null');}
+    else {
+      const whole=clean(proof[rawKey]);
+      if(whole!==clean(proof[detKey])||!/^培养需求(0|[1-9][0-9]{0,9})\/(0|[1-9][0-9]{0,9})$/.test(whole))fail('talent_footer_complete_initial_full_prefix_raw_detector_mismatch');
+      sourceRows(reading.ocrRows,diagnosticBox,whole);
+      if(!same(quantity(reading,start,finish,'培养需求'),actual))fail('talent_footer_initial_complete_conflict');
+    }
   }
-  const name=sourceRect(tip.nameRegion,[730,168,440,67]),kind=sourceRect(tip.kindRegion,[730,230,440,65]),source=sourceRect(tip.sourceRegion,[730,690,460,65]);
+  originalTooltipIdentity(tip,v2);
+  const name=sourceRect(tip.nameRegion,[730,168,440,67]),kind=sourceRect(tip.kindRegion,[730,230,440,65]),source=sourceRect(tip.sourceRegion,tooltipSourceRegion(tip.tooltipQuantityMethod));
   for(const [key,rawKey] of [['nameRows','rawName'],['alternateNameRows','alternateRawName']]){
     const observed=sourceRows(tip[key],name);if(observed!==clean(tip[rawKey])||canonical(observed)!==canonical(tip.name))fail('talent_both_modern_full_name_rows_and_raw_must_match');
   }
-  if(tip.alternateNameScale!==4||tip.alternateNamePreprocessing!=='gray_threshold_210_inverse_cubic_4x')fail('talent_modern_alternate_name_preprocessing_required');
+  if(tip.alternateNameScale!==4||tip.alternateNamePreprocessing!==(v2?'bgr_cubic_4x':'gray_threshold_210_inverse_cubic_4x'))fail('talent_modern_alternate_name_preprocessing_required');
   sourceRows(tip.kindRows,kind,tip.kind);sourceRows(tip.sourceRows,source,'来源');sourceRows(tip.footerLabelRows,box,clean(proof.wholeRawText));
   if(!same(tip.footerLabelRows,q.ocrRows))fail('talent_modern_footer_label_is_not_final_quantity_original_rows');return actual;
 }
 function source31Protocol(raw,frames,previews,pinnedProof,start,finish){
   const tips=frames.filter(f=>'kindRows' in f&&'footerLabelRows' in f),active=[...Object.keys(SOURCE31_METHODS),...SOURCE31_FRAME_FIELDS].some(k=>raw[k]!=null)||frames.some(f=>SOURCE31_FRAME_FIELDS.some(k=>f[k]!=null))||tips.some(f=>f.readTiming!=null);
   if(!active)return false;
-  if(!markerMethod(raw.previewMarkerMethod)||Object.entries(SOURCE31_METHODS).some(([k,v])=>raw[k]!==v)||raw.previewTimingMethod!==PREVIEW_TIMING_METHOD||costMethod(raw)!==PINNED_SPLIT_METHOD||pinnedProof==null)fail('talent_source31_payload_methods_and_pinned_costs_required');
+  if(!markerMethod(raw.previewMarkerMethod)||!footerMethod(raw.tooltipQuantityMethod)||Object.entries(SOURCE31_METHODS).some(([k,v])=>raw[k]!==v)||raw.previewTimingMethod!==PREVIEW_TIMING_METHOD||costMethod(raw)!==PINNED_SPLIT_METHOD||pinnedProof==null)fail('talent_source31_payload_methods_and_pinned_costs_required');
   const pairs=raw.evidence.materialTooltips;
   if(!Array.isArray(pairs)||pairs.some(pair=>!Array.isArray(pair)||pair.length!==2)||!same(pairs.flat(),tips)||!tips.length)fail('talent_modern_tooltip_pairs_must_retain_all_actual_raw_frames');
   const identity=proof=>{sourceModelShape(proof);return [...proof.countModels.assets,proof.rawDetectorAsset].map(a=>[a.modelName,a.relativePath,a.sha256,a.length]);};
@@ -222,6 +243,7 @@ function source31Protocol(raw,frames,previews,pinnedProof,start,finish){
     if(!Number.isSafeInteger(f.observedAt)||f.width!==1920||f.height!==1080||!same(identity(f.sourceRegionModelEvidence),identity(pinnedProof)))fail('talent_source_regions_same_six_asset_scope_required');
   }
   if(previews.some(p=>p.previewMarkerMethod!==raw.previewMarkerMethod))fail('talent_source31_marker_methods_mixed');
+  if(tips.some(tip=>tip.tooltipQuantityMethod!==raw.tooltipQuantityMethod))fail('talent_source31_footer_methods_mixed');
   previews.forEach(markerRoles);tips.forEach(tip=>footerQuantity(tip,start,finish));
   const all=frames.filter(f=>previews.includes(f)||tips.includes(f));
   for(let i=0;i<all.length;i+=2)if(('materials' in all[i])!==('materials' in all[i+1]))fail('talent_original_retained_pair_kinds_mixed');
@@ -473,13 +495,13 @@ export function verifyTalentObservation(raw,character,type,start,finish){
     for(const tip of two){const s=dimensions(tip,start,finish),box=region(tip,'nameRegion',[730,168,440,67]);
       if(!included(tip,frames)||tip.page!==true||canonical(tip.name)!==item.name)fail('talent_tooltip_scope_mismatch');const candidates=[];
       for(const [rowsKey,rawKey,projected] of [['nameRows','rawName',false],['alternateNameRows','alternateRawName',true]]){
-        try{const name=rowText(tip[rowsKey],box,s,true,projected);if(name===clean(tip[rawKey])&&(!projected||tip.alternateNameScale===4&&tip.alternateNamePreprocessing==='gray_threshold_210_inverse_cubic_4x'))candidates.push(canonical(name));}catch{}
+        try{const name=rowText(tip[rowsKey],box,s,true,projected);if(name===clean(tip[rawKey])&&(!projected||tip.alternateNameScale===4&&tip.alternateNamePreprocessing===(source31&&tip.tooltipQuantityMethod===FOOTER_METHOD_V2?'bgr_cubic_4x':'gray_threshold_210_inverse_cubic_4x')))candidates.push(canonical(name));}catch{}
       }
-      const kind=rowText(tip.kindRows,region(tip,'kindRegion',[730,230,440,65]),s),sourceBox=region(tip,'sourceRegion',[730,690,460,65]);
+      const kind=rowText(tip.kindRows,region(tip,'kindRegion',[730,230,440,65]),s),sourceBox=region(tip,'sourceRegion',source31?tooltipSourceRegion(tip.tooltipQuantityMethod):[730,690,460,65]);
       rowText(tip.sourceRows,sourceBox,s,false);
       if(!candidates.includes(item.name)||kind!==tip.kind||!['角色天赋素材','角色与武器培养素材'].includes(kind)
           ||tip.sourceRows.filter(row=>clean(row.text)==='来源').length!==1)fail('talent_tooltip_fullname_unverified');
-      if(!rowText(tip.footerLabelRows,region(tip,'footerLabelRegion',[725,890,470,65]),s,false).startsWith('培养需求'))fail('talent_footer_label_missing');
+      if(!rowText(tip.footerLabelRows,region(tip,'footerLabelRegion',source31?footerRegion(tip.tooltipQuantityMethod):[725,890,470,65]),s,false).startsWith('培养需求'))fail('talent_footer_label_missing');
       let owned;
       if(source31)owned=footerQuantity(tip,start,finish).owned;
       else{region(tip.quantity,'bounds',[885,890,295,65]);owned=quantity(tip.quantity,start,finish,'培养需求').owned;}

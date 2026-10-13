@@ -88,6 +88,119 @@ function marker36Observation(){
   }
   syncTimedPreview(raw);return raw;
 }
+function footer37Observation(completeOriginal=false){
+  const raw=marker36Observation();raw.tooltipQuantityMethod='existing_full_footer_v2';
+  for(const tip of source31Tips(raw)){
+    const proof=tip.footerQuantityEvidence,original=structuredClone(tip.quantity);
+    Object.assign(original,{complete:completeOriginal,owned:completeOriginal?32:null,required:completeOriginal?99:null,
+      raw:completeOriginal?'32/99':'32/9?',detectorRaw:completeOriginal?'32/99':'32/99C'});
+    original.ocrRows=[{text:completeOriginal?'培养需求32/99':'培养需求32/99C',bounds:{x:884,y:917,width:182,height:28}}];
+    Object.assign(proof,{method:raw.tooltipQuantityMethod,sourceRegion:{x:882,y:875,width:223,height:80},originalWholeReading:original,
+      originalWholeRawText:completeOriginal?'培养需求32/99':'培养需求32/9?',originalWholeDetectorText:completeOriginal?'培养需求32/99':'培养需求32/99C'});
+    tip.tooltipQuantityMethod=raw.tooltipQuantityMethod;tip.footerLabelRegion=structuredClone(proof.sourceRegion);
+    tip.quantity.bounds=structuredClone(proof.sourceRegion);
+    tip.quantity.ocrRows=[{text:'培养需求32/99',bounds:{x:884,y:917,width:182,height:28}}];
+    tip.footerLabelRows=structuredClone(tip.quantity.ocrRows);
+    tip.originalIdentityReading={observedAt:tip.observedAt,nameRegion:structuredClone(tip.nameRegion),alternateRawName:'破旧的刀谭',
+      alternateNameRows:[{text:'破旧的刀谭',bounds:{x:740,y:180,width:160,height:30}}],alternateNameScale:4,
+      alternateNamePreprocessing:'gray_threshold_210_inverse_cubic_4x',sourceRegion:{x:730,y:690,width:460,height:65},
+      sourceRows:[{text:'来源',bounds:{x:740,y:690,width:70,height:25}}]};
+    tip.alternateNamePreprocessing='bgr_cubic_4x';tip.sourceRegion={x:730,y:675,width:460,height:80};
+    tip.sourceRows=[{text:'来源',bounds:{x:740,y:690,width:70,height:25}}];
+  }
+  syncSource31(raw);return raw;
+}
+
+test('footer37 v2 preserves failed or independently complete original whole diagnostic and aggregate demand',()=>{
+  for(const complete of [false,true]){
+    const raw=footer37Observation(complete),before=structuredClone(raw);
+    assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+    assert.equal(source31Tips(raw)[0].quantity.required,99);assert.deepEqual(raw,before);
+  }
+});
+test('footer37 three original diagnostic fields are mandatory only in v2',()=>{
+  for(const field of ['originalWholeReading','originalWholeRawText','originalWholeDetectorText']){
+    const raw=footer37Observation();delete source31Tips(raw)[0].footerQuantityEvidence[field];syncSource31(raw);
+    assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+    const v1=source31Observation();source31Tips(v1)[0].footerQuantityEvidence[field]=null;syncSource31(v1);
+    assert.throws(()=>verifyTalentObservation(v1,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('footer37 original diagnostic cannot alter clock ROI whole provenance original rows or failed nullable values',()=>{
+  const changes=[p=>p.originalWholeReading=null,p=>p.originalWholeReading.observedAt++,p=>p.originalWholeReading.width=1919,
+    p=>p.originalWholeReading.bounds.x=726,p=>p.originalWholeReading.bounds.height=80,p=>p.originalWholeReading.cropMethod='detector_full_count_row',
+    p=>p.originalWholeReading.initialReading={},p=>p.originalWholeReading.sourceCountRow={},p=>p.originalWholeReading.slashPixelVerified=true,
+    p=>p.originalWholeReading.slashBounds={x:900,y:917,width:2,height:20},p=>p.originalWholeReading.splitRawModel='V6',
+    p=>p.originalWholeReading.raw='32/99',p=>p.originalWholeReading.detectorRaw='32/9?',p=>p.originalWholeDetectorText='培养需求32/99',
+    p=>p.originalWholeReading.owned=32,p=>p.originalWholeReading.required=99,p=>p.originalWholeReading.ocrRows[0].bounds.width=0];
+  for(const change of changes){const raw=footer37Observation();change(source31Tips(raw)[0].footerQuantityEvidence);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('footer37 accepted full ROI is fixed and complete original prefix ratio or count conflicts reject',()=>{
+  const changes=[t=>t.footerQuantityEvidence.sourceRegion.x=885,t=>t.quantity.bounds.width=220,t=>t.footerLabelRegion.y=890,
+    t=>{const p=t.footerQuantityEvidence;p.originalWholeRawText='培养需32/99';p.originalWholeDetectorText='培养需32/99';Object.assign(p.originalWholeReading,{raw:'',detectorRaw:''});p.originalWholeReading.ocrRows[0].text='培养需32/99';},
+    t=>{const p=t.footerQuantityEvidence;p.originalWholeRawText='培养需求33/99';p.originalWholeDetectorText='培养需求33/99';Object.assign(p.originalWholeReading,{raw:'33/99',detectorRaw:'33/99',owned:33});p.originalWholeReading.ocrRows[0].text='培养需求33/99';},
+    t=>t.footerQuantityEvidence.originalWholeReading.ocrRows.push(structuredClone(t.footerQuantityEvidence.originalWholeReading.ocrRows[0])),
+    t=>{const p=t.footerQuantityEvidence;p.originalWholeRawText='培养需求32/98';p.originalWholeDetectorText='培养需求32/98';Object.assign(p.originalWholeReading,{raw:'32/98',detectorRaw:'32/98',required:98});p.originalWholeReading.ocrRows[0].text='培养需求32/98';}];
+  for(const change of changes){const raw=footer37Observation(true);change(source31Tips(raw)[0]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('footer37 exact two pixel margins pass and one pixel fails on all four final and complete diagnostic edges',()=>{
+  for(const member of ['quantity','originalWholeReading','initialReading'])for(const axis of ['left','right','top','bottom'])for(const edge of [2,1]){
+    const raw=footer37Observation(true),tip=source31Tips(raw)[0],proof=tip.footerQuantityEvidence;
+    if(member==='initialReading'){
+      Object.assign(proof.initialReading,{complete:true,owned:32,required:99});proof.initialReading.ocrRows=[{text:'培养需求32/99',bounds:{x:900,y:900,width:182,height:28}}];
+    }
+    const reading=member==='quantity'?tip.quantity:proof[member],box=reading.bounds,r=reading.ocrRows[0].bounds;
+    if(axis==='left')r.x=box.x+edge;if(axis==='right')r.x=box.x+box.width-r.width-edge;
+    if(axis==='top')r.y=box.y+edge;if(axis==='bottom')r.y=box.y+box.height-r.height-edge;
+    if(member==='quantity')tip.footerLabelRows=structuredClone(reading.ocrRows);syncSource31(raw);
+    if(edge===2)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+    else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('footer37 envelope pair and proof versions cannot mix',()=>{
+  for(const change of [r=>r.tooltipQuantityMethod='existing_full_footer_v1',r=>source31Tips(r)[0].tooltipQuantityMethod='existing_full_footer_v1',
+    r=>source31Tips(r)[0].footerQuantityEvidence.method='existing_full_footer_v1',r=>source31Tips(r)[1].tooltipQuantityMethod='existing_full_footer_v1',
+    r=>{const old=source31Tips(source31Observation())[0],tip=source31Tips(r)[0];for(const k of ['tooltipQuantityMethod','footerQuantityEvidence','quantity','footerLabelRows','footerLabelRegion'])tip[k]=structuredClone(old[k]);}]){
+    const raw=footer37Observation();change(raw);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('footer37 timing freshness and original model proof remain unchanged',()=>{
+  for(const change of [t=>t.readTiming.pairEvaluatedAt=t.observedAt+1501,t=>t.sourceRegionModelEvidence.rawDetectorAsset.sha256='0'.repeat(64),
+    t=>t.readTiming.captureReturnedAt++,t=>t.privateCapture.nativePixelsSha256='short']){
+    const raw=footer37Observation();change(source31Tips(raw)[1]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
+test('identity37 accepts exact BGR name and complete new source while retaining failed bounded originals',()=>{
+  const raw=footer37Observation(),before=structuredClone(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);assert.deepEqual(raw,before);
+  const tip=source31Tips(raw)[0];tip.originalIdentityReading.alternateNameRows=[];tip.originalIdentityReading.sourceRows=[];syncSource31(raw);
+  assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+});
+test('identity37 requires eight same-frame diagnostic fields with old methods ROIs and bounded original image rows',()=>{
+  const fields=['observedAt','nameRegion','alternateRawName','alternateNameRows','alternateNameScale','alternateNamePreprocessing','sourceRegion','sourceRows'];
+  const changes=[t=>delete t.originalIdentityReading,t=>t.originalIdentityReading=null,...fields.map(key=>t=>delete t.originalIdentityReading[key]),
+    t=>t.originalIdentityReading.observedAt++,t=>t.originalIdentityReading.observedAt=true,t=>t.originalIdentityReading.extra='forged',
+    t=>t.originalIdentityReading.nameRegion.x=731,t=>t.originalIdentityReading.sourceRegion.y=675,
+    t=>t.originalIdentityReading.alternateNamePreprocessing='bgr_cubic_4x',t=>t.originalIdentityReading.alternateNameScale=1,
+    t=>t.originalIdentityReading.alternateRawName='a'.repeat(257),t=>t.originalIdentityReading.alternateNameRows[0].text='a'.repeat(257),
+    t=>t.originalIdentityReading.sourceRows=Array(17).fill(t.originalIdentityReading.sourceRows[0]),
+    t=>t.originalIdentityReading.alternateNameRows[0].bounds.x=-1,t=>t.originalIdentityReading.sourceRows[0].bounds.x=1900];
+  for(const change of changes){const raw=footer37Observation();change(source31Tips(raw)[0]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  for(const value of [null,source31Tips(footer37Observation())[0].originalIdentityReading]){const raw=source31Observation();source31Tips(raw)[0].originalIdentityReading=value;syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+});
+test('identity37 new name and source independently reject wrong text methods ROI and one pixel boundaries',()=>{
+  const changes=[t=>t.alternateNamePreprocessing='gray_threshold_210_inverse_cubic_4x',t=>t.sourceRegion.y=690,
+    t=>t.alternateRawName='破旧的刀谭',t=>{t.alternateRawName='破旧的刀谭';t.alternateNameRows[0].text='破旧的刀谭';},
+    t=>t.nameRows[0].text='破旧的刀谭',t=>t.sourceRows[0].text='来原',t=>t.sourceRows.push(structuredClone(t.sourceRows[0]))];
+  for(const change of changes){const raw=footer37Observation();change(source31Tips(raw)[0]);syncSource31(raw);assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));}
+  for(const member of ['alternateNameRows','sourceRows'])for(const axis of ['left','right','top','bottom'])for(const edge of [2,1]){
+    const raw=footer37Observation(),tip=source31Tips(raw)[0],box=member==='sourceRows'?tip.sourceRegion:tip.nameRegion,r=tip[member][0].bounds;
+    if(axis==='left')r.x=box.x+edge;if(axis==='right')r.x=box.x+box.width-r.width-edge;
+    if(axis==='top')r.y=box.y+edge;if(axis==='bottom')r.y=box.y+box.height-r.height-edge;syncSource31(raw);
+    if(edge===2)assert.equal(verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000).materials[0].required,3);
+    else assert.throws(()=>verifyTalentObservation(raw,'芭芭拉','元素战技',BASE,BASE+4000));
+  }
+});
 
 test('marker36 narrow material role accepts complete target while retaining failed old ROI diagnosis',()=>{
   const raw=marker36Observation(),before=structuredClone(raw);

@@ -112,6 +112,171 @@ class TalentPreviewTests(unittest.TestCase):
             f['rows'][1]['bounds']=rect(900,585,100,30)
         return p,root
 
+    def footer37_packet(self,complete_original=False):
+        p,root=self.marker36_packet();raw=p['nativeObservation'];raw['tooltipQuantityMethod']='existing_full_footer_v2'
+        for tip in self.source31_tips(p):
+            proof=tip['footerQuantityEvidence'];original=deepcopy(tip['quantity'])
+            original.update(complete=complete_original,owned=32 if complete_original else None,required=99 if complete_original else None,
+                raw='32/99' if complete_original else '32/9?',detectorRaw='32/99' if complete_original else '32/99C')
+            original['ocrRows']=[row('培养需求32/99' if complete_original else '培养需求32/99C',884,917,182,28)]
+            proof.update(method=raw['tooltipQuantityMethod'],sourceRegion=rect(882,875,223,80),originalWholeReading=original,
+                originalWholeRawText='培养需求32/99' if complete_original else '培养需求32/9?',
+                originalWholeDetectorText='培养需求32/99' if complete_original else '培养需求32/99C')
+            tip.update(tooltipQuantityMethod=raw['tooltipQuantityMethod'],footerLabelRegion=deepcopy(proof['sourceRegion']))
+            tip['quantity'].update(bounds=deepcopy(proof['sourceRegion']),ocrRows=[row('培养需求32/99',884,917,182,28)])
+            tip['footerLabelRows']=deepcopy(tip['quantity']['ocrRows'])
+            tip['originalIdentityReading']=dict(observedAt=tip['observedAt'],nameRegion=deepcopy(tip['nameRegion']),alternateRawName='破旧的刀谭',
+                alternateNameRows=[row('破旧的刀谭',740,180,160,30)],alternateNameScale=4,
+                alternateNamePreprocessing='gray_threshold_210_inverse_cubic_4x',sourceRegion=rect(730,690,460,65),sourceRows=[row('来源',740,690,70,25)])
+            tip.update(alternateNamePreprocessing='bgr_cubic_4x',sourceRegion=rect(730,675,460,80),sourceRows=[row('来源',740,690,70,25)])
+        return p,root
+
+    def test_identity37_accepts_new_bgr_name_source_and_preserves_failed_bounded_originals(self):
+        p,root=self.footer37_packet();before=deepcopy(p)
+        self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+        self.source31_tips(p)[0]['originalIdentityReading'].update(alternateNameRows=[],sourceRows=[])
+        self.assertTrue(self.verify_modern(p,root))
+
+    def test_identity37_exact_diagnostic_fields_clock_method_rois_and_bounded_image_rows(self):
+        p,root=self.footer37_packet()
+        fields=('observedAt','nameRegion','alternateRawName','alternateNameRows','alternateNameScale','alternateNamePreprocessing','sourceRegion','sourceRows')
+        changes=[lambda t:t.pop('originalIdentityReading'),lambda t:t.update(originalIdentityReading=None)]
+        changes += [lambda t,key=key:t['originalIdentityReading'].pop(key) for key in fields]
+        changes += [lambda t:t['originalIdentityReading'].update(observedAt=t['observedAt']+1),lambda t:t['originalIdentityReading'].update(observedAt=True),
+            lambda t:t['originalIdentityReading'].update(extra='forged'),lambda t:t['originalIdentityReading']['nameRegion'].update(x=731),
+            lambda t:t['originalIdentityReading']['sourceRegion'].update(y=675),lambda t:t['originalIdentityReading'].update(alternateNamePreprocessing='bgr_cubic_4x'),
+            lambda t:t['originalIdentityReading'].update(alternateNameScale=1),lambda t:t['originalIdentityReading'].update(alternateRawName='a'*257),
+            lambda t:t['originalIdentityReading']['alternateNameRows'][0].update(text='a'*257),
+            lambda t:t['originalIdentityReading'].update(sourceRows=[deepcopy(t['originalIdentityReading']['sourceRows'][0]) for i in range(17)]),
+            lambda t:t['originalIdentityReading']['alternateNameRows'][0]['bounds'].update(x=-1),lambda t:t['originalIdentityReading']['sourceRows'][0]['bounds'].update(x=1900)]
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(self.source31_tips(q)[0])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+        v1,v1root=self.source31_packet()
+        for value in (None,self.source31_tips(p)[0]['originalIdentityReading']):
+            q=deepcopy(v1);self.source31_tips(q)[0]['originalIdentityReading']=value
+            with self.assertRaises(ValueError):self.verify_modern(q,v1root)
+
+    def test_identity37_new_name_source_wrong_text_method_roi_and_four_edge_margins(self):
+        p,root=self.footer37_packet()
+        def wrong_both(t):t['alternateRawName']='破旧的刀谭';t['alternateNameRows'][0]['text']='破旧的刀谭'
+        changes=(lambda t:t.update(alternateNamePreprocessing='gray_threshold_210_inverse_cubic_4x'),lambda t:t['sourceRegion'].update(y=690),
+            lambda t:t.update(alternateRawName='破旧的刀谭'),wrong_both,lambda t:t['nameRows'][0].update(text='破旧的刀谭'),
+            lambda t:t['sourceRows'][0].update(text='来原'),lambda t:t['sourceRows'].append(deepcopy(t['sourceRows'][0])))
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(self.source31_tips(q)[0])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+        for member in ('alternateNameRows','sourceRows'):
+            for axis in ('left','right','top','bottom'):
+                for edge in (2,1):
+                    with self.subTest(member=member,axis=axis,edge=edge):
+                        q=deepcopy(p);tip=self.source31_tips(q)[0];box=tip['sourceRegion'] if member=='sourceRows' else tip['nameRegion'];r=tip[member][0]['bounds']
+                        if axis=='left':r['x']=box['x']+edge
+                        if axis=='right':r['x']=box['x']+box['width']-r['width']-edge
+                        if axis=='top':r['y']=box['y']+edge
+                        if axis=='bottom':r['y']=box['y']+box['height']-r['height']-edge
+                        if edge==2:self.assertTrue(self.verify_modern(q,root))
+                        else:
+                            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_footer37_preserves_failed_and_complete_original_diagnostics_and_aggregate(self):
+        for complete in (False,True):
+            with self.subTest(complete=complete):
+                p,root=self.footer37_packet(complete);before=deepcopy(p)
+                self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
+                self.assertEqual(p['costs']['materials'][0]['required'],3)
+                self.assertEqual(self.source31_tips(p)[0]['quantity']['required'],99)
+
+    def test_footer37_three_diagnostics_mandatory_for_v2_and_forbidden_for_v1(self):
+        p,root=self.footer37_packet();v1,v1root=self.source31_packet()
+        for field in ('originalWholeReading','originalWholeRawText','originalWholeDetectorText'):
+            with self.subTest(field=field):
+                q=deepcopy(p);self.source31_tips(q)[0]['footerQuantityEvidence'].pop(field)
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+                q=deepcopy(v1);self.source31_tips(q)[0]['footerQuantityEvidence'][field]=None
+                with self.assertRaises(ValueError):self.verify_modern(q,v1root)
+
+    def test_footer37_original_scope_raw_rows_and_failed_values_cannot_be_changed(self):
+        p,root=self.footer37_packet()
+        changes=(lambda d:d.update(originalWholeReading=None),lambda d:d['originalWholeReading'].update(observedAt=d['originalWholeReading']['observedAt']+1),
+            lambda d:d['originalWholeReading'].update(width=1919),lambda d:d['originalWholeReading']['bounds'].update(x=726),
+            lambda d:d['originalWholeReading']['bounds'].update(height=80),lambda d:d['originalWholeReading'].update(cropMethod='detector_full_count_row'),
+            lambda d:d['originalWholeReading'].update(initialReading={}),lambda d:d['originalWholeReading'].update(sourceCountRow={}),
+            lambda d:d['originalWholeReading'].update(slashPixelVerified=True),lambda d:d['originalWholeReading'].update(slashBounds=rect(900,917,2,20)),
+            lambda d:d['originalWholeReading'].update(splitRawModel='V6'),lambda d:d['originalWholeReading'].update(raw='32/99'),
+            lambda d:d['originalWholeReading'].update(detectorRaw='32/9?'),lambda d:d.update(originalWholeDetectorText='培养需求32/99'),
+            lambda d:d['originalWholeReading'].update(owned=32),lambda d:d['originalWholeReading'].update(required=99),
+            lambda d:d['originalWholeReading']['ocrRows'][0]['bounds'].update(width=0))
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(self.source31_tips(q)[0]['footerQuantityEvidence'])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_footer37_fixed_new_roi_complete_original_prefix_and_ratio_conflicts_reject(self):
+        p,root=self.footer37_packet(True)
+        def change_prefix(t):
+            d=t['footerQuantityEvidence'];d.update(originalWholeRawText='培养需32/99',originalWholeDetectorText='培养需32/99')
+            d['originalWholeReading'].update(raw='',detectorRaw='');d['originalWholeReading']['ocrRows'][0]['text']='培养需32/99'
+        def change_owned(t):
+            d=t['footerQuantityEvidence'];d.update(originalWholeRawText='培养需求33/99',originalWholeDetectorText='培养需求33/99')
+            d['originalWholeReading'].update(raw='33/99',detectorRaw='33/99',owned=33);d['originalWholeReading']['ocrRows'][0]['text']='培养需求33/99'
+        def change_required(t):
+            d=t['footerQuantityEvidence'];d.update(originalWholeRawText='培养需求32/98',originalWholeDetectorText='培养需求32/98')
+            d['originalWholeReading'].update(raw='32/98',detectorRaw='32/98',required=98);d['originalWholeReading']['ocrRows'][0]['text']='培养需求32/98'
+        changes=(lambda t:t['footerQuantityEvidence']['sourceRegion'].update(x=885),lambda t:t['quantity']['bounds'].update(width=220),
+            lambda t:t['footerLabelRegion'].update(y=890),change_prefix,change_owned,
+            lambda t:t['footerQuantityEvidence']['originalWholeReading']['ocrRows'].append(deepcopy(t['footerQuantityEvidence']['originalWholeReading']['ocrRows'][0])),
+            change_required)
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(self.source31_tips(q)[0])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_footer37_two_pixel_edges_pass_one_pixel_fails_for_final_and_complete_diagnostics(self):
+        p,root=self.footer37_packet(True)
+        for member in ('quantity','originalWholeReading','initialReading'):
+            for axis in ('left','right','top','bottom'):
+                for edge in (2,1):
+                    with self.subTest(member=member,axis=axis,edge=edge):
+                        q=deepcopy(p);tip=self.source31_tips(q)[0];proof=tip['footerQuantityEvidence']
+                        if member=='initialReading':
+                            proof['initialReading'].update(complete=True,owned=32,required=99,ocrRows=[row('培养需求32/99',900,900,182,28)])
+                        reading=tip['quantity'] if member=='quantity' else proof[member];box=reading['bounds'];r=reading['ocrRows'][0]['bounds']
+                        if axis=='left':r['x']=box['x']+edge
+                        if axis=='right':r['x']=box['x']+box['width']-r['width']-edge
+                        if axis=='top':r['y']=box['y']+edge
+                        if axis=='bottom':r['y']=box['y']+box['height']-r['height']-edge
+                        if member=='quantity':tip['footerLabelRows']=deepcopy(reading['ocrRows'])
+                        if edge==2:self.assertTrue(self.verify_modern(q,root))
+                        else:
+                            with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_footer37_envelope_frame_pair_and_proof_versions_cannot_mix(self):
+        p,root=self.footer37_packet();old,_=self.source31_packet()
+        def replace_first(raw):
+            target=self.source31_tips({'nativeObservation':raw})[0];source=self.source31_tips(old)[0]
+            for key in ('tooltipQuantityMethod','footerQuantityEvidence','quantity','footerLabelRows','footerLabelRegion'):target[key]=deepcopy(source[key])
+        changes=(lambda r:r.update(tooltipQuantityMethod='existing_full_footer_v1'),
+            lambda r:self.source31_tips({'nativeObservation':r})[0].update(tooltipQuantityMethod='existing_full_footer_v1'),
+            lambda r:self.source31_tips({'nativeObservation':r})[0]['footerQuantityEvidence'].update(method='existing_full_footer_v1'),
+            lambda r:self.source31_tips({'nativeObservation':r})[1].update(tooltipQuantityMethod='existing_full_footer_v1'),replace_first)
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(q['nativeObservation'])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+
+    def test_footer37_actual_timing_hash_and_model_proofs_remain_required(self):
+        p,root=self.footer37_packet()
+        changes=(lambda t:t['readTiming'].update(pairEvaluatedAt=t['observedAt']+1501),
+            lambda t:t['sourceRegionModelEvidence']['rawDetectorAsset'].update(sha256='0'*64),
+            lambda t:t['readTiming'].update(captureReturnedAt=t['observedAt']+1),lambda t:t['privateCapture'].update(nativePixelsSha256='short'))
+        for index,change in enumerate(changes):
+            with self.subTest(change=index):
+                q=deepcopy(p);change(self.source31_tips(q)[1])
+                with self.assertRaises(ValueError):self.verify_modern(q,root)
+
     def test_marker36_narrow_material_accepts_with_failed_old_diagnostic(self):
         p,root=self.marker36_packet();before=deepcopy(p)
         self.assertTrue(self.verify_modern(p,root));self.assertEqual(p,before)
